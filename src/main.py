@@ -15,6 +15,11 @@ from .services.load_balancer import LoadBalancer
 from .services.concurrency_manager import ConcurrencyManager
 from .services.generation_handler import GenerationHandler
 from .api import routes, admin
+from .api.accountpool import (
+    AccountPoolRepository,
+    AccountPoolService,
+    create_accountpool_router,
+)
 
 
 @asynccontextmanager
@@ -33,6 +38,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize database tables structure
     await db.init_db()
+    await accountpool_service.initialize()
 
     # Handle database initialization based on startup type
     if is_first_startup:
@@ -129,6 +135,7 @@ async def lifespan(app: FastAPI):
     auto_unban_task_handle = asyncio.create_task(auto_unban_task())
 
     print(f"✓ Database initialized")
+    print("✓ AccountPool initialized")
     print(f"✓ Total tokens: {len(tokens)}")
     print(f"✓ Cache: {'Enabled' if config.cache_enabled else 'Disabled'} (timeout: {config.cache_timeout}s)")
     print(f"✓ File cache cleanup task started")
@@ -171,6 +178,8 @@ generation_handler = GenerationHandler(
     concurrency_manager,
     proxy_manager  # 添加 proxy_manager 参数
 )
+accountpool_repo = AccountPoolRepository()
+accountpool_service = AccountPoolService(accountpool_repo)
 
 # Set dependencies
 routes.set_generation_handler(generation_handler)
@@ -196,6 +205,7 @@ app.add_middleware(
 # Include routers
 app.include_router(routes.router)
 app.include_router(admin.router)
+app.include_router(create_accountpool_router(accountpool_service), tags=["AccountPool"])
 
 # Static files - serve tmp directory for cached files
 tmp_dir = Path(__file__).parent.parent / "tmp"
@@ -204,6 +214,9 @@ app.mount("/tmp", StaticFiles(directory=str(tmp_dir)), name="tmp")
 
 # HTML routes for frontend
 static_path = Path(__file__).parent.parent / "static"
+vendor_path = static_path / "vendor"
+if vendor_path.exists():
+    app.mount("/vendor", StaticFiles(directory=str(vendor_path)), name="vendor")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -231,3 +244,12 @@ async def manage_page():
     if manage_file.exists():
         return FileResponse(str(manage_file))
     return HTMLResponse(content="<h1>Management Page Not Found</h1>", status_code=404)
+
+
+@app.get("/account_pool_page_v2_full", response_class=HTMLResponse)
+async def account_pool_page():
+    """Account pool automation page"""
+    account_pool_file = static_path / "account_pool_page_v2_full.html"
+    if account_pool_file.exists():
+        return FileResponse(str(account_pool_file))
+    return HTMLResponse(content="<h1>Account Pool Page Not Found</h1>", status_code=404)

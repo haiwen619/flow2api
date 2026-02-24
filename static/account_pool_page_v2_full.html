@@ -1,0 +1,1748 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>账号池管理系统</title>
+  <script src="../vendor/tailwind.min.js"></script>
+  <script src="../vendor/iconify.min.js"></script>
+  <script src="../vendor/echarts.min.js"></script>
+  <style>
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .hide-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+      }
+
+      to {
+        transform: translateX(0);
+      }
+    }
+
+    .animate-slide-in {
+      animation: slideIn 0.3s ease-out forwards;
+    }
+  </style>
+</head>
+
+<body class="bg-gray-50 text-slate-800 font-sans">
+  <div class="h-screen overflow-hidden">
+    <!-- 主内容区（移除侧边栏，改为全宽） -->
+    <main class="h-full w-full flex flex-col overflow-hidden">
+      <!-- 内容滚动区 -->
+      <div class="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5 hide-scrollbar">
+        <!-- 统计卡片 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-5">
+          <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+            <div class="flex justify-between items-start mb-3">
+              <div class="p-2 bg-blue-50 text-blue-600 rounded-lg">
+                <span class="iconify text-xl" data-icon="material-symbols:account-circle"></span>
+              </div>
+              <span class="text-green-500 text-xs font-bold">+12.5%</span>
+            </div>
+            <h3 class="text-gray-500 text-xs">总账号数</h3>
+            <p id="apStatTotal" class="text-xl font-bold mt-1">0</p>
+          </div>
+          <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+            <div class="flex justify-between items-start mb-3">
+              <div class="p-2 bg-green-50 text-green-600 rounded-lg">
+                <span class="iconify text-xl" data-icon="material-symbols:check-circle-outline"></span>
+              </div>
+              <span class="text-gray-400 text-xs">实时存活</span>
+            </div>
+            <h3 class="text-gray-500 text-xs">在线存活</h3>
+            <p id="apStatAlive" class="text-xl font-bold mt-1">0</p>
+          </div>
+          <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+            <div class="flex justify-between items-start mb-3">
+              <div class="p-2 bg-orange-50 text-orange-600 rounded-lg">
+                <span class="iconify text-xl" data-icon="material-symbols:report-outline"></span>
+              </div>
+              <span class="text-orange-500 text-xs font-bold">待修复</span>
+            </div>
+            <h3 class="text-gray-500 text-xs">异常告警</h3>
+            <p id="apStatFailed" class="text-xl font-bold mt-1">0</p>
+          </div>
+          <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+            <div class="flex justify-between items-start mb-3">
+              <div class="p-2 bg-purple-50 text-purple-600 rounded-lg">
+                <span class="iconify text-xl" data-icon="material-symbols:security-update-good"></span>
+              </div>
+              <span class="text-gray-400 text-xs">今日验证</span>
+            </div>
+            <h3 class="text-gray-500 text-xs">自动验证</h3>
+            <p id="apStatToday" class="text-xl font-bold mt-1">0</p>
+          </div>
+        </div>
+
+        <!-- 账号表格区域 -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div class="px-4 sm:px-6 lg:px-8 py-5 sm:py-6 border-b border-gray-100 flex items-center justify-between gap-4">
+            <div>
+              <h2 class="text-lg font-bold text-slate-800">账号资源列表</h2>
+              <p class="text-xs text-gray-400 mt-1">管理并监控您的多平台账号资产</p>
+            </div>
+            <div class="flex flex-wrap gap-3 justify-end">
+              <button
+                class="flex items-center space-x-2 px-4 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all font-medium text-sm"
+                id="btnValidateAll">
+                <span class="iconify" data-icon="material-symbols:done-all"></span>
+                <span>批量验活</span>
+              </button>
+              <button
+                class="flex items-center space-x-2 px-4 py-2 rounded-xl border border-purple-200 hover:bg-purple-50 transition-all font-medium text-sm text-purple-600"
+                id="btnBatchTasks">
+                <span class="iconify" data-icon="material-symbols:task-alt"></span>
+                <span>批量任务</span>
+              </button>
+              <button
+                class="flex items-center space-x-2 px-6 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-all font-medium text-sm shadow-md shadow-blue-200"
+                onclick="openAddAccountPanel()">
+                <span class="iconify" data-icon="material-symbols:add"></span>
+                <span>添加账号</span>
+              </button>
+               <button
+                class="flex items-center space-x-2 px-6 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-all font-medium text-sm shadow-md shadow-blue-200"
+                onclick="openBatchAddPanel()">
+                <span class="iconify" data-icon="material-symbols:add"></span>
+                <span>批量添加</span>
+              </button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="bg-gray-50/50">
+                  <th class="px-4 sm:px-6 lg:px-8 py-4 font-semibold text-gray-500 text-sm mb-4">账号信息</th>
+                  <th class="px-4 sm:px-6 lg:px-8 py-4 font-semibold text-gray-500 text-sm mb-4">平台类型</th>
+                  <th class="px-4 sm:px-6 lg:px-8 py-4 font-semibold text-gray-500 text-sm mb-4">状态</th>
+                  <th class="px-4 sm:px-6 lg:px-8 py-4 font-semibold text-gray-500 text-sm mb-4">最后验证日期</th>
+                  <th class="px-4 sm:px-6 lg:px-8 py-4 font-semibold text-gray-500 text-sm mb-4">操作</th>
+                </tr>
+              </thead>
+              <tbody id="apAccountsTbody" class="divide-y divide-gray-50">
+                <tr>
+                  <td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">加载中...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 分页栏 -->
+          <div class="px-4 sm:px-6 lg:px-8 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
+            <div id="apPaginationInfo" class="text-sm text-gray-500">-</div>
+            <div class="flex items-center gap-2">
+              <button id="apPrevPage" class="px-3 py-2 rounded-lg border border-gray-200 text-sm text-slate-600 hover:bg-gray-50 disabled:opacity-50 disabled:hover:bg-transparent" disabled>上一页</button>
+              <span id="apPageIndicator" class="text-sm text-gray-600">1/1</span>
+              <button id="apNextPage" class="px-3 py-2 rounded-lg border border-gray-200 text-sm text-slate-600 hover:bg-gray-50 disabled:opacity-50 disabled:hover:bg-transparent" disabled>下一页</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 数据图表预览 -->
+        <div class="mt-8 grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6">
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 class="font-bold text-slate-800 mb-6">活跃趋势 (24h)</h3>
+            <div class="w-full h-64" id="activityChart"></div>
+          </div>
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 class="font-bold text-slate-800 mb-6">平台分布统计</h3>
+            <div class="w-full h-64" id="distChart"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 添加账号侧边栏 -->
+  <div class="fixed inset-0 bg-black/50 overflow-hidden z-[100] hidden" id="sidePanel">
+    <div class="absolute inset-y-0 right-0 w-[450px] bg-white shadow-2xl animate-slide-in flex flex-col">
+      <div class="p-8 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-xl font-bold text-slate-800" id="apPanelTitle">添加新账号</h2>
+          <p class="text-sm text-gray-400 mt-1" id="apPanelSubtitle">请输入账号凭据进行批量导入或手动添加</p>
+        </div>
+        <button class="p-2 hover:bg-gray-100 rounded-lg transition-colors" onclick="toggleSidePanel(false)">
+          <span class="iconify text-2xl text-gray-400" data-icon="material-symbols:close"></span>
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-8 hide-scrollbar space-y-6">
+        <div>
+          <label class="block text-sm font-semibold text-slate-700 mb-2">主平台</label>
+          <select id="apPlatform" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all">
+            <option>Google Gemini</option>
+            <option>OPAI outlook</option>
+          </select>
+        </div>
+
+        <!-- 单个添加/编辑 -->
+        <div id="apSingleWrap" class="space-y-6">
+          <div>
+            <label class="block text-sm font-semibold text-slate-700 mb-2">账号显示名称</label>
+            <input id="apDisplayName" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="例如: Global_Marketing_001" type="text" />
+          </div>
+          <div>
+            <label class="block text-sm font-semibold text-slate-700 mb-2">密码</label>
+            <input id="apPassword" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="请输入账号密码..." type="password" />
+          </div>
+          <div>
+            <label class="inline-flex items-center gap-2 cursor-pointer">
+              <input id="apIs2faEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+              <span class="text-sm font-semibold text-slate-700">双因素认证账号（2FA）</span>
+            </label>
+          </div>
+          <div id="ap2faPasswordWrap" class="hidden">
+            <label class="block text-sm font-semibold text-slate-700 mb-2">2FA 平台密码</label>
+            <input id="ap2faPassword" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="请输入 2FA 平台获取验证码所需密码..." type="password" />
+            <p class="text-xs text-gray-500 mt-2">仅在开启双因素认证时需要，用于后续 RPA 获取验证码。</p>
+          </div>
+        </div>
+
+        <!-- 批量添加 -->
+        <div id="apBatchWrap" class="space-y-3 hidden">
+          <div>
+            <label class="block text-sm font-semibold text-slate-700 mb-2">批量导入（每行一个账号和密码，空格隔开）</label>
+            <textarea id="apBatchText" rows="10" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all font-mono text-sm" placeholder="例如：
+khaicakhia585@gmail.com 123
+hungthanhha225@gmail.com 123"></textarea>
+          </div>
+          <p class="text-xs text-gray-500 leading-relaxed">提示：账号会同时写入 display_name 与 uid（便于后续登录）。重复账号会覆盖更新。</p>
+        </div>
+
+        <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+          <p class="text-xs text-blue-700 font-medium">小贴士：</p>
+          <p id="apTips" class="text-xs text-blue-600 mt-1 leading-relaxed">导入后可在列表中点击“验证”进行存活校验。</p>
+        </div>
+      </div>
+      <div class="p-8 border-t border-gray-100 bg-gray-50/50 flex space-x-4">
+        <button class="flex-1 py-3 px-6 rounded-xl border border-gray-200 font-semibold text-slate-600 hover:bg-white transition-all" onclick="toggleSidePanel(false)">取消</button>
+        <button class="flex-1 py-3 px-6 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all" onclick="submitAccountForm()"><span id="apSubmitText">立即导入</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除确认弹窗 -->
+  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-[200] hidden" id="deleteModal">
+    <div class="bg-white rounded-3xl p-8 max-w-sm w-full mx-4 shadow-2xl scale-in">
+      <div class="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6">
+        <span class="iconify text-3xl" data-icon="material-symbols:delete-forever-outline"></span>
+      </div>
+      <h3 class="text-xl font-bold text-center text-slate-800">确认删除该账号？</h3>
+      <p class="text-gray-500 text-center mt-3 text-sm">账号：<span class="font-bold text-slate-800" id="targetAccount"></span></p>
+      <p class="text-gray-400 text-center mt-1 text-xs px-2">删除后所有关联数据及验证记录将被永久移除，无法恢复。</p>
+      <div class="mt-8 flex space-x-3">
+        <button class="flex-1 py-3 px-4 rounded-xl border border-gray-200 text-slate-600 font-semibold hover:bg-gray-50" onclick="closeDeleteModal()">保留</button>
+        <button class="flex-1 py-3 px-4 rounded-xl bg-red-500 text-white font-semibold hover:bg-red-600 shadow-lg shadow-red-200" onclick="handleDelete()">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提醒通知渲染 -->
+  <div class="fixed top-6 right-6 z-[300] bg-slate-900/95 text-white px-4 py-2.5 rounded-xl flex items-center space-x-2.5 shadow-2xl opacity-0 transition-all duration-300 pointer-events-none translate-x-6" id="toast">
+    <span class="iconify text-blue-400" data-icon="material-symbols:info" id="toastIcon"></span>
+    <span class="text-sm font-medium" id="toastMsg">操作已完成</span>
+  </div>
+
+  <script>
+    // 账号池列表状态（分页/搜索）
+    const AP_PAGE_SIZE = 10;
+    let apPage = 1;
+    let apTotal = 0;
+
+    function getAuthToken() {
+      const token = localStorage.getItem('gcli2api_auth_token') || localStorage.getItem('adminToken') || '';
+      if (token && localStorage.getItem('gcli2api_auth_token') !== token) {
+        try { localStorage.setItem('gcli2api_auth_token', token); } catch (_) {}
+      }
+      return token;
+    }
+
+    // 侧边栏及模态框切换交互
+    function toggleSidePanel(show) {
+      const panel = document.getElementById('sidePanel');
+      if (show) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
+    }
+
+    let apFormMode = 'add';
+    let apEditingKey = '';
+
+    function update2faInputsVisibility() {
+      const enabledEl = document.getElementById('apIs2faEnabled');
+      const wrapEl = document.getElementById('ap2faPasswordWrap');
+      const pwdEl = document.getElementById('ap2faPassword');
+      const enabled = !!(enabledEl && enabledEl.checked);
+      if (wrapEl) wrapEl.classList.toggle('hidden', !enabled);
+      if (pwdEl) {
+        if (apFormMode === 'edit') {
+          pwdEl.placeholder = enabled
+            ? '输入新 2FA 平台密码（留空则不修改）'
+            : '未启用 2FA，无需填写';
+        } else {
+          pwdEl.placeholder = enabled
+            ? '请输入 2FA 平台获取验证码所需密码...'
+            : '未启用 2FA，无需填写';
+        }
+      }
+    }
+
+    function setAccountPanelMode(mode) {
+      apFormMode = (mode === 'edit' || mode === 'batch') ? mode : 'add';
+      const titleEl = document.getElementById('apPanelTitle');
+      const subtitleEl = document.getElementById('apPanelSubtitle');
+      const submitTextEl = document.getElementById('apSubmitText');
+      const passwordEl = document.getElementById('apPassword');
+      const is2faEl = document.getElementById('apIs2faEnabled');
+      const singleWrap = document.getElementById('apSingleWrap');
+      const batchWrap = document.getElementById('apBatchWrap');
+      const tipsEl = document.getElementById('apTips');
+
+      if (apFormMode === 'edit') {
+        if (titleEl) titleEl.innerText = '编辑账号';
+        if (subtitleEl) subtitleEl.innerText = '修改账号信息（密码不展示，输入新密码可更新）';
+        if (submitTextEl) submitTextEl.innerText = '保存修改';
+        if (passwordEl) passwordEl.placeholder = '输入新密码以更新（留空则不修改）';
+        if (singleWrap) singleWrap.classList.remove('hidden');
+        if (batchWrap) batchWrap.classList.add('hidden');
+        if (tipsEl) tipsEl.innerText = '修改后会立即保存到资源池；2FA 平台密码留空则保持原值。';
+      } else if (apFormMode === 'batch') {
+        if (titleEl) titleEl.innerText = '批量添加';
+        if (subtitleEl) subtitleEl.innerText = '每行：账号(邮箱) 空格 密码；支持多行粘贴';
+        if (submitTextEl) submitTextEl.innerText = '开始导入';
+        if (singleWrap) singleWrap.classList.add('hidden');
+        if (batchWrap) batchWrap.classList.remove('hidden');
+        if (tipsEl) tipsEl.innerText = '每行一个账号和密码，空格隔开；导入完成后将自动刷新列表。';
+      } else {
+        if (titleEl) titleEl.innerText = '添加新账号';
+        if (subtitleEl) subtitleEl.innerText = '请输入账号凭据进行批量导入或手动添加';
+        if (submitTextEl) submitTextEl.innerText = '立即导入';
+        if (passwordEl) passwordEl.placeholder = '请输入账号密码...';
+        if (singleWrap) singleWrap.classList.remove('hidden');
+        if (batchWrap) batchWrap.classList.add('hidden');
+        if (tipsEl) tipsEl.innerText = '导入后可在列表中点击“验证”进行存活校验。';
+      }
+      if (apFormMode !== 'edit' && is2faEl) {
+        is2faEl.checked = false;
+      }
+      update2faInputsVisibility();
+    }
+
+    function openAddAccountPanel() {
+      apEditingKey = '';
+      setAccountPanelMode('add');
+      const displayNameEl = document.getElementById('apDisplayName');
+      const passwordEl = document.getElementById('apPassword');
+      const is2faEl = document.getElementById('apIs2faEnabled');
+      const twofaPwdEl = document.getElementById('ap2faPassword');
+      if (displayNameEl) displayNameEl.value = '';
+      if (passwordEl) passwordEl.value = '';
+      if (is2faEl) is2faEl.checked = false;
+      if (twofaPwdEl) twofaPwdEl.value = '';
+      update2faInputsVisibility();
+      toggleSidePanel(true);
+    }
+
+    function openBatchAddPanel() {
+      apEditingKey = '';
+      setAccountPanelMode('batch');
+      const batchEl = document.getElementById('apBatchText');
+      if (batchEl) batchEl.value = '';
+      toggleSidePanel(true);
+    }
+
+    function openEditFromButton(btn) {
+      if (!btn || !btn.dataset) return;
+      const key = btn.dataset.accountKey || '';
+      const platform = btn.dataset.platform || '';
+      const displayName = btn.dataset.displayName || '';
+      const is2faEnabled = String(btn.dataset.is2faEnabled || '').toLowerCase() === 'true';
+      if (!key) {
+        showToast('缺少账号标识，无法编辑', 'material-symbols:error');
+        return;
+      }
+
+      apEditingKey = key;
+      setAccountPanelMode('edit');
+
+      const platformEl = document.getElementById('apPlatform');
+      const displayNameEl = document.getElementById('apDisplayName');
+      const passwordEl = document.getElementById('apPassword');
+      const is2faEl = document.getElementById('apIs2faEnabled');
+      const twofaPwdEl = document.getElementById('ap2faPassword');
+
+      if (platformEl) platformEl.value = platform;
+      if (displayNameEl) displayNameEl.value = displayName;
+      if (passwordEl) passwordEl.value = '';
+      if (is2faEl) is2faEl.checked = is2faEnabled;
+      if (twofaPwdEl) twofaPwdEl.value = '';
+      update2faInputsVisibility();
+
+      toggleSidePanel(true);
+    }
+
+    let currentDeleteTarget = '';
+    let currentDeleteTargetKey = '';
+    function confirmDelete(accountName, accountKey) {
+      currentDeleteTarget = accountName || '';
+      currentDeleteTargetKey = accountKey || '';
+      document.getElementById('targetAccount').innerText = currentDeleteTarget || '-';
+      document.getElementById('deleteModal').classList.remove('hidden');
+    }
+
+    function closeDeleteModal() {
+      document.getElementById('deleteModal').classList.add('hidden');
+    }
+
+    async function handleDelete() {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      if (!currentDeleteTargetKey) {
+        showToast('缺少账号标识，无法删除', 'material-symbols:error');
+        return;
+      }
+
+      showToast('正在删除账号...', 'material-symbols:sync');
+
+      try {
+        const resp = await fetch(`/accountpool/accounts/${encodeURIComponent(currentDeleteTargetKey)}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        let data = {};
+        try {
+          data = await resp.json();
+        } catch (_) {
+          data = {};
+        }
+
+        if (resp.ok && data && data.success) {
+          showToast('账号已删除', 'material-symbols:check-circle');
+          closeDeleteModal();
+          await loadAccountPoolAccounts();
+        } else {
+          showToast(`删除失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+        }
+      } catch (e) {
+        showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+      }
+    }
+
+    async function submitAccountForm() {
+      if (apFormMode === 'batch') {
+        await submitBatchAccounts();
+        return;
+      }
+
+      const platformEl = document.getElementById('apPlatform');
+      const displayNameEl = document.getElementById('apDisplayName');
+      const passwordEl = document.getElementById('apPassword');
+      const is2faEl = document.getElementById('apIs2faEnabled');
+      const twofaPwdEl = document.getElementById('ap2faPassword');
+
+      const platform = platformEl ? platformEl.value : '';
+      const display_name = displayNameEl ? displayNameEl.value.trim() : '';
+      const password = passwordEl ? passwordEl.value : '';
+      const is_2fa_enabled = !!(is2faEl && is2faEl.checked);
+      const twofa_password = twofaPwdEl ? twofaPwdEl.value.trim() : '';
+
+      if (!platform || !display_name) {
+        showToast('请填写：主平台 / 账号显示名称', 'material-symbols:error');
+        return;
+      }
+
+      if (apFormMode === 'add' && !password) {
+        showToast('请填写：密码', 'material-symbols:error');
+        return;
+      }
+      if (is_2fa_enabled && !twofa_password && apFormMode === 'add') {
+        showToast('已开启 2FA，请填写 2FA 平台密码', 'material-symbols:error');
+        return;
+      }
+
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      showToast(apFormMode === 'edit' ? '正在保存修改...' : '正在保存账号到资源池...', 'material-symbols:sync');
+
+      try {
+        const isEdit = apFormMode === 'edit' && apEditingKey;
+        const url = isEdit ? `/accountpool/accounts/${encodeURIComponent(apEditingKey)}` : '/accountpool/accounts';
+        const method = isEdit ? 'PUT' : 'POST';
+
+        const payload = { platform, display_name, is_2fa_enabled };
+        if (!isEdit) {
+          payload.password = password;
+          if (is_2fa_enabled) payload.twofa_password = twofa_password;
+        } else {
+          if (password && password.trim()) payload.password = password;
+          if (!is_2fa_enabled) {
+            payload.twofa_password = null;
+          } else if (twofa_password) {
+            payload.twofa_password = twofa_password;
+          }
+        }
+
+        const resp = await fetch(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+
+        let data = {};
+        try {
+          data = await resp.json();
+        } catch (_) {
+          data = {};
+        }
+
+        if (resp.ok && data && data.success) {
+          toggleSidePanel(false);
+          if (displayNameEl) displayNameEl.value = '';
+          if (passwordEl) passwordEl.value = '';
+          if (is2faEl) is2faEl.checked = false;
+          if (twofaPwdEl) twofaPwdEl.value = '';
+          update2faInputsVisibility();
+          showToast(apFormMode === 'edit' ? '修改已保存！' : '账号保存成功！', 'material-symbols:check-circle');
+          await loadAccountPoolAccounts();
+        } else {
+          showToast(`保存失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+        }
+      } catch (e) {
+        showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+      }
+    }
+
+    function parseBatchLines(text) {
+      const lines = String(text || '').split(/\r?\n/);
+      const items = [];
+      const errors = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        const line = String(raw || '').trim();
+        if (!line) continue;
+        // 允许前面加 # 注释
+        if (line.startsWith('#')) continue;
+
+        const parts = line.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          errors.push({ lineNo: i + 1, line, reason: '格式错误：需要“账号 密码”' });
+          continue;
+        }
+
+        const account = parts[0].trim();
+        const password = parts.slice(1).join(' ').trim();
+        if (!account || !password) {
+          errors.push({ lineNo: i + 1, line, reason: '账号或密码为空' });
+          continue;
+        }
+        items.push({ account, password, lineNo: i + 1 });
+      }
+
+      return { items, errors };
+    }
+
+    async function submitBatchAccounts() {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      const platformEl = document.getElementById('apPlatform');
+      const batchEl = document.getElementById('apBatchText');
+      const platform = platformEl ? String(platformEl.value || '') : '';
+      const text = batchEl ? String(batchEl.value || '') : '';
+
+      if (!platform) {
+        showToast('请选择主平台', 'material-symbols:error');
+        return;
+      }
+
+      const parsed = parseBatchLines(text);
+      const items = parsed.items;
+      if (!items.length) {
+        const msg = parsed.errors.length ? `批量内容有误：第 ${parsed.errors[0].lineNo} 行 ${parsed.errors[0].reason}` : '请粘贴批量账号内容';
+        showToast(msg, 'material-symbols:error');
+        return;
+      }
+
+      if (parsed.errors.length) {
+        showToast(`已忽略 ${parsed.errors.length} 行无效数据（例如第 ${parsed.errors[0].lineNo} 行）`, 'material-symbols:warning');
+      }
+
+      let ok = 0;
+      let fail = 0;
+      const failSamples = [];
+
+      showToast(`开始导入：共 ${items.length} 条...`, 'material-symbols:sync');
+
+      for (let idx = 0; idx < items.length; idx++) {
+        const it = items[idx];
+        const account = it.account;
+        const password = it.password;
+
+        // 约定：账号写入 display_name 和 uid，便于后续 RPA 使用 uid 优先作为邮箱
+        const payload = {
+          platform,
+          display_name: account,
+          uid: account,
+          password
+        };
+
+        try {
+          const resp = await fetch('/accountpool/accounts', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(payload)
+          });
+
+          let data = {};
+          try {
+            data = await resp.json();
+          } catch (_) {
+            data = {};
+          }
+
+          if (resp.ok && data && data.success) {
+            ok++;
+          } else {
+            fail++;
+            if (failSamples.length < 3) {
+              failSamples.push(`第${it.lineNo}行：${data.detail || data.error || '未知错误'}`);
+            }
+          }
+        } catch (e) {
+          fail++;
+          if (failSamples.length < 3) {
+            failSamples.push(`第${it.lineNo}行：网络错误 ${e.message}`);
+          }
+        }
+
+        // 轻微节流，避免打爆后端
+        if ((idx + 1) % 10 === 0) {
+          showToast(`导入进度：${idx + 1}/${items.length}（成功${ok}，失败${fail}）`, 'material-symbols:sync');
+        }
+        await new Promise(r => setTimeout(r, 80));
+      }
+
+      await loadAccountPoolAccounts();
+
+      if (fail === 0) {
+        toggleSidePanel(false);
+        showToast(`导入完成：成功 ${ok} 条`, 'material-symbols:check-circle');
+      } else {
+        const sample = failSamples.length ? `；失败示例：${failSamples.join('；')}` : '';
+        showToast(`导入完成：成功 ${ok} 条，失败 ${fail} 条${sample}`, 'material-symbols:warning');
+      }
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatTs(ts) {
+      if (!ts) return '-';
+      try {
+        const d = new Date(Number(ts) * 1000);
+        if (isNaN(d.getTime())) return '-';
+        return d.toLocaleString('zh-CN', { hour12: false });
+      } catch (_) {
+        return '-';
+      }
+    }
+
+    function pickBadgeClass(index) {
+      const palette = [
+        { bg: 'bg-indigo-100', fg: 'text-indigo-600' },
+        { bg: 'bg-sky-100', fg: 'text-sky-600' },
+        { bg: 'bg-pink-100', fg: 'text-pink-600' },
+        { bg: 'bg-emerald-100', fg: 'text-emerald-600' },
+        { bg: 'bg-amber-100', fg: 'text-amber-600' },
+      ];
+      return palette[index % palette.length];
+    }
+
+    function computePersistedStatus(item) {
+      const st = String(item?.last_validate_status || '').toLowerCase();
+      const ok = item?.last_validate_ok;
+      if (st === 'queued' || st === 'running') {
+        return { text: '验证中', dot: 'bg-blue-500', cls: 'text-blue-600' };
+      }
+      if (ok === 1 || st === 'success') {
+        return { text: '验证成功', dot: 'bg-emerald-500', cls: 'text-emerald-600' };
+      }
+      if ((ok === 0 || st === 'failed') && item?.last_validate_at) {
+        return { text: '验证失败', dot: 'bg-red-500', cls: 'text-red-500' };
+      }
+      return { text: '未验证', dot: 'bg-gray-400', cls: 'text-gray-400' };
+    }
+
+    function updateAccountPoolStats(items, totalOverride, truncated) {
+      const totalEl = document.getElementById('apStatTotal');
+      const aliveEl = document.getElementById('apStatAlive');
+      const failedEl = document.getElementById('apStatFailed');
+      const todayEl = document.getElementById('apStatToday');
+
+      const list = Array.isArray(items) ? items : [];
+      const total = Number.isFinite(Number(totalOverride)) ? Number(totalOverride) : list.length;
+
+      const okCount = list.filter(i => (i?.last_validate_ok === 1) || (String(i?.last_validate_status || '').toLowerCase() === 'success')).length;
+      const failedCount = list.filter(i => ((i?.last_validate_ok === 0) || (String(i?.last_validate_status || '').toLowerCase() === 'failed')) && i?.last_validate_at).length;
+
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      const todayCount = list.filter(i => {
+        const ts = i?.last_validate_at;
+        if (!ts) return false;
+        const d = new Date(Number(ts) * 1000);
+        return !isNaN(d.getTime()) && d >= start;
+      }).length;
+
+      const suffix = truncated ? '+' : '';
+      if (totalEl) totalEl.innerText = String(total);
+      if (aliveEl) aliveEl.innerText = String(okCount) + suffix;
+      if (failedEl) failedEl.innerText = String(failedCount) + suffix;
+      if (todayEl) todayEl.innerText = String(todayCount) + suffix;
+    }
+
+    function getTotalPages() {
+      const t = Math.max(0, Number(apTotal) || 0);
+      return Math.max(1, Math.ceil(t / AP_PAGE_SIZE));
+    }
+
+    function renderPagination() {
+      const totalPages = getTotalPages();
+      if (apPage > totalPages) apPage = totalPages;
+      if (apPage < 1) apPage = 1;
+
+      const infoEl = document.getElementById('apPaginationInfo');
+      const prevBtn = document.getElementById('apPrevPage');
+      const nextBtn = document.getElementById('apNextPage');
+      const indicatorEl = document.getElementById('apPageIndicator');
+
+      const from = apTotal === 0 ? 0 : (apPage - 1) * AP_PAGE_SIZE + 1;
+      const to = Math.min(apTotal, apPage * AP_PAGE_SIZE);
+
+      if (indicatorEl) indicatorEl.innerText = `${apPage}/${totalPages}`;
+      if (infoEl) {
+        infoEl.innerText = `显示 ${from}-${to} / 共 ${apTotal} 条`;
+      }
+      if (prevBtn) prevBtn.disabled = apPage <= 1;
+      if (nextBtn) nextBtn.disabled = apPage >= totalPages;
+    }
+
+    async function fetchAccountPoolPage(token, page) {
+      const p = Math.max(1, Number(page) || 1);
+      const offset = (p - 1) * AP_PAGE_SIZE;
+      const params = new URLSearchParams({ offset: String(offset), limit: String(AP_PAGE_SIZE) });
+      const resp = await fetch(`/accountpool/accounts?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      let data = {};
+      try {
+        data = await resp.json();
+      } catch (_) {
+        data = {};
+      }
+      return { resp, data };
+    }
+
+    async function refreshStatsForCurrentFilter(token) {
+      // 尽量统计全量，避免统计卡片随分页变化。
+      const MAX_ITEMS = 1000;
+      const BATCH = 200;
+
+      let offset = 0;
+      let all = [];
+      let total = 0;
+
+      while (offset < MAX_ITEMS) {
+        const params = new URLSearchParams({ offset: String(offset), limit: String(BATCH) });
+        const resp = await fetch(`/accountpool/accounts?${params.toString()}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data || !data.success) break;
+
+        total = Number(data.total) || 0;
+        const items = Array.isArray(data.items) ? data.items : [];
+        all = all.concat(items);
+
+        if (items.length < BATCH) break;
+        if (all.length >= total) break;
+        offset += BATCH;
+      }
+
+      const truncated = total > 0 && all.length < total;
+      updateAccountPoolStats(all, total, truncated);
+    }
+
+    async function loadAccountPoolAccounts(opts) {
+      const tbody = document.getElementById('apAccountsTbody');
+      if (!tbody) return;
+
+      const token = getAuthToken();
+      if (!token) {
+        tbody.innerHTML = '<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">未登录：请先在控制面板登录后再查看账号列表</td></tr>';
+        return;
+      }
+
+      if (opts && typeof opts.page !== 'undefined') {
+        apPage = Math.max(1, Number(opts.page) || 1);
+      }
+
+      tbody.innerHTML = '<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">加载中...</td></tr>';
+
+      try {
+        const { resp, data } = await fetchAccountPoolPage(token, apPage);
+
+        if (!resp.ok || !data || !data.success) {
+          tbody.innerHTML = `<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-red-500" colspan="5">加载失败: ${escapeHtml(data.detail || data.error || '未知错误')}</td></tr>`;
+          apTotal = 0;
+          renderPagination();
+          return;
+        }
+
+        apTotal = Number(data.total) || 0;
+        renderPagination();
+
+        const items = Array.isArray(data.items) ? data.items : [];
+        if (items.length === 0) {
+          // 如果不是第一页但本页没数据，尝试回退一页（删除/搜索变更后常见）
+          const totalPages = getTotalPages();
+          if (apTotal > 0 && apPage > totalPages) {
+            apPage = totalPages;
+            return await loadAccountPoolAccounts();
+          }
+
+          tbody.innerHTML = '<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">暂无账号数据</td></tr>';
+          updateAccountPoolStats([], apTotal, false);
+          return;
+        }
+
+        // 先用本页数据快速刷新；随后后台尽力拉全量做更准统计
+        updateAccountPoolStats(items, apTotal, false);
+        refreshStatsForCurrentFilter(token).catch(() => {});
+
+        tbody.innerHTML = items.map((item, idx) => {
+          const name = escapeHtml(item.display_name || '-');
+          const uid = item.uid ? escapeHtml(item.uid) : '';
+          const platform = escapeHtml(item.platform || '-');
+          const initials = escapeHtml((item.display_name || 'NA').trim().slice(0, 2).toUpperCase());
+          const badge = pickBadgeClass(idx);
+          const persisted = computePersistedStatus(item);
+          const lastValidateAt = formatTs(item.last_validate_at);
+          const accountKeyRaw = String(item.account_key || '');
+          const safeKey = accountKeyRaw.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+          return `
+            <tr class="hover:bg-gray-50/50 transition-colors" data-account-key="${escapeHtml(accountKeyRaw)}" data-safe-key="${escapeHtml(safeKey)}">
+              <td class="px-4 sm:px-6 lg:px-8 py-5">
+                <div class="flex items-center space-x-3">
+                  <div class="w-10 h-10 rounded-lg ${badge.bg} flex items-center justify-center ${badge.fg} font-bold">${initials}</div>
+                  <div>
+                    <p class="font-semibold text-slate-800">${name}</p>
+                    <p class="text-xs text-slate-400">${uid ? `UID: ${uid}` : 'UID: -'}</p>
+                    ${item.is_2fa_enabled ? '<p class="text-[11px] text-amber-600 mt-0.5">2FA 已启用</p>' : ''}
+                  </div>
+                </div>
+              </td>
+              <td class="px-4 sm:px-6 lg:px-8 py-5">
+                <span class="px-3 py-1 rounded-full bg-slate-100 text-xs font-medium text-slate-600">${platform}</span>
+              </td>
+              <td class="px-4 sm:px-6 lg:px-8 py-5">
+                <span id="apStatus_${escapeHtml(safeKey)}" class="flex items-center space-x-1.5 ${escapeHtml(persisted.cls)}">
+                  <span class="w-2 h-2 rounded-full ${escapeHtml(persisted.dot)}"></span>
+                  <span class="text-sm font-medium">${escapeHtml(persisted.text)}</span>
+                </span>
+              </td>
+              <td id="apLastValidate_${escapeHtml(safeKey)}" class="px-4 sm:px-6 lg:px-8 py-5 text-sm text-gray-500">${escapeHtml(lastValidateAt)}</td>
+              <td class="px-4 sm:px-6 lg:px-8 py-5">
+                <div class="flex items-center space-x-4">
+                  <button
+                    class="text-slate-400 hover:text-blue-600 transition-colors"
+                    title="验证"
+                    data-account-key="${escapeHtml(accountKeyRaw)}"
+                    data-safe-key="${escapeHtml(safeKey)}"
+                    onclick="validateFromButton(this)">
+                    <span class="iconify text-xl" data-icon="material-symbols:verified-outline"></span>
+                  </button>
+                  <button
+                    class="text-slate-400 hover:text-slate-700 transition-colors"
+                    title="编辑"
+                    data-account-key="${escapeHtml(item.account_key || '')}"
+                    data-platform="${escapeHtml(item.platform || '')}"
+                    data-display-name="${escapeHtml(item.display_name || '')}"
+                    data-is-2fa-enabled="${item.is_2fa_enabled ? 'true' : 'false'}"
+                    onclick="openEditFromButton(this)">
+                    <span class="iconify text-xl" data-icon="material-symbols:edit-outline"></span>
+                  </button>
+                  <button class="text-slate-400 hover:text-red-500 transition-colors" title="删除" onclick="confirmDelete('${escapeHtml(item.display_name || '')}', '${escapeHtml(item.account_key || '')}')">
+                    <span class="iconify text-xl" data-icon="material-symbols:delete-outline"></span>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-red-500" colspan="5">网络错误: ${escapeHtml(e.message)}</td></tr>`;
+        apTotal = 0;
+        renderPagination();
+        updateAccountPoolStats([], 0, false);
+      }
+    }
+
+    function showToast(msg, icon) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').innerText = msg;
+      document.getElementById('toastIcon').setAttribute('data-icon', icon);
+      toast.classList.remove('opacity-0');
+      toast.classList.remove('translate-x-6');
+      setTimeout(() => {
+        toast.classList.add('opacity-0');
+        toast.classList.add('translate-x-6');
+      }, 3000);
+    }
+
+    function getAccountStatusText(safeKey) {
+      const el = document.getElementById(`apStatus_${safeKey}`);
+      if (!el) return '';
+      const label = el.querySelector('span.text-sm');
+      return String((label && label.innerText) || '').trim();
+    }
+
+    function isAccountValidatedSuccess(safeKey) {
+      const el = document.getElementById(`apStatus_${safeKey}`);
+      const text = getAccountStatusText(safeKey);
+      if (text.includes('验证成功') || text.includes('已验证')) return true;
+      if (el && (el.className || '').includes('text-emerald-600')) return true;
+      return false;
+    }
+
+    function showBatchValidateDialog(defaultConcurrency) {
+      return new Promise((resolve) => {
+        let conc = Number(defaultConcurrency);
+        if (!Number.isFinite(conc) || conc <= 0) conc = 5;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4';
+        overlay.innerHTML = `
+          <div class="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200">
+            <div class="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <div class="text-base font-semibold text-slate-800">批量验活</div>
+                <div class="text-xs text-slate-500 mt-0.5">并发由后端控制，前端仅触发任务</div>
+              </div>
+              <button data-action="cancel" class="text-slate-400 hover:text-slate-700 transition-colors" title="关闭">
+                <span class="iconify text-xl" data-icon="material-symbols:close"></span>
+              </button>
+            </div>
+
+            <div class="px-5 py-4 space-y-4">
+              <div>
+                <label class="text-sm text-slate-700 font-medium">并发数</label>
+                <input id="apBatchConcInput" type="number" min="1" step="1"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                  value="${String(conc)}" />
+                <div class="text-xs text-slate-400 mt-1">默认 5（后端会限制最大并发）</div>
+              </div>
+
+              <label class="flex items-start space-x-2 text-sm text-slate-700">
+                <input id="apBatchSkipValidated" type="checkbox" class="mt-1 rounded border-slate-300" checked />
+                <span>跳过已验证成功的账号（不重新验证）</span>
+              </label>
+            </div>
+
+            <div class="px-5 pb-4 pt-2 flex items-center justify-end space-x-2">
+              <button data-action="cancel" class="px-4 py-2 rounded-lg text-sm bg-slate-100 text-slate-700 hover:bg-slate-200">取消</button>
+              <button data-action="ok" class="px-4 py-2 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700">开始</button>
+            </div>
+          </div>
+        `;
+
+        const cleanup = () => {
+          try { overlay.remove(); } catch (_) {}
+        };
+
+        const finishCancel = () => {
+          cleanup();
+          resolve({ ok: false });
+        };
+
+        const finishOk = () => {
+          const inputEl = overlay.querySelector('#apBatchConcInput');
+          const skipEl = overlay.querySelector('#apBatchSkipValidated');
+          let v = Number((inputEl && inputEl.value) || conc);
+          if (!Number.isFinite(v) || v < 1) v = conc;
+          v = Math.floor(v);
+          try { localStorage.setItem('accountpool_validate_concurrency', String(v)); } catch (_) {}
+          cleanup();
+          resolve({ ok: true, concurrency: v, skipValidated: !!(skipEl && skipEl.checked) });
+        };
+
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) finishCancel();
+        });
+
+        overlay.querySelectorAll('[data-action]').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const action = (e.currentTarget && e.currentTarget.getAttribute('data-action')) || '';
+            if (action === 'ok') finishOk();
+            else finishCancel();
+          });
+        });
+
+        document.body.appendChild(overlay);
+
+        const inputEl = overlay.querySelector('#apBatchConcInput');
+        if (inputEl) {
+          try { inputEl.focus(); inputEl.select(); } catch (_) {}
+          inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') finishOk();
+            if (e.key === 'Escape') finishCancel();
+          });
+        }
+      });
+    }
+
+    function setAccountStatus(safeKey, text, color) {
+      const el = document.getElementById(`apStatus_${safeKey}`);
+      if (!el) return;
+      const dot = el.querySelector('span.w-2');
+      const label = el.querySelector('span.text-sm');
+      if (label) label.innerText = text;
+      if (dot) {
+        dot.className = 'w-2 h-2 rounded-full ' + (color || 'bg-gray-400');
+      }
+      const cls = (color === 'bg-emerald-500')
+        ? 'text-emerald-600'
+        : (color === 'bg-red-500')
+          ? 'text-red-500'
+          : (color === 'bg-blue-500')
+            ? 'text-blue-600'
+            : 'text-gray-400';
+      el.className = 'flex items-center space-x-1.5 ' + cls;
+    }
+
+    function setAccountLastValidate(safeKey, ts) {
+      const el = document.getElementById(`apLastValidate_${safeKey}`);
+      if (!el) return;
+      el.innerText = formatTs(ts);
+    }
+
+    async function pollValidateJob(jobId, safeKey) {
+      const token = getAuthToken();
+      if (!token) return;
+      const started = Date.now();
+
+      while (Date.now() - started < 15 * 60 * 1000) {
+        try {
+          const resp = await fetch(`/accountpool/validate/status/${encodeURIComponent(jobId)}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data || !data.success) {
+            setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+            return;
+          }
+          const job = data.job || {};
+          const st = job.status;
+          if (st === 'queued' || st === 'running') {
+            setAccountStatus(safeKey, '验证中', 'bg-blue-500');
+          } else if (st === 'success') {
+            setAccountStatus(safeKey, '验证成功', 'bg-emerald-500');
+            setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+            return;
+          } else {
+            setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+            setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+            if (job.error) showToast(`验证失败: ${job.error}`, 'material-symbols:error');
+            return;
+          }
+        } catch (e) {
+          setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+          showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+          return;
+        }
+
+        await new Promise(r => setTimeout(r, 1200));
+      }
+
+      setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+      showToast('验证超时：可能卡在验证码/2FA/授权页', 'material-symbols:warning');
+    }
+
+    async function validateFromButton(btn) {
+      if (!btn || !btn.dataset) return;
+      const accountKey = btn.dataset.accountKey || '';
+      const safeKey = btn.dataset.safeKey || '';
+      if (!accountKey || !safeKey) {
+        showToast('缺少账号标识，无法验证', 'material-symbols:error');
+        return;
+      }
+
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      setAccountStatus(safeKey, '验证中', 'bg-blue-500');
+      showToast('已提交验证任务（浏览器自动化可能需要一些时间）...', 'material-symbols:shield-sync');
+
+      try {
+        const resp = await fetch(`/accountpool/accounts/${encodeURIComponent(accountKey)}/validate?external_browser=0`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data || !data.success || !data.job_id) {
+          setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+          showToast(`提交失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        await pollValidateJob(String(data.job_id), safeKey);
+        // 重新拉取列表：刷新持久化状态 + 统计卡片
+        await loadAccountPoolAccounts();
+      } catch (e) {
+        setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+        showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+      }
+    }
+
+    // 图表初始化
+    window.addEventListener('load', function () {
+      const is2faEl = document.getElementById('apIs2faEnabled');
+      if (is2faEl) is2faEl.addEventListener('change', update2faInputsVisibility);
+      update2faInputsVisibility();
+
+      // 分页按钮事件
+      const prevBtn = document.getElementById('apPrevPage');
+      const nextBtn = document.getElementById('apNextPage');
+      if (prevBtn) prevBtn.addEventListener('click', () => {
+        if (apPage > 1) {
+          apPage -= 1;
+          loadAccountPoolAccounts({ page: apPage });
+        }
+      });
+      if (nextBtn) nextBtn.addEventListener('click', () => {
+        const totalPages = getTotalPages();
+        if (apPage < totalPages) {
+          apPage += 1;
+          loadAccountPoolAccounts({ page: apPage });
+        }
+      });
+
+      loadAccountPoolAccounts();
+      const activityChart = echarts.init(document.getElementById('activityChart'));
+      activityChart.setOption({
+        tooltip: { trigger: 'axis' },
+        grid: { left: '3%', right: '4%', bottom: '3%', top: '3%', containLabel: true },
+        xAxis: { type: 'category', data: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'], axisLine: { show: false } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
+        series: [{
+          data: [0, 0, 0, 0, 0, 0],
+          type: 'line',
+          smooth: true,
+          showSymbol: false,
+          color: '#3b82f6',
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(59, 130, 246, 0.4)' },
+              { offset: 1, color: 'rgba(59, 130, 246, 0)' }
+            ])
+          }
+        }]
+      });
+
+      const distChart = echarts.init(document.getElementById('distChart'));
+      distChart.setOption({
+        tooltip: { trigger: 'item' },
+        legend: { bottom: '5%', left: 'center', itemWidth: 10, itemHeight: 10 },
+        series: [{
+          name: '账号来源',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          avoidLabelOverlap: false,
+          itemStyle: { borderRadius: 10, borderColor: '#fff', borderWidth: 2 },
+          label: { show: false },
+          data: [
+            { value: 0, name: 'Facebook', itemStyle: { color: '#6366f1' } },
+            { value: 0, name: 'Twitter', itemStyle: { color: '#38bdf8' } },
+            { value: 0, name: 'TikTok', itemStyle: { color: '#f472b6' } },
+            { value: 0, name: 'Google', itemStyle: { color: '#fb923c' } }
+          ]
+        }]
+      });
+    });
+
+    // 批量验活 校验交互
+    document.getElementById('btnValidateAll').addEventListener('click', function () {
+      (async () => {
+        const token = getAuthToken();
+        if (!token) {
+          showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+          return;
+        }
+
+        const buttons = Array.from(document.querySelectorAll('button[title="验证"][data-account-key]'));
+        if (buttons.length === 0) {
+          showToast('暂无账号可验证', 'material-symbols:info');
+          return;
+        }
+
+        // 并发控制交给后端：前端只触发一次批量任务，然后按 job_id 轮询。
+        // 弹窗支持：并发数 + “跳过已验证成功”选项；取消则直接退出。
+        let conc = Number(localStorage.getItem('accountpool_validate_concurrency') || '5');
+        if (!Number.isFinite(conc) || conc <= 0) conc = 5;
+        const dlg = await showBatchValidateDialog(conc);
+        if (!dlg || !dlg.ok) {
+          showToast('已取消批量验证', 'material-symbols:info');
+          return;
+        }
+        conc = Number(dlg.concurrency) || conc;
+        const skipValidated = dlg.skipValidated !== false;
+
+        // 收集本页账号
+        const pairsAll = buttons
+          .map(btn => ({
+            accountKey: String(btn.dataset.accountKey || ''),
+            safeKey: String(btn.dataset.safeKey || '')
+          }))
+          .filter(x => x.accountKey && x.safeKey);
+
+        if (pairsAll.length === 0) {
+          showToast('缺少账号标识，无法验证', 'material-symbols:error');
+          return;
+        }
+
+        // 可选：跳过已验证成功的账号
+        const pairs = [];
+        let skipped = 0;
+        for (const p of pairsAll) {
+          if (skipValidated && isAccountValidatedSuccess(p.safeKey)) {
+            skipped += 1;
+            continue;
+          }
+          pairs.push(p);
+        }
+
+        if (pairs.length === 0) {
+          if (skipped > 0) {
+            showToast(`已跳过 ${skipped} 个已验证账号，本页无需重新验证`, 'material-symbols:check-circle');
+          } else {
+            showToast('本页无需验证', 'material-symbols:info');
+          }
+          return;
+        }
+
+        // 先把 UI 状态置为“排队/验证中”
+        for (const p of pairs) {
+          setAccountStatus(p.safeKey, '排队中', 'bg-slate-500');
+        }
+
+        showToast(
+          `已提交本页批量验证：${pairs.length} 个账号，并发 ${conc}${skipped > 0 ? `（跳过 ${skipped} 个已验证）` : ''}`,
+          'material-symbols:shield-sync'
+        );
+
+        try {
+          const resp = await fetch(`/accountpool/validate/batch/task?concurrency=${encodeURIComponent(String(conc))}&external_browser=0`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ account_keys: pairs.map(x => x.accountKey) })
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data || !data.success || !data.batch_task_id) {
+            showToast(`提交失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+            return;
+          }
+
+          const batchTaskId = data.batch_task_id;
+          const total = data.total || 0;
+
+          showToast(
+            `批量验证任务已创建：共 ${total} 个账号，任务 ID: ${batchTaskId}`,
+            'material-symbols:check-circle'
+          );
+
+          // 自动打开批量任务管理面板
+          setTimeout(() => {
+            showBatchTasksPanel();
+          }, 500);
+
+        } catch (e) {
+          showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+        }
+      })();
+    });
+
+    // 批量任务管理
+    let currentBatchTaskId = null;
+    let batchTaskPollInterval = null;
+
+    document.getElementById('btnBatchTasks').addEventListener('click', function() {
+      showBatchTasksPanel();
+    });
+
+    async function showBatchTasksPanel() {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      // 清除之前的定时器
+      if (batchTaskPollInterval) {
+        clearInterval(batchTaskPollInterval);
+        batchTaskPollInterval = null;
+      }
+
+      // 创建批量任务管理弹窗
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[100] batch-task-overlay';
+      overlay.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+          <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <h2 class="text-lg font-bold text-slate-800">批量验证任务管理</h2>
+              <p class="text-xs text-gray-400 mt-1">查看和管理批量验证任务的执行进度</p>
+            </div>
+            <button onclick="closeBatchTasksPanel()" class="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+              <span class="iconify text-2xl text-gray-400" data-icon="material-symbols:close"></span>
+            </button>
+          </div>
+
+          <div class="flex-1 overflow-y-auto p-6">
+            <div id="batchTaskList" class="space-y-4">
+              <div class="text-center text-gray-400 py-8">
+                <span class="iconify text-4xl mb-2" data-icon="material-symbols:hourglass-empty"></span>
+                <p>加载中...</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50">
+            <div class="flex items-center justify-between text-sm">
+              <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2">
+                  <span class="w-3 h-3 rounded-full bg-blue-500"></span>
+                  <span class="text-gray-600">运行中</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <span class="w-3 h-3 rounded-full bg-emerald-500"></span>
+                  <span class="text-gray-600">已完成</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <span class="w-3 h-3 rounded-full bg-red-500"></span>
+                  <span class="text-gray-600">失败</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <span class="w-3 h-3 rounded-full bg-orange-500"></span>
+                  <span class="text-gray-600">已取消</span>
+                </div>
+              </div>
+              <button onclick="refreshBatchTasks()" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 transition-all">
+                <span class="iconify" data-icon="material-symbols:refresh"></span>
+                <span>刷新</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      // 设置定时刷新，每3秒刷新一次
+      batchTaskPollInterval = setInterval(() => {
+        refreshBatchTasks();
+      }, 3000);
+
+      refreshBatchTasks();
+    }
+
+    function closeBatchTasksPanel() {
+      if (batchTaskPollInterval) {
+        clearInterval(batchTaskPollInterval);
+        batchTaskPollInterval = null;
+      }
+      const panels = document.querySelectorAll('.batch-task-overlay');
+      panels.forEach(panel => panel.remove());
+    }
+
+    async function refreshBatchTasks() {
+      const token = getAuthToken();
+      if (!token) return;
+
+      try {
+        // 获取所有批量任务
+        const resp = await fetch('/accountpool/validate/batch/tasks', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || !data || !data.success) {
+          showToast('获取批量任务列表失败', 'material-symbols:error');
+          return;
+        }
+
+        const tasks = data.tasks || [];
+        const taskList = document.getElementById('batchTaskList');
+        if (!taskList) return;
+
+        if (tasks.length === 0) {
+          taskList.innerHTML = `
+            <div class="text-center text-gray-400 py-8">
+              <span class="iconify text-4xl mb-2" data-icon="material-symbols:inbox"></span>
+              <p>暂无批量验证任务</p>
+            </div>
+          `;
+          return;
+        }
+
+        taskList.innerHTML = tasks.map(task => {
+          const statusColors = {
+            'pending': 'bg-gray-500',
+            'running': 'bg-blue-500',
+            'completed': 'bg-emerald-500',
+            'failed': 'bg-red-500',
+            'cancelled': 'bg-orange-500',
+            'cancelling': 'bg-orange-500'
+          };
+          const statusTexts = {
+            'pending': '等待中',
+            'running': '运行中',
+            'completed': '已完成',
+            'failed': '失败',
+            'cancelled': '已取消',
+            'cancelling': '取消中'
+          };
+          const progress = task.total > 0 ? Math.round((task.completed / task.total) * 100) : 0;
+          const canCancel = task.status === 'pending' || task.status === 'running';
+
+          return `
+            <div class="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+              <div class="flex items-start justify-between mb-3">
+                <div class="flex items-center space-x-3">
+                  <span class="w-3 h-3 rounded-full ${statusColors[task.status] || 'bg-gray-400'}"></span>
+                  <div>
+                    <div class="font-medium text-slate-800">任务 ID: ${task.batch_task_id}</div>
+                    <div class="text-xs text-gray-400 mt-1">
+                      创建时间: ${new Date(task.created_at * 1000).toLocaleString('zh-CN')}
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center space-x-2">
+                  ${canCancel ? `
+                    <button onclick="cancelBatchTask('${task.batch_task_id}')" class="px-3 py-1.5 rounded-lg text-sm bg-red-50 text-red-600 hover:bg-red-100 transition-all">
+                      取消任务
+                    </button>
+                  ` : ''}
+                  <button onclick="showBatchTaskJobs('${task.batch_task_id}')" class="px-3 py-1.5 rounded-lg text-sm bg-blue-50 text-blue-600 hover:bg-blue-100 transition-all">
+                    查看详情
+                  </button>
+                  <button onclick="confirmDeleteBatchTask('${task.batch_task_id}')" class="text-slate-400 hover:text-red-500 transition-colors p-1.5 rounded-lg hover:bg-red-50" title="删除任务">
+                    <span class="iconify text-xl" data-icon="material-symbols:delete-outline"></span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="space-y-2">
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-gray-600">进度: ${task.completed}/${task.total}</span>
+                  <span class="text-gray-400">${progress}%</span>
+                </div>
+                <div class="w-full bg-gray-100 rounded-full h-2">
+                  <div class="bg-blue-500 h-2 rounded-full transition-all" style="width: ${progress}%"></div>
+                </div>
+                <div class="flex items-center space-x-4 text-sm">
+                  <span class="text-emerald-600">成功: ${task.success}</span>
+                  <span class="text-red-600">失败: ${task.failed}</span>
+                  <span class="text-gray-600">状态: ${statusTexts[task.status] || task.status}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+      } catch (e) {
+        console.error('获取批量任务列表失败:', e);
+        showToast('获取批量任务列表失败', 'material-symbols:error');
+      }
+    }
+
+    async function cancelBatchTask(batchTaskId) {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态', 'material-symbols:warning');
+        return;
+      }
+
+      if (!confirm('确定要取消这个批量验证任务吗？')) {
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/accountpool/validate/batch/task/${batchTaskId}/cancel`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || !data || !data.success) {
+          showToast(`取消任务失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        showToast('批量任务取消请求已提交', 'material-symbols:check-circle');
+        refreshBatchTasks();
+      } catch (e) {
+        console.error('取消批量任务失败:', e);
+        showToast('取消批量任务失败', 'material-symbols:error');
+      }
+    }
+
+    async function showBatchTaskJobs(batchTaskId) {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态', 'material-symbols:warning');
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/accountpool/validate/batch/task/${batchTaskId}/jobs`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || !data || !data.success) {
+          showToast('获取任务详情失败', 'material-symbols:error');
+          return;
+        }
+
+        const jobs = data.jobs || [];
+
+        // 创建任务详情弹窗
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[101]';
+        overlay.innerHTML = `
+          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h2 class="text-lg font-bold text-slate-800">批量任务详情</h2>
+                <p class="text-xs text-gray-400 mt-1">任务 ID: ${batchTaskId}</p>
+              </div>
+              <button onclick="this.closest('.fixed').remove()" class="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+                <span class="iconify text-2xl text-gray-400" data-icon="material-symbols:close"></span>
+              </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6">
+              <div class="space-y-2">
+                ${jobs.map(job => {
+                  const statusColors = {
+                    'queued': 'bg-gray-500',
+                    'running': 'bg-blue-500',
+                    'success': 'bg-emerald-500',
+                    'failed': 'bg-red-500',
+                    'cancelled': 'bg-orange-500'
+                  };
+                  const statusTexts = {
+                    'queued': '排队中',
+                    'running': '验证中',
+                    'success': '成功',
+                    'failed': '失败',
+                    'cancelled': '已取消'
+                  };
+                  return `
+                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <div class="flex items-center space-x-3">
+                        <span class="w-2 h-2 rounded-full ${statusColors[job.status] || 'bg-gray-400'}"></span>
+                        <div>
+                          <div class="text-sm font-medium text-slate-800">${job.username || job.account_key}</div>
+                          <div class="text-xs text-gray-400">${job.account_key}</div>
+                        </div>
+                      </div>
+                      <div class="flex items-center space-x-3">
+                        <div class="text-sm text-gray-600">${statusTexts[job.status] || job.status}</div>
+                        <button onclick="confirmDeleteBatchJob('${batchTaskId}', '${job.job_id}', '${job.username || job.account_key}')" class="text-slate-400 hover:text-red-500 transition-colors" title="删除任务">
+                          <span class="iconify text-xl" data-icon="material-symbols:delete-outline"></span>
+                        </button>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+      } catch (e) {
+        console.error('获取任务详情失败:', e);
+        showToast('获取任务详情失败', 'material-symbols:error');
+      }
+    }
+
+    // 删除单条任务的确认对话框
+    function confirmDeleteBatchJob(batchTaskId, jobId, accountName) {
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[102]';
+      overlay.innerHTML = `
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl">
+          <div class="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+            <span class="iconify text-3xl" data-icon="material-symbols:delete-forever-outline"></span>
+          </div>
+          <h3 class="text-xl font-bold text-center text-slate-800 mb-2">确认删除该任务？</h3>
+          <p class="text-gray-500 text-center text-sm mb-4">账号: ${accountName}</p>
+          <p class="text-gray-400 text-center text-xs mb-6">删除后该任务将被永久移除，无法恢复。</p>
+          <div class="flex space-x-3">
+            <button onclick="this.closest('.fixed').remove()" class="flex-1 py-2 px-4 rounded-xl border border-gray-200 text-slate-600 font-semibold hover:bg-gray-50">取消</button>
+            <button onclick="deleteBatchJob('${batchTaskId}', '${jobId}', this)" class="flex-1 py-2 px-4 rounded-xl bg-red-500 text-white font-semibold hover:bg-red-600 shadow-lg shadow-red-200">确认删除</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+    }
+
+    // 删除单条任务
+    async function deleteBatchJob(batchTaskId, jobId, btnElement) {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态', 'material-symbols:warning');
+        return;
+      }
+
+      try {
+        showToast('正在删除任务...', 'material-symbols:sync');
+
+        const resp = await fetch(`/accountpool/validate/batch/task/${batchTaskId}/job/${jobId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || !data || !data.success) {
+          showToast(`删除失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        showToast('任务已删除', 'material-symbols:check-circle');
+
+        // 关闭确认对话框
+        const confirmDialog = btnElement.closest('.fixed');
+        if (confirmDialog) confirmDialog.remove();
+
+        // 刷新任务详情
+        const jobDetailsDialog = document.querySelector('.fixed.inset-0.z-\[101\]');
+        if (jobDetailsDialog) {
+          jobDetailsDialog.remove();
+          // 重新打开任务详情弹窗
+          showBatchTaskJobs(batchTaskId);
+        }
+
+        // 刷新批量任务列表
+        refreshBatchTasks();
+      } catch (e) {
+        console.error('删除任务失败:', e);
+        showToast('删除任务失败', 'material-symbols:error');
+      }
+    }
+
+    // 删除批量任务的确认对话框
+    function confirmDeleteBatchTask(batchTaskId) {
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[102]';
+      overlay.innerHTML = `
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl">
+          <div class="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+            <span class="iconify text-3xl" data-icon="material-symbols:delete-forever-outline"></span>
+          </div>
+          <h3 class="text-xl font-bold text-center text-slate-800 mb-2">确认删除该批量任务？</h3>
+          <p class="text-gray-500 text-center text-sm mb-4">任务 ID: ${batchTaskId}</p>
+          <p class="text-gray-400 text-center text-xs mb-6">删除后该批量任务及其所有子任务将被永久移除，无法恢复。</p>
+          <div class="flex space-x-3">
+            <button onclick="this.closest('.fixed').remove()" class="flex-1 py-2 px-4 rounded-xl border border-gray-200 text-slate-600 font-semibold hover:bg-gray-50">取消</button>
+            <button onclick="deleteBatchTask('${batchTaskId}', this)" class="flex-1 py-2 px-4 rounded-xl bg-red-500 text-white font-semibold hover:bg-red-600 shadow-lg shadow-red-200">确认删除</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+    }
+
+    // 删除某一条批量任务
+    async function deleteBatchTask(batchTaskId, btnElement) {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态', 'material-symbols:warning');
+        return;
+      }
+
+      try {
+        showToast('正在删除批量任务...', 'material-symbols:sync');
+
+        const resp = await fetch(`/accountpool/validate/batch/task/${batchTaskId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+
+        if (!resp.ok || !data || !data.success) {
+          showToast(`删除失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        showToast('批量任务已删除', 'material-symbols:check-circle');
+
+        // 关闭确认对话框
+        const confirmDialog = btnElement.closest('.fixed');
+        if (confirmDialog) confirmDialog.remove();
+
+        // 刷新批量任务列表
+        refreshBatchTasks();
+      } catch (e) {
+        console.error('删除批量任务失败:', e);
+        showToast('删除批量任务失败', 'material-symbols:error');
+      }
+    }
+  </script>
+</body>
+</html>
+

@@ -27,11 +27,11 @@
                 <form id="loginForm" class="space-y-6">
                     <div class="space-y-2">
                         <label for="username" class="text-sm font-medium">账户</label>
-                        <input type="text" id="username" name="username" required class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" placeholder="请输入账户">
+                        <input type="text" id="username" name="username" autocomplete="username" required class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" placeholder="请输入账户">
                     </div>
                     <div class="space-y-2">
                         <label for="password" class="text-sm font-medium">密码</label>
-                        <input type="password" id="password" name="password" required class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" placeholder="请输入密码">
+                        <input type="password" id="password" name="password" autocomplete="current-password" required class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" placeholder="请输入密码">
                     </div>
                     <button type="submit" id="loginButton" class="inline-flex items-center justify-center rounded-md font-medium transition-colors bg-primary text-primary-foreground hover:bg-primary/90 h-10 w-full disabled:opacity-50">登录</button>
                 </form>
@@ -44,10 +44,104 @@
     </div>
 
     <script>
-        const form=document.getElementById('loginForm'),btn=document.getElementById('loginButton');
-        form.addEventListener('submit',async(e)=>{e.preventDefault();btn.disabled=true;btn.textContent='登录中...';try{const fd=new FormData(form),r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:fd.get('username'),password:fd.get('password')})});const d=await r.json();d.success?(localStorage.setItem('adminToken',d.token),location.href='/manage'):showToast(d.message||'登录失败','error')}catch(e){showToast('网络错误,请稍后重试','error')}finally{btn.disabled=false;btn.textContent='登录'}});
+        const form=document.getElementById('loginForm');
+        const btn=document.getElementById('loginButton');
+        const usernameInput=document.getElementById('username');
+        const passwordInput=document.getElementById('password');
+        let isSubmitting=false;
+        let autoLoginTried=false;
+        let autoLoginWatcherId=null;
+        let isRedirecting=false;
+
+        async function loginOnce(username,password,{silent=false}={}){
+            if(isSubmitting)return;
+            isSubmitting=true;
+            btn.disabled=true;
+            btn.textContent='登录中...';
+            try{
+                const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
+                const d=await r.json();
+                if(d.success){
+                    localStorage.setItem('adminToken',d.token);
+                    localStorage.setItem('gcli2api_auth_token',d.token);
+                    if(!isRedirecting){
+                        isRedirecting=true;
+                        showToast('登录成功','success');
+                        setTimeout(()=>{location.href='/manage';},700);
+                    }
+                    return;
+                }
+                if(!silent)showToast(d.message||'登录失败','error');
+            }catch(e){
+                if(!silent)showToast('网络错误,请稍后重试','error');
+            }finally{
+                isSubmitting=false;
+                btn.disabled=false;
+                btn.textContent='登录';
+            }
+        }
+
+        function tryAutoLogin(){
+            if(autoLoginTried||isSubmitting)return;
+            const username=(usernameInput.value||'').trim();
+            const password=(passwordInput.value||'').trim();
+            if(!username||!password)return;
+            autoLoginTried=true;
+            loginOnce(username,password,{silent:true});
+        }
+
+        function startAutoLoginWatcher(){
+            if(autoLoginWatcherId!==null)return;
+            const startedAt=Date.now();
+            autoLoginWatcherId=window.setInterval(()=>{
+                if(autoLoginTried||isSubmitting){
+                    clearInterval(autoLoginWatcherId);
+                    autoLoginWatcherId=null;
+                    return;
+                }
+                if(Date.now()-startedAt>1000){
+                    clearInterval(autoLoginWatcherId);
+                    autoLoginWatcherId=null;
+                    return;
+                }
+                tryAutoLogin();
+            },300);
+        }
+
+        form.addEventListener('submit',(e)=>{
+            e.preventDefault();
+            const username=(usernameInput.value||'').trim();
+            const password=(passwordInput.value||'').trim();
+            loginOnce(username,password,{silent:false});
+        });
+        usernameInput.addEventListener('input',()=>setTimeout(tryAutoLogin,0));
+        passwordInput.addEventListener('input',()=>setTimeout(tryAutoLogin,0));
+        usernameInput.addEventListener('change',()=>setTimeout(tryAutoLogin,0));
+        passwordInput.addEventListener('change',()=>setTimeout(tryAutoLogin,0));
+
         function showToast(m,t='error'){const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.error} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)}
-        window.addEventListener('DOMContentLoaded',()=>{const t=localStorage.getItem('adminToken');t&&fetch('/api/stats',{headers:{Authorization:`Bearer ${t}`}}).then(r=>{if(r.ok)location.href='/manage'})});
+
+        window.addEventListener('DOMContentLoaded',async()=>{
+            setTimeout(tryAutoLogin,0);
+            setTimeout(tryAutoLogin,300);
+            setTimeout(tryAutoLogin,900);
+            startAutoLoginWatcher();
+
+            const t=localStorage.getItem('adminToken');
+            if(!t)return;
+            localStorage.setItem('gcli2api_auth_token',t);
+            try{
+                const timeoutMs=800;
+                const timeoutPromise=new Promise((_,reject)=>setTimeout(()=>reject(new Error('stats timeout')),timeoutMs));
+                const r=await Promise.race([
+                    fetch('/api/stats',{headers:{Authorization:`Bearer ${t}`}}),
+                    timeoutPromise
+                ]);
+                if(r&&r.ok){location.href='/manage';return;}
+            }catch(e){}
+        });
+        window.addEventListener('load',()=>setTimeout(tryAutoLogin,0));
+        window.addEventListener('pageshow',()=>setTimeout(tryAutoLogin,0));
     </script>
 </body>
 </html>
