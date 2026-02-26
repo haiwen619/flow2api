@@ -1,9 +1,14 @@
 """Admin API routes"""
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional, List
+from datetime import datetime
+import io
+from pathlib import Path
 import secrets
+from typing import Optional, List
+import zipfile
+
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 from ..core.auth import AuthManager
 from ..core.database import Database
 from ..core.config import config
@@ -220,6 +225,30 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
         })
 
     return result  # 直接返回数组,兼容前端
+
+
+@router.get("/api/tokens/internal/export")
+async def export_internal_tokens(token: str = Depends(verify_admin_token)):
+    """导出 tmp/Token 下所有 JSON 为 zip 压缩包。"""
+    repo_root = Path(__file__).resolve().parents[2]
+    token_dir = repo_root / "tmp" / "Token"
+
+    if not token_dir.exists() or not token_dir.is_dir():
+        raise HTTPException(status_code=404, detail="tmp/Token 目录不存在")
+
+    json_files = sorted(token_dir.glob("*.json"))
+    if not json_files:
+        raise HTTPException(status_code=404, detail="tmp/Token 下没有可导出的 JSON 文件")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in json_files:
+            zf.write(file_path, arcname=file_path.name)
+    zip_buffer.seek(0)
+
+    filename = f"internal_tokens_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
 
 
 @router.post("/api/tokens")

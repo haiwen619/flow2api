@@ -1,27 +1,60 @@
-[2026-02-24 16:50:56] [INFO] [RPA] 入口页面: https://labs.google/fx/tools/flow
-[2026-02-24 16:50:56] [INFO] 将在 300 秒内等待进入目标页: https://labs.google/fx/tools/flow
-[2026-02-24 16:50:56] [INFO] [RPA] 将使用 TEST_DEFAULT_BITBROWSER_ID 复用窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
-[2026-02-24 16:51:02] [INFO] [RPA] 已通过 BitBrowser 打开窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
-[2026-02-24 16:51:04] [INFO] [RPA] 已通过 CDP 连接到 BitBrowser 窗口，准备打开目标页面...
-[2026-02-24 16:51:19] [INFO] --------打开入口页面: https://labs.google/fx/tools/flow
-[2026-02-24 16:51:19] [INFO] [RPA] 已点击 Create with Flow，等待跳转到登录/授权页面...
-[2026-02-24 16:51:20] [INFO] [RPA] 步骤1/2: 尝试自动登录...
-[2026-02-24 16:51:27] [INFO] [RPA] 检测到 Google 2FA 页面，尝试自动获取并填写验证码...
-[2026-02-24 16:51:27] [INFO] [RPA][2FA] 进入验证方式选择前耗时: 621ms
-[2026-02-24 16:51:28] [INFO] [RPA][2FA] 尝试选择 Google Authenticator 验证方式...
-[2026-02-24 16:51:30] [INFO] [RPA][2FA] 验证方式选择耗时: 2282ms
-[2026-02-24 16:51:30] [INFO] [RPA] 2FA 自动填码尝试 1/2
-[2026-02-24 16:51:36] [INFO] [RPA] 2FA 验证码已提交
-[2026-02-24 16:51:36] [INFO] [RPA] 步骤1/2: 自动登录完成
-[2026-02-24 16:51:36] [INFO] [RPA] 步骤2/2: 开始等待进入目标页面，超时 300 秒
-[2026-02-24 16:51:40] [INFO] [RPA] 步骤2/2: 已进入目标页面 URL: https://labs.google/fx/tools/flow
-[2026-02-24 16:51:41] [INFO] [RPA] 进入目标页后停留 2.1s 再继续...
-[2026-02-24 16:51:43] [INFO] [RPA] 开始提取 __Secure-next-auth.session-token ...
-[2026-02-24 16:51:43] [INFO] [RPA] Cookies 总数: 40
-[2026-02-24 16:51:43] [INFO] [RPA] Cookie 名称预览: [{'name': '__Host-next-auth.csrf-token', 'domain': 'labs.google'}, {'name': '_ga', 'domain': '.labs.google'}, {'name': '__Secure-next-auth.callback-url', 'domain': 'labs.google'}, {'name': 'email', 'domain': 'labs.google'}, {'name': 'EMAIL', 'domain': 'labs.google'}, {'name': '__Secure-next-auth.session-token', 'domain': 'labs.google'}, {'name': '_ga_X2GNH8R5NS', 'domain': '.labs.google'}, {'name': 'NID', 'domain': '.google.com'}, {'name': 'SID', 'domain': '.google.com'}, {'name': '__Secure-1PSID', 'domain': '.google.com'}, {'name': '__Secure-3PSID', 'domain': '.google.com'}, {'name': 'HSID', 'domain': '.google.com'}, {'name': 'SSID', 'domain': '.google.com'}, {'name': 'APISID', 'domain': '.google.com'}, {'name': 'SAPISID', 'domain': '.google.com'}, {'name': '__Secure-1PAPISID', 'domain': '.google.com'}, {'name': '__Secure-3PAPISID', 'domain': '.google.com'}, {'name': 'SIDCC', 'domain': '.google.com'}, {'name': '__Secure-1PSIDCC', 'domain': '.google.com'}, {'name': '__Secure-3PSIDCC', 'domain': '.google.com'}]
-[2026-02-24 16:51:43] [INFO] [RPA] 已提取 __Secure-next-auth.session-token，长度: 1087
-[2026-02-24 16:51:43] [INFO] [RPA] __Secure-next-auth.session-token 内容: eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..jq-4wZpgGB2fiMuz.TtNtP0wKoB6rT-DZBE5nXjKzGh0wO5hl4bYwDSj0ptDMV0IbILQzRq9_USZ-Zo9KyNQnDyjHkHEx69cb4MKQ7tBq8otHpAMtW4SkT2LRrbwgO8qNMOA-ZEXaNiPpxgcDt1hOdll3_8PZZPG9ZtNqjlfeQkLCRpDaA8D_A-TjMkKj4MjKJCEoicMASqBFBHWgEjnyaWo0PoB2Ld36UI9Dozu9A9Wy0KG27IyVTU_ulut4JjdsrewNiKCeu4XJIRC_BtxJJ9Wu9k9n47GPtXDN1MVsOf65vdAYG6wqmAin4luFOQtMkRpoOBGdWGciyl30FYzb8B08tPtea8E-NZSnfZgKGx1H90_Ofv8YAs36G3stPdI77AOARMkFYFF3akty5AWXfGtmm9R0NveVQOEXHiVofP1KsMcWxoVqA6MmlZcl5geVU2CTWoJIMtjMJ_T_oQST7EwbWj0xdjV9Y6Fab5rGlCPrV0RbWXTA2-gCdaSccZrX-n6IBCqd1b2TUwglaiaicKTJOiDw5sd-Oe_t_JfRj1R5LEjYd8TfE6dd4IU0lNgfCJ_4n-aF-l4fy37WssEyQJ56gksyFDx8s4wWvlYZsig4bElP6NUfxYtir0_0MKApA-OCiJRgWXoCoI5fl9pdj1DKOgerShjsHcsYVl6sl58vpEoJdOK3Q4iMPPoKnJiqsO7jY8I22Q9JNC7POhigHefnFpqHn2hD5vnyRmDKJoiMPz0Jfrq9mqGtNYjfTKg_LH6TKnUWvL45UvLH3GWJaPUJCpks-9CeEeGQHVeKucCyk0sGLyYpOy5-w4g4vaq62FNVaxQDZ68W0QmmQDBDiK4DrMHNuKtccOCEMRYipQXftDNtwoT-czduse-oP2hZ_ZVbTDgAtLIxsR8C8MORsLhzqq97iiDCzYNUDTgoTOnaKmWsz4ssR_K9eh93XvqNKEGjTy5FR4Otl4MqS3GzrJDfzHgENN2RVC0OphaMhOiGwBJk9k3Ch-fdD5Ehng.cvfutYSb8L1OoayKCFHzEA
-[2026-02-24 16:51:43] [INFO] [RPA] 关闭 Playwright page
-[2026-02-24 16:51:43] [INFO] [RPA] 关闭 Playwright context
-[2026-02-24 16:51:43] [INFO] [RPA] 关闭 Playwright browser
-[2026-02-24 16:51:44] [INFO] [RPA] 已通过 BitBrowser 关闭窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
+[2026-02-25 16:40:00] [INFO] [RPA] 入口页面: https://labs.google/fx/tools/flow
+[2026-02-25 16:40:00] [INFO] 将在 300 秒内等待进入目标页: https://labs.google/fx/tools/flow
+[2026-02-25 16:40:00] [INFO] [RPA] 将使用 TEST_DEFAULT_BITBROWSER_ID 复用窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
+[2026-02-25 16:40:08] [INFO] [RPA] 已通过 BitBrowser 打开窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
+[2026-02-25 16:40:10] [INFO] [RPA] 已通过 CDP 连接到 BitBrowser 窗口，准备打开目标页面...
+[2026-02-25 16:40:10] [INFO] [RPA][projectId] 已启用请求监听（_next/data + projectId）
+[2026-02-25 16:40:10] [INFO] [RPA][projectId] 已启用响应监听（project.searchUserProjects）
+[2026-02-25 16:40:28] [INFO] --------打开入口页面: https://labs.google/fx/tools/flow
+[2026-02-25 16:40:28] [INFO] [RPA] 已点击 Create with Flow，等待跳转到登录/授权页面...
+[2026-02-25 16:40:29] [INFO] [RPA] 步骤1/2: 尝试自动登录...
+[2026-02-25 16:40:47] [INFO] [RPA] 步骤1/2: 自动登录完成
+[2026-02-25 16:40:47] [INFO] [RPA] 步骤2/2: 开始等待进入目标页面，超时 300 秒
+[2026-02-25 16:41:20] [INFO] [RPA][projectId] 从 project.searchUserProjects 响应提取 projectId 3 个，累计 3 个
+[2026-02-25 16:41:20] [INFO] [RPA][projectId] project.searchUserProjects 命中 URL: https://labs.google/fx/api/trpc/project.searchUserProjects?input=%7B%22json%22%3A%7B%22pageSize%22%3A20%2C%22toolName%22%3A%22PINHOLE%22%2C%22cursor%22%3Anull%7D%2C%22meta%22%3A%7B%22values%22%3A%7B%22cursor%22%3A%5B%22undefined%22%5D%7D%7D%7D
+[2026-02-25 16:41:23] [INFO] [RPA] 步骤2/2: 已进入目标页面 URL: https://labs.google/fx/zh/tools/flow
+[2026-02-25 16:41:23] [INFO] [RPA] 进入目标页后停留 3.9s 再继续...
+[2026-02-25 16:41:27] [INFO] [RPA] 开始提取 __Secure-next-auth.session-token ...
+[2026-02-25 16:41:27] [INFO] [RPA] Cookies 总数: 45
+[2026-02-25 16:41:27] [INFO] [RPA] Cookie 名称预览: [{'name': '__Host-next-auth.csrf-token', 'domain': 'labs.google'}, {'name': '_ga', 'domain': '.labs.google'}, {'name': '__Secure-next-auth.callback-url', 'domain': 'labs.google'}, {'name': 'email', 'domain': 'labs.google'}, {'name': 'EMAIL', 'domain': 'labs.google'}, {'name': '_ga_X2GNH8R5NS', 'domain': '.labs.google'}, {'name': '__Secure-next-auth.session-token', 'domain': 'labs.google'}, {'name': 'NID', 'domain': '.google.com'}, {'name': 'HSID', 'domain': '.google.com'}, {'name': 'SSID', 'domain': '.google.com'}, {'name': 'APISID', 'domain': '.google.com'}, {'name': 'SAPISID', 'domain': '.google.com'}, {'name': '__Secure-1PAPISID', 'domain': '.google.com'}, {'name': '__Secure-3PAPISID', 'domain': '.google.com'}, {'name': 'SID', 'domain': '.google.com'}, {'name': '__Secure-1PSID', 'domain': '.google.com'}, {'name': '__Secure-3PSID', 'domain': '.google.com'}, {'name': '__Secure-1PSIDTS', 'domain': '.google.com'}, {'name': '__Secure-1PSIDRTS', 'domain': '.google.com'}, {'name': '__Secure-3PSIDTS', 'domain': '.google.com'}]
+[2026-02-25 16:41:27] [INFO] [RPA] 已提取 __Secure-next-auth.session-token，长度: 1075
+[2026-02-25 16:41:27] [INFO] [RPA] __Secure-next-auth.session-token 内容: eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..kHEBkO10fNGQ1G-f.T1E9oO-n-x8_7cYfgWGYpylqrWMcTusc0fhH8qegloo8WujlVB0Rz_qklu0WNmcJ6zW9KvG-akFFFa6p5NY8Pdx1hZoU2yRcZWdLxQQny_TsuSX3yAPYQNV2VjR75qUIAHcB_imvFfeqi4vNU2UGbBRA0xvtf8ueHz-yM9U23zwd1eVdR3c-_mr2Xa0rSHCYElCX0wdY_BbMfR5I1BJfZB9VuvKk1awEmlrXKXOelDeyXrJCCy9xkfX1z5VyBRRJmGCYdirUqHWhuexo67SAJo-HFT-2Vxz7_f61FGWa6am97n4yZCHnUC4SSXDq1HzVZA3wQRBBIrNgS8OHGbba2id9PeVyps8sf01tm-5g9soOJ6AllTF11j_Nd13vi62dH4nl9X1qautqxwn-U3Iho6HuelRN7sDVKmIdVo8vB7yQ9LKfi12vxCL9vPaf4a6vJCRHzhrLGGRFMp_5ySK1ydEvp5v0Ic1YBIYY5QeEWrABh_LTUkLbFWP-ysLTqXQ8UcQhWPv9lye1N_nHt9_h9NpoAF7vKM5BBU9QmMVXL2iD1_Sp7C8tebpPQMEl5tyBMsObztjeKWhXi3qnCzDf5tCYjGh0XkCwDGr685YbYZItaugkrlW9u52ub8QDzlQIOP4ADykHwuezWvNtCmEMKltkveGi1PFVchqcB1152su07D3s2Rw3KCfX6o_MxEk5dA_TUHUFIb_g2OXDmBMvgFqJ8kRNF1LRVmcPhdAafjmXJx4rHP3Ufr4iGQml_yvA33BObIr6jQIPylMkaMZbMKf-WYRNgcn5srxFCGT25To_X31rLCtvwsFU2dRUVV65wqFKYv5GzV3pCGqkVOGHFa-w-NFpoMZXDVfbvxxeDNBXzD4Dn5wftbkEB2x_vwfAjyXoHjlQ7lVbMxz1jN7rx-7SRIOFeGzsf6EpgBvUG1j7TSunVSLJgCCDxPkFsOIT6JrGKiXLoPTYBnI8rifWYPFARxKXZYL24w.o5V_suwjoJJLGrOqgW57aQ
+[2026-02-25 16:41:27] [INFO] [RPA][projectId] 开始提取，当前 URL: https://labs.google/fx/zh/tools/flow
+[2026-02-25 16:41:27] [INFO] [RPA][projectId] 从 project.searchUserProjects 响应提取成功: c4a55e47-8532-433b-afaa-79c7681ae6cb
+[2026-02-25 16:41:27] [INFO] [RPA][projectId] project.searchUserProjects 候选数: 3
+[2026-02-25 16:41:27] [INFO] [RPA] project_id：c4a55e47-8532-433b-afaa-79c7681ae6cb（综合来源提取）
+[2026-02-25 16:41:27] [INFO] [RPA] 已保存完整 Token JSON: H:\katu\Github\flow2api\tmp\Token\tanghaiwen91_at_gmail.com_1772008887.json
+[2026-02-25 16:41:27] [INFO] [RPA] 关闭 Playwright page
+[2026-02-25 16:41:27] [INFO] [RPA] 关闭 Playwright context
+[2026-02-25 16:41:27] [INFO] [RPA] 关闭 Playwright browser
+[2026-02-25 16:41:28] [INFO] [RPA] 已通过 BitBrowser 关闭窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
+[2026-02-25 16:43:52] [INFO] [RPA] 入口页面: https://labs.google/fx/tools/flow
+[2026-02-25 16:43:52] [INFO] 将在 300 秒内等待进入目标页: https://labs.google/fx/tools/flow
+[2026-02-25 16:43:53] [INFO] [RPA] 将使用 TEST_DEFAULT_BITBROWSER_ID 复用窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
+[2026-02-25 16:44:03] [INFO] [RPA] 已通过 BitBrowser 打开窗口，ID: f1ef6f8ccb6146988c67a63b92a78971
+[2026-02-25 16:44:05] [INFO] [RPA] 已通过 CDP 连接到 BitBrowser 窗口，准备打开目标页面...
+[2026-02-25 16:44:05] [INFO] [RPA][projectId] 已启用请求监听（_next/data + projectId）
+[2026-02-25 16:44:05] [INFO] [RPA][projectId] 已启用响应监听（project.searchUserProjects）
+[2026-02-25 16:44:23] [INFO] --------打开入口页面: https://labs.google/fx/tools/flow
+[2026-02-25 16:44:23] [INFO] [RPA] 已点击 Create with Flow，等待跳转到登录/授权页面...
+[2026-02-25 16:44:24] [INFO] [RPA] 步骤1/2: 尝试自动登录...
+[2026-02-25 16:44:45] [INFO] [RPA] 步骤1/2: 自动登录完成
+[2026-02-25 16:44:45] [INFO] [RPA] 步骤2/2: 开始等待进入目标页面，超时 300 秒
+[2026-02-25 16:44:54] [INFO] [RPA][projectId] 从 project.searchUserProjects 响应提取 projectId 3 个，累计 3 个
+[2026-02-25 16:44:54] [INFO] [RPA][projectId] project.searchUserProjects 命中 URL: https://labs.google/fx/api/trpc/project.searchUserProjects?input=%7B%22json%22%3A%7B%22pageSize%22%3A20%2C%22toolName%22%3A%22PINHOLE%22%2C%22cursor%22%3Anull%7D%2C%22meta%22%3A%7B%22values%22%3A%7B%22cursor%22%3A%5B%22undefined%22%5D%7D%7D%7D
+[2026-02-25 16:45:03] [INFO] [RPA] 步骤2/2: 已进入目标页面 URL: https://labs.google/fx/zh/tools/flow
+[2026-02-25 16:45:04] [INFO] [RPA] 进入目标页后停留 3.0s 再继续...
+[2026-02-25 16:45:07] [INFO] [RPA] 开始提取 __Secure-next-auth.session-token ...
+[2026-02-25 16:45:07] [INFO] [RPA] Cookies 总数: 39
+[2026-02-25 16:45:07] [INFO] [RPA] Cookie 名称预览: [{'name': '__Host-next-auth.csrf-token', 'domain': 'labs.google'}, {'name': '_ga', 'domain': '.labs.google'}, {'name': '__Secure-next-auth.callback-url', 'domain': 'labs.google'}, {'name': 'email', 'domain': 'labs.google'}, {'name': 'EMAIL', 'domain': 'labs.google'}, {'name': '_ga_X2GNH8R5NS', 'domain': '.labs.google'}, {'name': '__Secure-next-auth.session-token', 'domain': 'labs.google'}, {'name': 'NID', 'domain': '.google.com'}, {'name': 'SID', 'domain': '.google.com'}, {'name': '__Secure-1PSID', 'domain': '.google.com'}, {'name': '__Secure-3PSID', 'domain': '.google.com'}, {'name': 'HSID', 'domain': '.google.com'}, {'name': 'SSID', 'domain': '.google.com'}, {'name': 'APISID', 'domain': '.google.com'}, {'name': 'SAPISID', 'domain': '.google.com'}, {'name': '__Secure-1PAPISID', 'domain': '.google.com'}, {'name': '__Secure-3PAPISID', 'domain': '.google.com'}, {'name': 'SIDCC', 'domain': '.google.com'}, {'name': '__Secure-1PSIDCC', 'domain': '.google.com'}, {'name': '__Secure-3PSIDCC', 'domain': '.google.com'}]
+[2026-02-25 16:45:07] [INFO] [RPA] 已提取 __Secure-next-auth.session-token，长度: 1093
+[2026-02-25 16:45:07] [INFO] [RPA] __Secure-next-auth.session-token 内容: eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..4BuiDQIgVQbREDh1.2UjyX1ZG4ISdKqfiBRkkaCoQSP1EUyPJkuzDqC4WAweETUBgFa6Ib-_htLamdAnwR9Pe7OzfN_wYgLA1l8pVeFE4oMlE4-wCueZ8a5Ya5VA7Lp4tTD_R1ZVpofBre9TnjLpRYs2c6BIfcCMnP8k9HmE2AhkbLM7rEk7BSDCWLF4TjWDdfmUfhjeFdqkMnRk1B5-9fCIu0y_PYYwk89wbanX25VMQR5DsMuZ9s5iNCWq85M29URv5MzcFLMnPsqm2vb8UMIXG_05l0l8F1uY9_CPeyrgiNK41Pwea-xnTvWRdrOHG82PNufvPbo2CLIUIsgaJPQFMkc7kCxY8UyvVcjRaxY80C4dDv1nNJ-jUiJgaARNC0g4ePaihUkM8CZoXVCWUW9eEr5RRBDvOqLQkMWwS5zmQWQsCSAB6wy8wnr8avXatdpwqXuPgpBu57qlXLaDq4p3KYr7FzlDMMyejVJODmlSNcztmLYvwJaJApLGePe947QzjUKijLvXYsIruaofQmZN224tFvuVtsrldgw1tkdg0xnqRzRR7rA7smWKjAJHR_yh2lCTXZuvi_uiXMmjpiPrVO6WUMQNIszwc_QtIBjhw4hxtt8olxSHrYHuYB5wm9PAPykjy6Fd3K0bh6r54rxFkcIHcCwnydgaYA4mV75dUcCVaNyxIS3iij4nbdZPhpi3lp-Bnj6wZHBOUWtP93lJ-GR8op3yj4g2qwE3fz0RIRldwJ5LAvMK8OKVDzTSi_bF2f0kTdwNze2QpRYJplFkZe0kgHFIbZtkDTXspHoSKp_SNOzzGdh6V8ylJ7yxKvDvbSVH9w_KCdxgRv_ZhsBSFMEv1MBUDur3v2x39kyZB_fRRW57iKc2x47BIBPPyITHOX-alGKg43gAnjk5R_z55TBKs9VgzEl0--IU4HsczGFelB_hYphfgs4159d3-AZ7QDBTPM03AMWDdD2lnTef9eF469oW3lK0WSy8pp7WbbWQ-aEb9JXkk_5Rmw5bC4g0I.1Kl3E_A2FCFy2sgcL5s01w
+[2026-02-25 16:45:07] [INFO] [RPA][projectId] 开始提取，当前 URL: https://labs.google/fx/zh/tools/flow
+[2026-02-25 16:45:07] [INFO] [RPA][projectId] 从 project.searchUserProjects 响应提取成功: 0824bf2f-65be-49cd-a2db-680c6dc40a01
+[2026-02-25 16:45:07] [INFO] [RPA][projectId] project.searchUserProjects 候选数: 3
+[2026-02-25 16:45:07] [INFO] [RPA] project_id：0824bf2f-65be-49cd-a2db-680c6dc40a01（综合来源提取）
+[2026-02-25 16:45:07] [INFO] [RPA] 已保存完整 Token JSON: H:\katu\Github\flow2api\tmp\Token\finnegan984121_at_aaaad.motiongridsolar.com_1772009107.json
+[2026-02-25 16:45:07] [INFO] [RPA] 关闭 Playwright page
+[2026-02-25 16:45:07] [INFO] [RPA] 关闭 Playwright context
+[2026-02-25 16:45:07] [INFO] [RPA] 关闭 Playwright browser
+[2026-02-25 16:45:08] [INFO] [RPA] 已通过 BitBrowser 关闭窗口，ID: f1ef6f8ccb6146988c67a63b92a78971

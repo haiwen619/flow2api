@@ -183,8 +183,11 @@ class ChatMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """Chat completion request (OpenAI compatible)"""
-    model: str
-    messages: List[ChatMessage]
+    model: Optional[str] = None
+    messages: Optional[List[ChatMessage]] = None
+    # Gemini style compatible fields
+    contents: Optional[List[dict]] = None
+    generationConfig: Optional[dict] = None
     stream: bool = False
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None

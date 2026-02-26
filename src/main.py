@@ -1,4 +1,8 @@
 """FastAPI application initialization"""
+import asyncio
+import sys
+import warnings
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +23,26 @@ from .api.accountpool import (
     AccountPoolRepository,
     AccountPoolService,
     create_accountpool_router,
+)
+
+# Playwright on Windows needs subprocess support (Proactor loop).
+if sys.platform.startswith("win"):
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
+# curl_cffi on Proactor emits known compatibility warnings on Windows.
+# Keep Proactor for Playwright subprocess support, and suppress noisy non-fatal warnings.
+warnings.filterwarnings(
+    "ignore",
+    category=RuntimeWarning,
+    module=r"curl_cffi\.aio",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"^Curlm alread closed! quitting from process_data$",
+    category=UserWarning,
 )
 
 

@@ -266,6 +266,7 @@ class DebugLogger:
             return
         try:
             self.logger.info(f"ℹ️  [{self._format_timestamp()}] {message}")
+            print(f"ℹ️  {message}")  # Also print to console for real-time feedback
         except Exception as e:
             self.logger.error(f"Error logging info: {e}")
 
@@ -275,6 +276,7 @@ class DebugLogger:
             return
         try:
             self.logger.warning(f"⚠️  [{self._format_timestamp()}] {message}")
+            print(f"⚠️  {message}")  # Also print to console for real-time feedback
         except Exception as e:
             self.logger.error(f"Error logging warning: {e}")
 

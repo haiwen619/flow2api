@@ -36,6 +36,33 @@ def _is_running_in_docker() -> bool:
 IS_DOCKER = _is_running_in_docker()
 
 
+def _resolve_browser_executable_path() -> Optional[str]:
+    """Resolve browser executable path for nodriver on Windows/server hosts."""
+    # 1) Explicit env vars
+    env_keys = [
+        "BROWSER_EXECUTABLE_PATH",
+        "CHROME_PATH",
+        "GOOGLE_CHROME_BIN",
+        "EDGE_EXECUTABLE_PATH",
+    ]
+    for k in env_keys:
+        p = str(os.getenv(k, "") or "").strip().strip('"')
+        if p and os.path.isfile(p):
+            return p
+
+    # 2) Common Windows install paths
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 # ==================== nodriver 自动安装 ====================
 def _run_pip_install(package: str, use_mirror: bool = False) -> bool:
     """运行 pip install 命令
@@ -202,8 +229,8 @@ class BrowserCaptchaService:
             # 确保 user_data_dir 存在
             os.makedirs(self.user_data_dir, exist_ok=True)
 
-            # 启动 nodriver 浏览器
-            self.browser = await uc.start(
+            browser_executable_path = _resolve_browser_executable_path()
+            start_kwargs = dict(
                 headless=self.headless,
                 user_data_dir=self.user_data_dir,
                 sandbox=False,  # nodriver 需要此参数来禁用 sandbox
@@ -214,8 +241,18 @@ class BrowserCaptchaService:
                     '--disable-gpu',
                     '--window-size=1280,720',
                     '--profile-directory=Default',  # 跳过 Profile 选择器页面
-                ]
+                ],
             )
+            if browser_executable_path:
+                start_kwargs["browser_executable_path"] = browser_executable_path
+                debug_logger.log_info(f"[BrowserCaptcha] 使用浏览器路径: {browser_executable_path}")
+            else:
+                debug_logger.log_warning(
+                    "[BrowserCaptcha] 未配置/未发现浏览器路径，将使用 nodriver 自动探测"
+                )
+
+            # 启动 nodriver 浏览器
+            self.browser = await uc.start(**start_kwargs)
 
             self._initialized = True
             debug_logger.log_info(f"[BrowserCaptcha] ✅ nodriver 浏览器已启动 (Profile: {self.user_data_dir})")

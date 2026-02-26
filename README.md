@@ -1,5 +1,119 @@
 # Flow2API
 
+
+放通防火墙端口（如需外网访问）
+New-NetFirewallRule -DisplayName "Flow2API-6050" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 6050
+jHrrRDxVD5twXN2t
+
+
+https://docs.cqtai.com/nano%E7%94%9F%E6%88%90/
+
+# 1) 基础模型 + imageConfig: 4:3 + 1K
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "21:9", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
+
+
+# 2) 基础模型 + imageConfig: 3:4 + 2K
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image",
+    "contents": [
+      { "parts": [ { "text": "A portrait poster of a cyberpunk character, neon city." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "3:4", "imageSize": "2K" }
+    },
+    "stream": true
+  }'
+# 3) 基础模型 + imageConfig: 1:1 + 4K
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image",
+    "contents": [
+      { "parts": [ { "text": "A minimal logo mascot, flat design, white background." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "1:1", "imageSize": "4K" }
+    },
+    "stream": true
+  }'
+# 4) 别名模型写法: 4x3（等价 four-three，默认 1K）
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image-4x3",
+    "messages": [
+      { "role": "user", "content": "A cozy cafe interior, warm sunlight, film look." }
+    ],
+    "stream": true
+  }'
+
+# 5) 别名模型写法: 3x4 + 2k
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image-3x4-2k",
+    "messages": [
+      { "role": "user", "content": "A fashion editorial portrait, soft shadows, detailed skin texture." }
+    ],
+    "stream": true
+  }'
+
+
+# 6) 别名模型写法: 1x1 + 4k
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image-1x1-4k",
+    "messages": [
+      { "role": "user", "content": "A cute 3D toy character, centered composition, high detail." }
+    ],
+    "stream": true
+  }'
+
+# 7) 测试 2.5 模型 + imageConfig（会被 imageConfig 覆盖为 16:9 + 1K） 
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "1:1", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
+
+
+
+
+
+
+
 <div align="center">
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
