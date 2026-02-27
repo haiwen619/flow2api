@@ -10,6 +10,7 @@ class Token(BaseModel):
 
     # 认证信息 (核心)
     st: str  # Session Token (__Secure-next-auth.session-token)
+    cookie: Optional[str] = None  # 完整 Cookie Header（用于 reAuth）
     at: Optional[str] = None  # Access Token (从ST转换而来)
     at_expires: Optional[datetime] = None  # AT过期时间
 

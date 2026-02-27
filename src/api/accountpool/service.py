@@ -122,15 +122,139 @@ class AccountPoolService:
         except Exception:
             return None
 
+    @staticmethod
+    def _is_transient_network_error(err: Exception) -> bool:
+        msg = str(err or "").lower()
+        markers = [
+            "curl: (35)",
+            "curl: (28)",
+            "curl: (7)",
+            "ssl_error_syscall",
+            "ssl connect error",
+            "connection reset",
+            "timed out",
+            "timeout was reached",
+            "could not resolve host",
+            "failed to connect",
+            "failed to perform",
+        ]
+        return any(m in msg for m in markers)
+
+    async def _st_to_at_with_retry(self, *, tm: Any, st: str, job_id: str) -> Dict[str, Any]:
+        max_attempts = 3
+        base_sleep = 1.0
+        last_err: Optional[Exception] = None
+
+        for i in range(1, max_attempts + 1):
+            try:
+                if i > 1:
+                    logger.info(
+                        "[AccountPool][TokenSync] job_id=%s st_to_at retry attempt=%s/%s",
+                        job_id,
+                        i,
+                        max_attempts,
+                    )
+                return await tm.flow_client.st_to_at(st)
+            except Exception as e:
+                last_err = e
+                transient = self._is_transient_network_error(e)
+                logger.warning(
+                    "[AccountPool][TokenSync] job_id=%s st_to_at attempt=%s/%s failed transient=%s error=%s",
+                    job_id,
+                    i,
+                    max_attempts,
+                    transient,
+                    str(e),
+                )
+                if (not transient) or i >= max_attempts:
+                    break
+                await asyncio.sleep(base_sleep * i)
+
+        raise last_err or RuntimeError("st_to_at failed with unknown error")
+
+    async def _sync_st_cookie_to_existing_token(
+        self,
+        *,
+        tm: Any,
+        st: str,
+        cookie_header: Optional[str],
+        email_hint: Optional[str],
+        job_id: str,
+    ) -> Dict[str, Any]:
+        hint = str(email_hint or "").strip()
+        cookie_value = str(cookie_header or "").strip()
+        if not hint or "@" not in hint:
+            return {"synced": False, "reason": "invalid_email_hint"}
+
+        token = None
+        try:
+            token = await tm.db.get_token_by_email(hint)
+        except Exception:
+            token = None
+        if token is None:
+            try:
+                all_tokens = await tm.get_all_tokens()
+                candidates = [t for t in all_tokens if str(t.email or "").strip().lower() == hint.lower()]
+                if candidates:
+                    candidates.sort(key=lambda t: int(t.id or 0), reverse=True)
+                    token = candidates[0]
+            except Exception:
+                token = None
+
+        if token is None:
+            logger.warning(
+                "[AccountPool][TokenSync] job_id=%s fallback sync skipped: token not found by email=%s",
+                job_id,
+                hint,
+            )
+            return {"synced": False, "reason": "token_not_found", "email": hint}
+
+        try:
+            await tm.update_token(
+                token_id=int(token.id),
+                st=st,
+                cookie=(cookie_value or None),
+            )
+            logger.info(
+                "[AccountPool][TokenSync] job_id=%s fallback synced st/cookie token_id=%s email=%s",
+                job_id,
+                int(token.id),
+                hint,
+            )
+            return {
+                "synced": True,
+                "fallback": True,
+                "token_id": int(token.id),
+                "email": hint,
+                "cookie_synced": bool(cookie_value),
+            }
+        except Exception as e:
+            logger.warning(
+                "[AccountPool][TokenSync] job_id=%s fallback update failed token_id=%s email=%s error=%s",
+                job_id,
+                int(token.id),
+                hint,
+                str(e),
+            )
+            return {
+                "synced": False,
+                "reason": "fallback_update_failed",
+                "token_id": int(token.id),
+                "email": hint,
+                "error": str(e),
+            }
+
     async def _sync_session_token_to_token_table(
         self,
         *,
         session_token: str,
         email_hint: Optional[str],
+        cookie_header: Optional[str],
         job_id: str,
     ) -> Dict[str, Any]:
         st = str(session_token or "").strip()
         hint = str(email_hint or "").strip()
+        cookie_value = str(cookie_header or "").strip()
         if not st:
             return {"synced": False, "reason": "empty_session_token"}
 
@@ -148,9 +272,31 @@ class AccountPoolService:
 
         # 1) Use ST to resolve AT + canonical email (same as token edit behavior).
         try:
-            conv = await tm.flow_client.st_to_at(st)
+            conv = await self._st_to_at_with_retry(tm=tm, st=st, job_id=job_id)
         except Exception as e:
             logger.warning("[AccountPool][TokenSync] job_id=%s st_to_at failed: %s", job_id, str(e))
+            try:
+                proxy_cfg = await tm.db.get_proxy_config()
+                logger.warning(
+                    "[AccountPool][TokenSync] job_id=%s proxy_config enabled=%s proxy_url=%s",
+                    job_id,
+                    bool(getattr(proxy_cfg, "enabled", False)),
+                    str(getattr(proxy_cfg, "proxy_url", "") or ""),
+                )
+            except Exception:
+                pass
+            if self._is_transient_network_error(e):
+                # 降级处理：网络抖动时先把 ST/Cookie 落库到已存在账号，避免本次验活结果丢失
+                fallback = await self._sync_st_cookie_to_existing_token(
+                    tm=tm,
+                    st=st,
+                    cookie_header=(cookie_value or None),
+                    email_hint=(hint or None),
+                    job_id=job_id,
+                )
+                fallback["reason"] = "st_to_at_failed_transient_network_fallback"
+                fallback["error"] = str(e)
+                return fallback
             return {"synced": False, "reason": "st_to_at_failed", "error": str(e)}
 
         at = str(conv.get("access_token") or "").strip()
@@ -191,7 +337,7 @@ class AccountPoolService:
                 email,
             )
             try:
-                new_token = await tm.add_token(st=st)
+                new_token = await tm.add_token(st=st, cookie=(cookie_value or None))
                 logger.info(
                     "[AccountPool][TokenSync] job_id=%s auto added token_id=%s email=%s",
                     job_id,
@@ -244,6 +390,7 @@ class AccountPoolService:
             await tm.update_token(
                 token_id=int(token.id),
                 st=st,
+                cookie=(cookie_value or None),
                 at=at,
                 at_expires=at_expires,
             )
@@ -282,6 +429,87 @@ class AccountPoolService:
             "token_id": int(token.id),
             "email": email,
             "credits": credits,
+            "cookie_synced": bool(cookie_value),
+        }
+
+    async def _sync_cookie_to_token_table(
+        self,
+        *,
+        cookie_header: str,
+        email_hint: Optional[str],
+        job_id: str,
+    ) -> Dict[str, Any]:
+        cookie_value = str(cookie_header or "").strip()
+        hint = str(email_hint or "").strip()
+        if not cookie_value:
+            return {"synced": False, "reason": "empty_cookie"}
+        if not hint or "@" not in hint:
+            return {"synced": False, "reason": "invalid_email_hint"}
+
+        try:
+            from .. import admin as admin_api
+        except Exception as e:
+            logger.warning("[AccountPool][CookieSync] job_id=%s import admin failed: %s", job_id, str(e))
+            return {"synced": False, "reason": "admin_import_failed", "error": str(e)}
+
+        tm = getattr(admin_api, "token_manager", None)
+        if tm is None:
+            logger.warning("[AccountPool][CookieSync] job_id=%s token_manager not initialized", job_id)
+            return {"synced": False, "reason": "token_manager_not_ready"}
+
+        email = hint.strip()
+        token = None
+        try:
+            token = await tm.db.get_token_by_email(email)
+        except Exception:
+            token = None
+        if token is None:
+            try:
+                all_tokens = await tm.get_all_tokens()
+                candidates = [t for t in all_tokens if str(t.email or "").strip().lower() == email.lower()]
+                if candidates:
+                    candidates.sort(key=lambda t: int(t.id or 0), reverse=True)
+                    token = candidates[0]
+            except Exception:
+                token = None
+
+        if token is None:
+            logger.warning(
+                "[AccountPool][CookieSync] job_id=%s token not found by email=%s",
+                job_id,
+                email,
+            )
+            return {"synced": False, "reason": "token_not_found", "email": email}
+
+        try:
+            await tm.update_token(token_id=int(token.id), cookie=cookie_value)
+        except Exception as e:
+            logger.warning(
+                "[AccountPool][CookieSync] job_id=%s update cookie failed token_id=%s email=%s error=%s",
+                job_id,
+                int(token.id),
+                email,
+                str(e),
+            )
+            return {
+                "synced": False,
+                "reason": "update_token_failed",
+                "token_id": int(token.id),
+                "email": email,
+                "error": str(e),
+            }
+
+        logger.info(
+            "[AccountPool][CookieSync] job_id=%s synced cookie token_id=%s email=%s",
+            job_id,
+            int(token.id),
+            email,
+        )
+        return {
+            "synced": True,
+            "token_id": int(token.id),
+            "email": email,
+            "cookie_synced": True,
         }
 
     async def trigger_single_validate(
@@ -386,6 +614,8 @@ class AccountPoolService:
             )
             ok = bool(result.get("success"))
             session_token = (str(result.get("session_token") or "").strip() if isinstance(result, dict) else "")
+            cookie_header = (str(result.get("cookie") or "").strip() if isinstance(result, dict) else "")
+            payload_email = (str(result.get("payload_email") or "").strip() if isinstance(result, dict) else "")
             if ok and session_token:
                 await self.repo.set_session_token(account_key=account_key, session_token=session_token)
                 logger.info(
@@ -396,17 +626,27 @@ class AccountPoolService:
                 )
                 sync_res = await self._sync_session_token_to_token_table(
                     session_token=session_token,
-                    email_hint=username,
+                    email_hint=(payload_email or username),
+                    cookie_header=(cookie_header or None),
                     job_id=job_id,
                 )
                 if isinstance(result, dict):
                     result["token_sync"] = sync_res
             elif ok:
                 logger.warning(
-                    "[AccountPool] validate success but no session token account_key=%s job_id=%s",
+                    "[AccountPool] validate success but no session token account_key=%s job_id=%s cookie_present=%s",
                     account_key,
                     job_id,
+                    bool(cookie_header),
                 )
+                if cookie_header:
+                    cookie_sync_res = await self._sync_cookie_to_token_table(
+                        cookie_header=cookie_header,
+                        email_hint=(payload_email or username),
+                        job_id=job_id,
+                    )
+                    if isinstance(result, dict):
+                        result["token_sync"] = cookie_sync_res
             duration_ms = int((time.time() - started) * 1000)
             job["result"] = result
             job["status"] = "success" if ok else "failed"

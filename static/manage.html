@@ -320,6 +320,11 @@
                   <th
                     class="h-10 px-3 text-left align-middle font-medium text-muted-foreground"
                   >
+                    Cookie
+                  </th>
+                  <th
+                    class="h-10 px-3 text-left align-middle font-medium text-muted-foreground"
+                  >
                     状态
                   </th>
                   <th
@@ -1239,6 +1244,22 @@
             </p>
           </div>
 
+          <div class="space-y-2">
+            <label class="text-sm font-medium"
+              >完整 Cookie
+              <span class="text-muted-foreground text-xs">- 可选</span></label
+            >
+            <textarea
+              id="addTokenCookie"
+              rows="4"
+              class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none"
+              placeholder="name=value; name2=value2; ..."
+            ></textarea>
+            <p class="text-xs text-muted-foreground">
+              用于 reAuth 流程，建议粘贴浏览器中的完整 Cookie Header
+            </p>
+          </div>
+
           <!-- Remark -->
           <div class="space-y-2">
             <label class="text-sm font-medium"
@@ -1416,6 +1437,22 @@
             <p class="text-xs text-muted-foreground">
               从浏览器 Cookie 中获取
               __Secure-next-auth.session-token，保存时将自动转换为 Access Token
+            </p>
+          </div>
+
+          <div class="space-y-2">
+            <label class="text-sm font-medium"
+              >完整 Cookie
+              <span class="text-muted-foreground text-xs">- 可选</span></label
+            >
+            <textarea
+              id="editTokenCookie"
+              rows="4"
+              class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none"
+              placeholder="name=value; name2=value2; ..."
+            ></textarea>
+            <p class="text-xs text-muted-foreground">
+              用于 reAuth 流程，建议粘贴浏览器中的完整 Cookie Header
             </p>
           </div>
 
@@ -1777,13 +1814,16 @@
                 t.credits !== undefined ? `${t.credits}` : "-";
               const accountTypeDisplay = formatAccountType(t.user_paygate_tier);
               const projectDisplay = t.current_project_name || "-";
+              const cookieDisplay = t.cookie
+                ? `<button class="cursor-pointer text-blue-600 hover:text-blue-700 text-xs" onclick="copyTokenCookie(${t.id})" title="点击复制完整 Cookie">${t.cookie.length > 12 ? t.cookie.substring(0, 12) + "..." : t.cookie}</button>`
+                : "-";
               const projectIdDisplay = t.current_project_id
                 ? t.current_project_id.length > 5
                   ? `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id.substring(0, 5)}...</span>`
                   : `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id}</span>`
                 : "-";
               const expiryDisplay = formatExpiry(t.at_expires);
-              return `<tr><td class="py-2.5 px-3">${t.email}</td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${t.is_active ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-700"}">${t.is_active ? "活跃" : "禁用"}</span></td><td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3"><button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button></td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs">${projectDisplay}</td><td class="py-2.5 px-3 text-xs">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right"><button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button><button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button><button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button><button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
+              return `<tr><td class="py-2.5 px-3">${t.email}</td><td class="py-2.5 px-3 text-xs">${cookieDisplay}</td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${t.is_active ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-700"}">${t.is_active ? "活跃" : "禁用"}</span></td><td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3"><button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button></td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs">${projectDisplay}</td><td class="py-2.5 px-3 text-xs">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right"><button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button><button onclick="refreshTokenCookie(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-amber-50 hover:text-amber-700 h-7 px-2 text-xs mr-1" title="仅 reAuth 刷新 Cookie">刷Cookie</button><button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button><button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button><button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
             })
             .join("");
         },
@@ -1838,6 +1878,39 @@
             showToast("更新失败: " + e.message, "error");
           }
         },
+        refreshTokenCookie = async (id) => {
+          try {
+            showToast("正在执行 reAuth 刷新Cookie...", "info");
+            const r = await apiRequest(`/api/tokens/${id}/refresh-cookie`, {
+              method: "POST",
+            });
+            if (!r) return;
+            const d = await r.json();
+            if (d.success) {
+              const expiresDate = d.token && d.token.at_expires
+                ? new Date(d.token.at_expires)
+                : null;
+              const expiresStr = expiresDate
+                ? expiresDate
+                    .toLocaleString("zh-CN", {
+                      year: "numeric",
+                      month: "2-digit",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      hour12: false,
+                    })
+                    .replace(/\//g, "-")
+                : "未知";
+              showToast(`Cookie刷新成功! 新过期时间: ${expiresStr}`, "success");
+              await refreshTokens();
+            } else {
+              showToast("刷新失败: " + (d.detail || "未知错误"), "error");
+            }
+          } catch (e) {
+            showToast("刷新失败: " + e.message, "error");
+          }
+        },
         refreshTokens = async () => {
           await loadTokens();
           await loadStats();
@@ -1846,6 +1919,7 @@
         closeAddModal = () => {
           $("addModal").classList.add("hidden");
           $("addTokenST").value = "";
+          $("addTokenCookie").value = "";
           $("addTokenRemark").value = "";
           $("addTokenProjectId").value = "";
           $("addTokenProjectName").value = "";
@@ -1859,6 +1933,7 @@
           if (!token) return showToast("Token不存在", "error");
           $("editTokenId").value = token.id;
           $("editTokenST").value = token.st || "";
+          $("editTokenCookie").value = token.cookie || "";
           $("editTokenRemark").value = token.remark || "";
           $("editTokenProjectId").value = token.current_project_id || "";
           $("editTokenProjectName").value = token.current_project_name || "";
@@ -1874,6 +1949,7 @@
           $("editModal").classList.add("hidden");
           $("editTokenId").value = "";
           $("editTokenST").value = "";
+          $("editTokenCookie").value = "";
           $("editTokenRemark").value = "";
           $("editTokenProjectId").value = "";
           $("editTokenProjectName").value = "";
@@ -1885,6 +1961,7 @@
         submitEditToken = async () => {
           const id = parseInt($("editTokenId").value),
             st = $("editTokenST").value.trim(),
+            cookie = $("editTokenCookie").value.trim(),
             remark = $("editTokenRemark").value.trim(),
             projectId = $("editTokenProjectId").value.trim(),
             projectName = $("editTokenProjectName").value.trim(),
@@ -1909,6 +1986,7 @@
               method: "PUT",
               body: JSON.stringify({
                 st: st,
+                cookie: cookie || null,
                 remark: remark || null,
                 project_id: projectId || null,
                 project_name: projectName || null,
@@ -1993,6 +2071,7 @@
         },
         submitAddToken = async () => {
           const st = $("addTokenST").value.trim(),
+            cookie = $("addTokenCookie").value.trim(),
             remark = $("addTokenRemark").value.trim(),
             projectId = $("addTokenProjectId").value.trim(),
             projectName = $("addTokenProjectName").value.trim(),
@@ -2014,6 +2093,7 @@
               method: "POST",
               body: JSON.stringify({
                 st: st,
+                cookie: cookie || null,
                 remark: remark || null,
                 project_id: projectId || null,
                 project_name: projectName || null,
@@ -2146,6 +2226,36 @@
               document.body.removeChild(textarea);
               if (success) {
                 showToast(`邀请码已复制: ${code}`, "success");
+              } else {
+                showToast("复制失败: 浏览器不支持", "error");
+              }
+            }
+          } catch (e) {
+            showToast("复制失败: " + e.message, "error");
+          }
+        },
+        copyTokenCookie = async (tokenId) => {
+          const token = allTokens.find((t) => t.id === tokenId);
+          const cookie = token && token.cookie ? String(token.cookie) : "";
+          if (!cookie) {
+            showToast("没有可复制的 Cookie", "error");
+            return;
+          }
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(cookie);
+              showToast("Cookie已复制", "success");
+            } else {
+              const textarea = document.createElement("textarea");
+              textarea.value = cookie;
+              textarea.style.position = "fixed";
+              textarea.style.opacity = "0";
+              document.body.appendChild(textarea);
+              textarea.select();
+              const success = document.execCommand("copy");
+              document.body.removeChild(textarea);
+              if (success) {
+                showToast("Cookie已复制", "success");
               } else {
                 showToast("复制失败: 浏览器不支持", "error");
               }

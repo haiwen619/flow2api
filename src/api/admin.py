@@ -43,6 +43,7 @@ class LoginRequest(BaseModel):
 
 class AddTokenRequest(BaseModel):
     st: str
+    cookie: Optional[str] = None
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
@@ -54,6 +55,7 @@ class AddTokenRequest(BaseModel):
 
 class UpdateTokenRequest(BaseModel):
     st: str  # Session Token (必填，用于刷新AT)
+    cookie: Optional[str] = None
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
@@ -201,6 +203,7 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
         result.append({
             "id": t.id,
             "st": t.st,  # Session Token for editing
+            "cookie": t.cookie,  # 完整 Cookie Header（用于 reAuth）
             "at": t.at,  # Access Token for editing (从ST转换而来)
             "at_expires": t.at_expires.isoformat() if t.at_expires else None,  # 🆕 AT过期时间
             "token": t.at,  # 兼容前端 token.token 的访问方式
@@ -260,6 +263,7 @@ async def add_token(
     try:
         new_token = await token_manager.add_token(
             st=request.st,
+            cookie=request.cookie,
             project_id=request.project_id,  # 🆕 支持用户指定project_id
             project_name=request.project_name,
             remark=request.remark,
@@ -312,6 +316,7 @@ async def update_token(
         await token_manager.update_token(
             token_id=token_id,
             st=request.st,
+            cookie=request.cookie,
             at=at,
             at_expires=at_expires,  # 🆕 更新AT过期时间
             project_id=request.project_id,
@@ -428,6 +433,41 @@ async def refresh_at(
     except Exception as e:
         debug_logger.log_error(f"[API] 刷新AT异常: {str(e)}")
         raise HTTPException(status_code=500, detail=f"刷新AT失败: {str(e)}")
+
+
+@router.post("/api/tokens/{token_id}/refresh-cookie")
+async def refresh_cookie(
+    token_id: int,
+    token: str = Depends(verify_admin_token)
+):
+    """手动仅通过 reAuth 刷新 Cookie（跳过首次 ST->AT 直刷）"""
+    from ..core.logger import debug_logger
+
+    debug_logger.log_info(f"[API] 手动刷新 Cookie(reAuth-only) 请求: token_id={token_id}")
+
+    try:
+        success = await token_manager.refresh_cookie_via_reauth(token_id)
+        if success:
+            updated_token = await token_manager.get_token(token_id)
+            debug_logger.log_info(f"[API] 刷新 Cookie 成功: token_id={token_id}")
+            return {
+                "success": True,
+                "message": "Cookie刷新成功（reAuth-only）",
+                "token": {
+                    "id": updated_token.id,
+                    "email": updated_token.email,
+                    "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None,
+                    "cookie_present": bool(str(updated_token.cookie or "").strip()),
+                }
+            }
+
+        debug_logger.log_error(f"[API] 刷新 Cookie 失败: token_id={token_id}")
+        raise HTTPException(status_code=500, detail="Cookie刷新失败（reAuth-only）")
+    except HTTPException:
+        raise
+    except Exception as e:
+        debug_logger.log_error(f"[API] 刷新Cookie异常: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"刷新Cookie失败: {str(e)}")
 
 
 @router.post("/api/tokens/st2at")

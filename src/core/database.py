@@ -248,6 +248,7 @@ class Database:
             # Check and add missing columns to tokens table
             if await self._table_exists(db, "tokens"):
                 columns_to_add = [
+                    ("cookie", "TEXT"),  # Full Cookie Header for reAuth
                     ("at", "TEXT"),  # Access Token
                     ("at_expires", "TIMESTAMP"),  # AT expiration time
                     ("credits", "INTEGER DEFAULT 0"),  # Balance
@@ -349,6 +350,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS tokens (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     st TEXT UNIQUE NOT NULL,
+                    cookie TEXT,
                     at TEXT,
                     at_expires TIMESTAMP,
                     email TEXT NOT NULL,
@@ -600,11 +602,11 @@ class Database:
         """Add a new token"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
-                INSERT INTO tokens (st, at, at_expires, email, name, remark, is_active,
+                INSERT INTO tokens (st, cookie, at, at_expires, email, name, remark, is_active,
                                    credits, user_paygate_tier, current_project_id, current_project_name,
                                    image_enabled, video_enabled, image_concurrency, video_concurrency)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (token.st, token.at, token.at_expires, token.email, token.name, token.remark,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (token.st, token.cookie, token.at, token.at_expires, token.email, token.name, token.remark,
                   token.is_active, token.credits, token.user_paygate_tier,
                   token.current_project_id, token.current_project_name,
                   token.image_enabled, token.video_enabled,

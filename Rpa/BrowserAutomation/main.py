@@ -739,6 +739,8 @@ async def validate_antigravity_account(
         bitbrowser_id = None
         final_url = ""
         token_payload_file_path: Optional[str] = None
+        token_payload_cookie: Optional[str] = None
+        token_payload_email: Optional[str] = None
         project_id_request_urls: list[str] = []
         project_ids_from_api: list[str] = []
         response_capture_tasks: list[asyncio.Task] = []
@@ -982,6 +984,12 @@ async def validate_antigravity_account(
                         next_data_request_urls=project_id_request_urls,
                         state=2,
                     )
+                    token_payload_cookie = (
+                        str((payload or {}).get("cookie") or "").strip() or None
+                    )
+                    token_payload_email = (
+                        str((payload or {}).get("email") or "").strip() or None
+                    )
                     token_payload_file_path = _save_token_payload_to_tmp(payload)
                     _print_and_log(
                         f"[RPA] 已保存完整 Token JSON: {token_payload_file_path}"
@@ -1072,6 +1080,8 @@ async def validate_antigravity_account(
         "file_path": token_payload_file_path,
         "auto_detected_project": True,
         "session_token": (session_token or None),
+        "cookie": token_payload_cookie,
+        "payload_email": token_payload_email,
     }
 
 

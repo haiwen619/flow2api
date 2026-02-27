@@ -1,5 +1,6 @@
 """Token manager for Flow2API with AT auto-refresh"""
 import asyncio
+import base64
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from ..core.database import Database
@@ -51,6 +52,7 @@ class TokenManager:
     async def add_token(
         self,
         st: str,
+        cookie: Optional[str] = None,
         project_id: Optional[str] = None,
         project_name: Optional[str] = None,
         remark: Optional[str] = None,
@@ -63,6 +65,7 @@ class TokenManager:
 
         Args:
             st: Session Token (必需)
+            cookie: 完整 Cookie Header（可选）
             project_id: 项目ID (可选,如果提供则直接使用,不创建新项目)
             project_name: 项目名称 (可选,如果不提供则自动生成)
             remark: 备注
@@ -133,6 +136,7 @@ class TokenManager:
         # Step 5: 创建Token对象
         token = Token(
             st=st,
+            cookie=cookie,
             at=at,
             at_expires=at_expires,
             email=email,
@@ -169,6 +173,7 @@ class TokenManager:
         self,
         token_id: int,
         st: Optional[str] = None,
+        cookie: Optional[str] = None,
         at: Optional[str] = None,
         at_expires: Optional[datetime] = None,
         project_id: Optional[str] = None,
@@ -187,6 +192,8 @@ class TokenManager:
 
         if st is not None:
             update_fields["st"] = st
+        if cookie is not None:
+            update_fields["cookie"] = cookie
         if at is not None:
             update_fields["at"] = at
         if at_expires is not None:
@@ -288,13 +295,18 @@ class TokenManager:
             if result:
                 return True
 
-            # AT 刷新失败，尝试自动更新 ST
-            debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 第一次 AT 刷新失败，尝试自动更新 ST...")
-            
+            # AT 刷新失败，优先尝试 HTTP reAuth 恢复可用 AT（可能先拿到 ST 再换 AT，或直接拿到可用 AT）
+            debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 第一次 AT 刷新失败，尝试 reAuth 恢复 AT...")
+            reauth_result = await self._try_refresh_at_via_reauth(token_id, token)
+            if reauth_result:
+                debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: reAuth 恢复 AT 成功")
+                return True
+
+            # reAuth 失败后，继续尝试现有 personal 模式浏览器刷新 ST
+            debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: reAuth 未成功，尝试浏览器刷新 ST...")
             new_st = await self._try_refresh_st(token_id, token)
             if new_st:
-                # ST 更新成功，重试 AT 刷新
-                debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: ST 已更新，重试 AT 刷新...")
+                debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 浏览器刷新 ST 成功，重试 AT 刷新...")
                 result = await self._do_refresh_at(token_id, new_st)
                 if result:
                     return True
@@ -303,6 +315,33 @@ class TokenManager:
             debug_logger.log_error(f"[AT_REFRESH] Token {token_id}: 所有刷新尝试失败，禁用 Token")
             await self.disable_token(token_id)
             return False
+
+    async def refresh_cookie_via_reauth(self, token_id: int) -> bool:
+        """仅通过 reAuth 刷新 Cookie/会话，不执行首次 ST->AT 直刷。
+
+        用于手动“刷新Cookie”按钮：
+        - 直接走 HTTP reAuth
+        - 跳过 `_refresh_at` 中第一次 `_do_refresh_at` 尝试
+        """
+        async with self._lock:
+            token = await self.db.get_token(token_id)
+            if not token:
+                return False
+
+            old_cookie = str(token.cookie or "").strip()
+            debug_logger.log_info(f"[REAUTH_ONLY] Token {token_id}: 开始仅 reAuth 刷新 Cookie...")
+            success = await self._try_refresh_at_via_reauth(token_id, token)
+            if not success:
+                debug_logger.log_warning(f"[REAUTH_ONLY] Token {token_id}: reAuth 刷新失败")
+                return False
+
+            updated = await self.db.get_token(token_id)
+            new_cookie = str((updated.cookie if updated else "") or "").strip()
+            cookie_changed = bool(new_cookie and new_cookie != old_cookie)
+            debug_logger.log_info(
+                f"[REAUTH_ONLY] Token {token_id}: reAuth 刷新成功 cookie_changed={cookie_changed}"
+            )
+            return True
 
     async def _do_refresh_at(self, token_id: int, st: str) -> bool:
         """执行 AT 刷新的核心逻辑
@@ -342,6 +381,8 @@ class TokenManager:
 
             # 验证 AT 有效性：通过 get_credits 测试
             try:
+                print(f"  - 验证新 AT 是否有效...")
+                print(f"  - 新 AT: {new_at}")
                 credits_result = await self.flow_client.get_credits(new_at)
                 await self.db.update_token(
                     token_id,
@@ -362,6 +403,120 @@ class TokenManager:
 
         except Exception as e:
             debug_logger.log_error(f"[AT_REFRESH] Token {token_id}: AT刷新失败 - {str(e)}")
+            return False
+
+    def _parse_jwt_exp(self, token: str) -> Optional[datetime]:
+        """从 JWT 中提取 exp 并转为 UTC datetime"""
+        try:
+            parts = token.split(".")
+            if len(parts) < 2:
+                return None
+            payload = parts[1]
+            payload += "=" * ((4 - len(payload) % 4) % 4)
+            decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
+            import json
+            payload_obj = json.loads(decoded)
+            exp = payload_obj.get("exp")
+            if not exp:
+                return None
+            return datetime.fromtimestamp(int(exp), tz=timezone.utc)
+        except Exception:
+            return None
+
+    async def _accept_direct_at_if_valid(self, token_id: int, candidate_at: str) -> bool:
+        """将候选 token 作为 AT 直接验证并写回"""
+        try:
+            credits_result = await self.flow_client.get_credits(candidate_at)
+            at_expires = self._parse_jwt_exp(candidate_at)
+            await self.db.update_token(
+                token_id,
+                at=candidate_at,
+                at_expires=at_expires,
+                credits=credits_result.get("credits", 0),
+            )
+            debug_logger.log_info(
+                f"[REAUTH_AT] Token {token_id}: 候选 token 可作为 AT 使用（余额: {credits_result.get('credits', 0)}）"
+            )
+            return True
+        except Exception as e:
+            debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: 候选 token 作为 AT 验证失败 - {str(e)}")
+            return False
+
+    async def _try_refresh_at_via_reauth(self, token_id: int, token) -> bool:
+        """尝试通过 reAuth HTTP 流程恢复 AT（优先按 AT 直验，失败再尝试 ST->AT）"""
+        try:
+            if not token.current_project_id:
+                debug_logger.log_warning(f"[REAUTH_ST] Token {token_id} 没有 project_id，无法执行 reAuth")
+                return False
+
+            debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: 开始执行 reAuth，尝试恢复 AT...")
+
+            # 延迟导入，避免主流程无谓依赖
+            from reAuth.refresh_cookie_before_relogin import (
+                ReAuthAccount,
+                refresh_cookie_before_relogin,
+                extract_session_token_from_cookie_header,
+            )
+
+            # 优先使用完整 Cookie（由账号池自动化同步），没有则回退最小 ST Cookie
+            initial_cookie_header = str(token.cookie or "").strip() or f"__Secure-next-auth.session-token={token.st}"
+
+            proxy_url = None
+            try:
+                proxy_config = await self.db.get_proxy_config()
+                if proxy_config and proxy_config.enabled and proxy_config.proxy_url:
+                    proxy_url = proxy_config.proxy_url
+            except Exception as proxy_err:
+                debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: 读取代理配置失败，继续直连: {proxy_err}")
+
+            def _run_reauth() -> str:
+                account = ReAuthAccount(
+                    project_id=token.current_project_id,
+                    cookie=initial_cookie_header,
+                    cookie_file=initial_cookie_header,
+                )
+                return refresh_cookie_before_relogin(
+                    account=account,
+                    timeout=30,
+                    proxy_url=proxy_url,
+                )
+
+            refreshed_cookie = await asyncio.to_thread(_run_reauth)
+            refreshed_st = extract_session_token_from_cookie_header(refreshed_cookie)
+            candidate_token = refreshed_st
+            candidate_source = "__Secure-next-auth.session-token"
+
+            # 保存 reAuth 返回的完整 cookie，供下次 reAuth/排障复用
+            await self.db.update_token(token_id, cookie=refreshed_cookie)
+
+            if not candidate_token:
+                debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: reAuth 未提取到可用 session token")
+                return False
+
+            debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: reAuth 候选 token 来源={candidate_source}")
+
+            if refreshed_st and refreshed_st != token.st:
+                await self.db.update_token(token_id, st=refreshed_st)
+                debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: reAuth 已更新 ST，尝试 ST->AT")
+            elif refreshed_st:
+                debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: reAuth 提取到的 ST 与旧值相同，继续尝试恢复 AT")
+            else:
+                debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: reAuth 未提取到 ST，仅使用候选 token 继续恢复 AT")
+
+            # 路径1（优先）：候选 token 在部分环境里就是 AT，先按 AT 直接验证并写回
+            if await self._accept_direct_at_if_valid(token_id, candidate_token):
+                return True
+
+            # 路径2（回退）：若不是 AT，再按 ST 执行常规 ST->AT 刷新
+            debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: 候选 token 直验 AT 失败，回退尝试 ST->AT...")
+            fallback_st = refreshed_st or candidate_token
+            if await self._do_refresh_at(token_id, fallback_st):
+                return True
+
+            return False
+
+        except Exception as e:
+            debug_logger.log_error(f"[REAUTH_AT] Token {token_id}: reAuth 恢复 AT 失败 - {str(e)}")
             return False
 
     async def _try_refresh_st(self, token_id: int, token) -> Optional[str]:

@@ -24,6 +24,22 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
     "stream": true
   }'
 
+# 1) 基础模型 + imageConfig: 4:3 + 1K 服务器地址示例
+curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "1:1", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
+
 
 # 2) 基础模型 + imageConfig: 3:4 + 2K
 curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \

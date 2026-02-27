@@ -83,6 +83,8 @@ async def validate_account_via_rpa(
             "file_path": None,
             "auto_detected_project": None,
             "session_token": None,
+            "cookie": None,
+            "payload_email": None,
         }
     if mode != "browser_automation":
         logger.error("[AccountPool][RPA] job_id=%s unsupported mode=%s", job_id, mode)
@@ -160,6 +162,8 @@ async def validate_account_via_rpa(
             "file_path": result.get("file_path"),
             "auto_detected_project": result.get("auto_detected_project"),
             "session_token": (str(result.get("session_token") or "").strip() or None),
+            "cookie": (str(result.get("cookie") or "").strip() or None),
+            "payload_email": (str(result.get("payload_email") or "").strip() or None),
         }
     except Exception as e:
         logger.exception("[AccountPool][RPA] job_id=%s browser_automation failed: %s", job_id, str(e))
