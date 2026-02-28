@@ -447,30 +447,25 @@ def verify_input_cookie_only(
 def extract_session_token_from_cookie_header(cookie_header: str) -> Optional[str]:
     """Extract __Secure-next-auth.session-token from Cookie header string."""
     text = cookie_header or ""
-    candidates: List[str] = []
-
-    # 1) chunked cookies (session-token.0 / .1 / ...) - usually the most complete in reAuth flow.
-    chunked = _extract_cookie_chunked_value(text, "__Secure-next-auth.session-token")
-    if chunked:
-        candidates.append(chunked)
-
-    # 2) plain key=value in raw header / set-cookie text.
+    # 1) plain key=value in raw header / set-cookie text.
+    # Prefer exact key first: if exact and chunked coexist, exact generally reflects latest effective cookie.
     direct = _extract_cookie_value_by_key(text, "__Secure-next-auth.session-token")
     if direct:
-        candidates.append(direct)
+        return direct
 
-    # 3) SimpleCookie parser fallback.
+    # 2) SimpleCookie parser fallback (exact key).
     cookie_dict = _cookie_header_to_dict(text)
     token = cookie_dict.get("__Secure-next-auth.session-token")
     if token:
         cleaned = _clean_cookie_token(token)
         if cleaned:
-            candidates.append(cleaned)
+            return cleaned
 
-    if not candidates:
-        return None
-    # Prefer longest candidate to avoid truncated parser variants.
-    return max(candidates, key=len)
+    # 3) chunked cookies (session-token.0 / .1 / ...), used when exact key is absent.
+    chunked = _extract_cookie_chunked_value(text, "__Secure-next-auth.session-token")
+    if chunked:
+        return chunked
+    return None
 
 
 def normalize_proxy_url(proxy_value: Optional[str]) -> Optional[str]:
@@ -816,6 +811,17 @@ def _extract_session_set_cookie_raw(set_cookie_values: List[str]) -> Optional[st
 
 
 def _merge_response_cookies(response, cookie_dict: Dict[str, str]) -> None:
+    exact_key = "__Secure-next-auth.session-token"
+    chunk_prefix = "__Secure-next-auth.session-token."
+
+    def _drop_chunked_keys() -> None:
+        for k in list(cookie_dict.keys()):
+            if str(k).startswith(chunk_prefix):
+                cookie_dict.pop(k, None)
+
+    def _drop_exact_key() -> None:
+        cookie_dict.pop(exact_key, None)
+
     for set_cookie in _extract_set_cookie_values(response):
         # Always try first cookie pair parse, even if SimpleCookie fails.
         pair_match = re.match(r"^\s*([^=;,\s]+)=([^;]+)", set_cookie)
@@ -823,11 +829,21 @@ def _merge_response_cookies(response, cookie_dict: Dict[str, str]) -> None:
             key = pair_match.group(1).strip()
             value = _clean_cookie_token(pair_match.group(2))
             if key and value is not None:
+                if key == exact_key:
+                    # exact token and chunked token should not coexist; keep exact as authoritative.
+                    _drop_chunked_keys()
+                elif key.startswith(chunk_prefix):
+                    # chunked token appears; clear stale exact token first.
+                    _drop_exact_key()
                 cookie_dict[key] = value
 
         parsed = SimpleCookie()
         parsed.load(set_cookie)
         for key, morsel in parsed.items():
+            if key == exact_key:
+                _drop_chunked_keys()
+            elif key.startswith(chunk_prefix):
+                _drop_exact_key()
             cookie_dict[key] = morsel.value
 
 
@@ -1035,15 +1051,35 @@ def refresh_cookie_before_relogin(
             step_no=4,
             title="访问 step3 返回 URL",
             purpose="进入认证中转页，提取 HTML 跳转链接或 location 头。",
-            request_brief="GET next_url，优先使用 cookie_file（若传入）否则使用当前 Cookie。",
+            request_brief="GET next_url，default 模式优先使用当前链路最新 Cookie（strict 模式使用 cookie_file/初始 cookie）。",
             expected_output="得到 location 或 HTML 中的 A HREF。",
             failure_impact="无法继续跳转链路，流程中断。",
         )
+        step4_cookie_source = ""
         if strict_java_flow:
             # Java: step4 固定走 account.getCookieFile()（为空时退回初始 cookie）
-            step4_cookie = account.cookie_file if account.cookie_file is not None else account.cookie
+            if account.cookie_file is not None:
+                step4_cookie = account.cookie_file
+                step4_cookie_source = "strict:cookie_file"
+            else:
+                step4_cookie = account.cookie
+                step4_cookie_source = "strict:account.cookie"
         else:
-            step4_cookie = account.cookie_file or current_cookie()
+            # 增强模式：优先使用 step1~3 合并后的最新 Cookie，避免被旧 cookie_file 覆盖。
+            # 仅在 current_cookie 为空时才回退 cookie_file/初始 cookie。
+            latest_cookie = current_cookie()
+            if latest_cookie:
+                step4_cookie = latest_cookie
+                step4_cookie_source = "default:current_cookie"
+            elif account.cookie_file:
+                step4_cookie = account.cookie_file
+                step4_cookie_source = "default:cookie_file_fallback"
+            else:
+                step4_cookie = account.cookie
+                step4_cookie_source = "default:account.cookie_fallback"
+            if account.cookie_file and step4_cookie_source != "default:cookie_file_fallback":
+                LOGGER.info("step4(default) 忽略 cookie_file，改用当前链路最新 Cookie。")
+        LOGGER.info("step4 Cookie来源: %s", step4_cookie_source or "unknown")
         LOGGER.info("step4 使用Cookie全文: %s", step4_cookie or "<空Cookie>")
         resp4 = do_request(
             "GET",
@@ -1145,6 +1181,14 @@ def refresh_cookie_before_relogin(
         record_cookie_state("step6 完成后", capture_tokens=True)
 
     account.cookie = current_cookie()
+    final_cookie_pairs = _cookie_header_to_pairs(account.cookie)
+    has_exact_session = any(k == "__Secure-next-auth.session-token" for k, _ in final_cookie_pairs)
+    chunk_count = sum(1 for k, _ in final_cookie_pairs if k.startswith("__Secure-next-auth.session-token."))
+    LOGGER.info(
+        "final cookie session-token状态: exact=%s chunk_count=%s",
+        has_exact_session,
+        chunk_count,
+    )
     account.final_session_token = extract_session_token_from_cookie_header(account.cookie) or ""
     account.final_session_set_cookie_raw = step6_session_set_cookie_raw or ""
     if not step6_session_from_set_cookie and account.final_session_token:

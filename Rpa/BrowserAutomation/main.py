@@ -742,7 +742,9 @@ async def validate_antigravity_account(
         token_payload_cookie: Optional[str] = None
         token_payload_email: Optional[str] = None
         project_id_request_urls: list[str] = []
+        next_data_request_cookies: list[str] = []
         project_ids_from_api: list[str] = []
+        request_capture_tasks: list[asyncio.Task] = []
         response_capture_tasks: list[asyncio.Task] = []
         _request_capture_handler = None
         _response_capture_handler = None
@@ -793,6 +795,45 @@ async def validate_antigravity_account(
                 f"[RPA] 已通过 CDP 连接到 BitBrowser 窗口，准备打开目标页面..."
             )
 
+            def _remember_next_data_cookie(cookie_header: Optional[str]) -> None:
+                text = str(cookie_header or "").strip()
+                if not text:
+                    return
+                next_data_request_cookies.append(text)
+                if len(next_data_request_cookies) > 300:
+                    del next_data_request_cookies[0 : len(next_data_request_cookies) - 300]
+
+            def _extract_cookie_from_headers_obj(headers_obj) -> Optional[str]:
+                if headers_obj is None:
+                    return None
+                if callable(headers_obj):
+                    try:
+                        headers_obj = headers_obj()
+                    except Exception:
+                        return None
+                if isinstance(headers_obj, dict):
+                    for k, v in headers_obj.items():
+                        if str(k or "").strip().lower() == "cookie":
+                            text = str(v or "").strip()
+                            return text or None
+                return None
+
+            async def _capture_next_data_request_cookie_async(request) -> None:
+                cookie_header: Optional[str] = None
+                try:
+                    if hasattr(request, "all_headers"):
+                        headers = await request.all_headers()
+                        cookie_header = _extract_cookie_from_headers_obj(headers)
+                except Exception:
+                    pass
+                if not cookie_header:
+                    try:
+                        if hasattr(request, "header_value"):
+                            cookie_header = str(await request.header_value("cookie") or "").strip() or None
+                    except Exception:
+                        pass
+                _remember_next_data_cookie(cookie_header)
+
             def _capture_request_for_project_id(request) -> None:
                 try:
                     req_url = str(getattr(request, "url", "") or "").strip()
@@ -804,6 +845,19 @@ async def validate_antigravity_account(
                     project_id_request_urls.append(req_url)
                     if len(project_id_request_urls) > 300:
                         del project_id_request_urls[0 : len(project_id_request_urls) - 300]
+                    if "labs.google/fx/_next/data/" in req_url_l:
+                        # 优先尝试同步读取请求头中的 Cookie。
+                        _remember_next_data_cookie(
+                            _extract_cookie_from_headers_obj(getattr(request, "headers", None))
+                        )
+                        # 异步兜底：某些版本仅在 all_headers()/header_value 中可拿到完整头。
+                        try:
+                            task = asyncio.create_task(_capture_next_data_request_cookie_async(request))
+                            request_capture_tasks.append(task)
+                            if len(request_capture_tasks) > 600:
+                                request_capture_tasks[:] = [x for x in request_capture_tasks if not x.done()]
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -939,6 +993,12 @@ async def validate_antigravity_account(
             try:
                 # 等待已触发的 project.searchUserProjects 响应解析任务完成，提升 projectId 命中率
                 try:
+                    pending_req_tasks = [t for t in request_capture_tasks if not t.done()]
+                    if pending_req_tasks:
+                        await asyncio.gather(*pending_req_tasks, return_exceptions=True)
+                except Exception:
+                    pass
+                try:
                     pending_tasks = [t for t in response_capture_tasks if not t.done()]
                     if pending_tasks:
                         await asyncio.gather(*pending_tasks, return_exceptions=True)
@@ -984,9 +1044,27 @@ async def validate_antigravity_account(
                         next_data_request_urls=project_id_request_urls,
                         state=2,
                     )
-                    token_payload_cookie = (
-                        str((payload or {}).get("cookie") or "").strip() or None
+                    cookie_from_next_data = (
+                        str(next_data_request_cookies[-1] or "").strip()
+                        if next_data_request_cookies
+                        else ""
                     )
+                    cookie_from_payload = str((payload or {}).get("cookie") or "").strip()
+                    token_payload_cookie = cookie_from_next_data or cookie_from_payload or None
+                    if cookie_from_next_data:
+                        _print_and_log(
+                            f"[RPA] token_payload_cookie 已切换为 _next/data 请求头 Cookie，长度: {len(cookie_from_next_data)}"
+                        )
+                    elif cookie_from_payload:
+                        _print_and_log(
+                            f"[RPA] 未捕获到 _next/data 请求头 Cookie，回退到导出 payload.cookie，长度: {len(cookie_from_payload)}",
+                            level="warning",
+                        )
+                    else:
+                        _print_and_log(
+                            "[RPA] 未获取到可用 cookie（_next/data 请求头与 payload.cookie 都为空）",
+                            level="warning",
+                        )
                     token_payload_email = (
                         str((payload or {}).get("email") or "").strip() or None
                     )

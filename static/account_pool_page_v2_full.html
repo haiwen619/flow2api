@@ -92,6 +92,34 @@
               <p class="text-xs text-gray-400 mt-1">管理并监控您的多平台账号资产</p>
             </div>
             <div class="flex flex-wrap gap-3 justify-end">
+              <div class="flex items-center gap-2">
+                <div class="relative">
+                  <span class="iconify absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-lg" data-icon="material-symbols:search"></span>
+                  <input
+                    id="apEmailSearch"
+                    type="text"
+                    class="w-60 max-w-[65vw] rounded-xl border border-gray-200 bg-white pl-10 pr-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
+                    placeholder="按邮箱模糊搜索"
+                  />
+                </div>
+                <button
+                  id="apSearchBtn"
+                  class="flex items-center space-x-1.5 px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all font-medium text-sm text-slate-700"
+                  type="button"
+                >
+                  <span class="iconify text-base" data-icon="material-symbols:search"></span>
+                  <span>搜索</span>
+                </button>
+                <button
+                  id="apSearchClearBtn"
+                  class="flex items-center space-x-1.5 px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all font-medium text-sm text-slate-500 disabled:opacity-50 disabled:hover:bg-transparent"
+                  type="button"
+                  disabled
+                >
+                  <span class="iconify text-base" data-icon="material-symbols:close-small"></span>
+                  <span>清空</span>
+                </button>
+              </div>
               <button
                 class="flex items-center space-x-2 px-4 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all font-medium text-sm"
                 id="btnValidateAll">
@@ -270,6 +298,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
     const AP_PAGE_SIZE = 10;
     let apPage = 1;
     let apTotal = 0;
+    let apSearch = '';
 
     function getAuthToken() {
       const token = localStorage.getItem('gcli2api_auth_token') || localStorage.getItem('adminToken') || '';
@@ -277,6 +306,37 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         try { localStorage.setItem('gcli2api_auth_token', token); } catch (_) {}
       }
       return token;
+    }
+
+    function normalizeApSearch(value) {
+      return String(value || '').trim();
+    }
+
+    function setApSearchUiState() {
+      const clearBtn = document.getElementById('apSearchClearBtn');
+      if (clearBtn) clearBtn.disabled = !apSearch;
+    }
+
+    function syncApSearchInput() {
+      const inputEl = document.getElementById('apEmailSearch');
+      if (inputEl && inputEl.value !== apSearch) inputEl.value = apSearch;
+      setApSearchUiState();
+    }
+
+    async function applyApEmailSearch(options) {
+      const opts = options || {};
+      const inputEl = document.getElementById('apEmailSearch');
+      apSearch = normalizeApSearch(inputEl ? inputEl.value : apSearch);
+      if (opts.resetPage !== false) apPage = 1;
+      syncApSearchInput();
+      await loadAccountPoolAccounts({ page: apPage, search: apSearch });
+    }
+
+    async function clearApEmailSearch() {
+      apSearch = '';
+      apPage = 1;
+      syncApSearchInput();
+      await loadAccountPoolAccounts({ page: 1, search: '' });
     }
 
     // 侧边栏及模态框切换交互
@@ -838,16 +898,22 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
 
       if (indicatorEl) indicatorEl.innerText = `${apPage}/${totalPages}`;
       if (infoEl) {
-        infoEl.innerText = `显示 ${from}-${to} / 共 ${apTotal} 条`;
+        if (apSearch) {
+          infoEl.innerText = `搜索“${apSearch}”：显示 ${from}-${to} / 共 ${apTotal} 条`;
+        } else {
+          infoEl.innerText = `显示 ${from}-${to} / 共 ${apTotal} 条`;
+        }
       }
       if (prevBtn) prevBtn.disabled = apPage <= 1;
       if (nextBtn) nextBtn.disabled = apPage >= totalPages;
     }
 
-    async function fetchAccountPoolPage(token, page) {
+    async function fetchAccountPoolPage(token, page, searchKeyword) {
       const p = Math.max(1, Number(page) || 1);
       const offset = (p - 1) * AP_PAGE_SIZE;
       const params = new URLSearchParams({ offset: String(offset), limit: String(AP_PAGE_SIZE) });
+      const search = normalizeApSearch(searchKeyword);
+      if (search) params.set('search', search);
       const resp = await fetch(`/accountpool/accounts?${params.toString()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -860,10 +926,11 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       return { resp, data };
     }
 
-    async function refreshStatsForCurrentFilter(token) {
+    async function refreshStatsForCurrentFilter(token, searchKeyword) {
       // 尽量统计全量，避免统计卡片随分页变化。
       const MAX_ITEMS = 1000;
       const BATCH = 200;
+      const search = normalizeApSearch(searchKeyword);
 
       let offset = 0;
       let all = [];
@@ -871,6 +938,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
 
       while (offset < MAX_ITEMS) {
         const params = new URLSearchParams({ offset: String(offset), limit: String(BATCH) });
+        if (search) params.set('search', search);
         const resp = await fetch(`/accountpool/accounts?${params.toString()}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -903,11 +971,15 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       if (opts && typeof opts.page !== 'undefined') {
         apPage = Math.max(1, Number(opts.page) || 1);
       }
+      if (opts && typeof opts.search !== 'undefined') {
+        apSearch = normalizeApSearch(opts.search);
+      }
+      syncApSearchInput();
 
       tbody.innerHTML = '<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">加载中...</td></tr>';
 
       try {
-        const { resp, data } = await fetchAccountPoolPage(token, apPage);
+        const { resp, data } = await fetchAccountPoolPage(token, apPage, apSearch);
 
         if (!resp.ok || !data || !data.success) {
           tbody.innerHTML = `<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-red-500" colspan="5">加载失败: ${escapeHtml(data.detail || data.error || '未知错误')}</td></tr>`;
@@ -928,14 +1000,15 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
             return await loadAccountPoolAccounts();
           }
 
-          tbody.innerHTML = '<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">暂无账号数据</td></tr>';
+          const emptyText = apSearch ? '暂无匹配账号' : '暂无账号数据';
+          tbody.innerHTML = `<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-gray-400" colspan="5">${emptyText}</td></tr>`;
           updateAccountPoolStats([], apTotal, false);
           return;
         }
 
         // 先用本页数据快速刷新；随后后台尽力拉全量做更准统计
         updateAccountPoolStats(items, apTotal, false);
-        refreshStatsForCurrentFilter(token).catch(() => {});
+        refreshStatsForCurrentFilter(token, apSearch).catch(() => {});
 
         tbody.innerHTML = items.map((item, idx) => {
           const name = escapeHtml(item.display_name || '-');
@@ -1237,6 +1310,42 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         });
         renderBatchImportPreview(String(batchEl.value || ''));
       }
+
+      const searchInputEl = document.getElementById('apEmailSearch');
+      const searchBtnEl = document.getElementById('apSearchBtn');
+      const clearBtnEl = document.getElementById('apSearchClearBtn');
+      if (searchBtnEl) {
+        searchBtnEl.addEventListener('click', () => {
+          applyApEmailSearch({ resetPage: true });
+        });
+      }
+      if (clearBtnEl) {
+        clearBtnEl.addEventListener('click', () => {
+          clearApEmailSearch();
+        });
+      }
+      if (searchInputEl) {
+        searchInputEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            applyApEmailSearch({ resetPage: true });
+          }
+        });
+        searchInputEl.addEventListener('input', () => {
+          setTimeout(() => {
+            const latest = document.getElementById('apEmailSearch');
+            if (!latest) return;
+            const text = normalizeApSearch(latest.value);
+            if (!text && apSearch) {
+              clearApEmailSearch();
+              return;
+            }
+            const clearBtn = document.getElementById('apSearchClearBtn');
+            if (clearBtn) clearBtn.disabled = !text;
+          }, 0);
+        });
+      }
+      syncApSearchInput();
 
       // 分页按钮事件
       const prevBtn = document.getElementById('apPrevPage');

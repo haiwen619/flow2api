@@ -65,3 +65,4 @@ config/setting_warp_example.toml
 /tmp/Token
 /tmp
 /log.txt
+/clean_vs_build_folders.bat

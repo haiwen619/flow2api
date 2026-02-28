@@ -61,6 +61,17 @@ class Config:
         return self._config["flow"]["max_retries"]
 
     @property
+    def enable_reauth_refresh(self) -> bool:
+        """Whether AT refresh should try reAuth HTTP recovery path."""
+        return bool(self._config.get("flow", {}).get("enable_reauth_refresh", False))
+
+    def set_enable_reauth_refresh(self, enabled: bool):
+        """Set reAuth HTTP recovery switch for AT refresh path."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        self._config["flow"]["enable_reauth_refresh"] = bool(enabled)
+
+    @property
     def poll_interval(self) -> float:
         return self._config["flow"]["poll_interval"]
 
