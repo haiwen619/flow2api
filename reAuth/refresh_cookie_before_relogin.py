@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 try:
     from curl_cffi.requests import Session
@@ -78,6 +78,7 @@ DEFAULT_USER_AGENT = (
 
 BASE_URL = "https://labs.google/fx"
 FLOW_API_BASE_URL = "https://aisandbox-pa.googleapis.com/v1"
+DEFAULT_BROWSER_TEST_URL = "https://labs.google/fx/tools/flow"
 
 
 def _log_warning(message: str, *args) -> None:
@@ -92,6 +93,7 @@ class ReAuthAccount:
     cookie_file: Optional[str] = None
     observed_tokens: List[Dict[str, str]] = field(default_factory=list)
     final_session_token: str = ""
+    final_session_set_cookie_raw: str = ""
 
 
 def _clip_long_text(value: Optional[str], max_len: int = 220) -> str:
@@ -128,6 +130,31 @@ def _extract_cookie_value_by_key(cookie_like_text: str, key: str) -> Optional[st
     if not match:
         return None
     return _clean_cookie_token(match.group(1))
+
+
+def _extract_cookie_chunked_value(cookie_like_text: str, key: str) -> Optional[str]:
+    """
+    Extract and join chunked cookie value:
+      key.0=...; key.1=...; key.2=...
+    """
+    pattern = rf"(?:^|[;,]\s*){re.escape(key)}\.(\d+)=([^;,\r\n]+)"
+    matches = re.findall(pattern, cookie_like_text or "")
+    if not matches:
+        return None
+
+    chunks: List[tuple[int, str]] = []
+    for idx_text, value_text in matches:
+        try:
+            idx = int(idx_text)
+        except Exception:
+            continue
+        v = _clean_cookie_token(value_text) or ""
+        chunks.append((idx, v))
+    if not chunks:
+        return None
+
+    chunks.sort(key=lambda x: x[0])
+    return "".join(v for _, v in chunks) or None
 
 
 def _verify_at_via_get_credits(
@@ -419,12 +446,31 @@ def verify_input_cookie_only(
 
 def extract_session_token_from_cookie_header(cookie_header: str) -> Optional[str]:
     """Extract __Secure-next-auth.session-token from Cookie header string."""
-    cookie_dict = _cookie_header_to_dict(cookie_header or "")
+    text = cookie_header or ""
+    candidates: List[str] = []
+
+    # 1) chunked cookies (session-token.0 / .1 / ...) - usually the most complete in reAuth flow.
+    chunked = _extract_cookie_chunked_value(text, "__Secure-next-auth.session-token")
+    if chunked:
+        candidates.append(chunked)
+
+    # 2) plain key=value in raw header / set-cookie text.
+    direct = _extract_cookie_value_by_key(text, "__Secure-next-auth.session-token")
+    if direct:
+        candidates.append(direct)
+
+    # 3) SimpleCookie parser fallback.
+    cookie_dict = _cookie_header_to_dict(text)
     token = cookie_dict.get("__Secure-next-auth.session-token")
     if token:
-        return _clean_cookie_token(token)
+        cleaned = _clean_cookie_token(token)
+        if cleaned:
+            candidates.append(cleaned)
 
-    return _extract_cookie_value_by_key(cookie_header or "", "__Secure-next-auth.session-token")
+    if not candidates:
+        return None
+    # Prefer longest candidate to avoid truncated parser variants.
+    return max(candidates, key=len)
 
 
 def normalize_proxy_url(proxy_value: Optional[str]) -> Optional[str]:
@@ -445,6 +491,196 @@ def normalize_proxy_url(proxy_value: Optional[str]) -> Optional[str]:
         return f"http://{value}"
 
     return value
+
+
+def _cookie_header_to_pairs(cookie_header: str) -> List[tuple[str, str]]:
+    """Parse cookie header text into (name, value) pairs."""
+    text = cookie_header or ""
+    parsed = _cookie_header_to_dict(text)
+    if parsed:
+        return [(k, v) for k, v in parsed.items() if str(k).strip()]
+
+    # Fallback for loose/malformed cookie strings.
+    pairs: List[tuple[str, str]] = []
+    for part in text.split(";"):
+        segment = (part or "").strip()
+        if not segment or "=" not in segment:
+            continue
+        key, value = segment.split("=", 1)
+        key = key.strip()
+        cleaned = _clean_cookie_token(value)
+        if not key or cleaned is None:
+            continue
+        pairs.append((key, cleaned))
+    return pairs
+
+
+def _build_playwright_cookies(cookie_header: str, target_url: str) -> List[Dict[str, Any]]:
+    """Convert Cookie header into Playwright `context.add_cookies` payload."""
+    parsed_url = urlparse((target_url or "").strip())
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        raise ValueError(f"Invalid browser target url: {target_url}")
+
+    cookie_scope_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+    ignored_set_cookie_attrs = {
+        "path",
+        "domain",
+        "expires",
+        "max-age",
+        "secure",
+        "httponly",
+        "samesite",
+        "priority",
+        "partitioned",
+    }
+    cookies_for_browser: List[Dict[str, Any]] = []
+    for name, value in _cookie_header_to_pairs(cookie_header):
+        if name.strip().lower() in ignored_set_cookie_attrs:
+            continue
+        cookie_item: Dict[str, Any] = {"name": name, "value": value, "url": cookie_scope_url}
+        if name.startswith("__Secure-") or name.startswith("__Host-"):
+            cookie_item["secure"] = True
+        # NOTE: For Playwright add_cookies, `url + path` on __Host-* may be rejected.
+        # Keep url-only form here; path "/" is implied by the scoped URL.
+        cookies_for_browser.append(cookie_item)
+    return cookies_for_browser
+
+
+def open_browser_with_cookie_for_validation(
+    cookie_header: str,
+    *,
+    target_url: str = DEFAULT_BROWSER_TEST_URL,
+    user_agent: str = DEFAULT_USER_AGENT,
+    proxy_url: Optional[str] = None,
+    headless: bool = False,
+    wait_seconds: int = 45,
+) -> Dict[str, Any]:
+    """
+    Use Playwright to open target_url with the provided cookie for manual validation.
+
+    Returns:
+        {
+          "success": bool,
+          "final_url": str | None,
+          "title": str | None,
+          "likely_logged_in": bool | None,
+          "cookie_count": int,
+          "error": str | None
+        }
+    """
+    if not cookie_header:
+        return {
+            "success": False,
+            "final_url": None,
+            "title": None,
+            "likely_logged_in": None,
+            "cookie_count": 0,
+            "error": "empty cookie",
+        }
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        return {
+            "success": False,
+            "final_url": None,
+            "title": None,
+            "likely_logged_in": None,
+            "cookie_count": 0,
+            "error": f"playwright unavailable: {e}",
+        }
+
+    browser_cookies = _build_playwright_cookies(cookie_header, target_url)
+    if not browser_cookies:
+        return {
+            "success": False,
+            "final_url": None,
+            "title": None,
+            "likely_logged_in": None,
+            "cookie_count": 0,
+            "error": "no cookies parsed from cookie header",
+        }
+
+    final_url: Optional[str] = None
+    title: Optional[str] = None
+    likely_logged_in: Optional[bool] = None
+    wait_seconds = max(0, int(wait_seconds))
+    LOGGER.info("[browser-test] 准备打开页面: %s", target_url)
+    LOGGER.info("[browser-test] 注入 Cookie 数量: %s", len(browser_cookies))
+    browser = None
+    context = None
+    with sync_playwright() as p:
+        try:
+            launch_kwargs: Dict[str, Any] = {"headless": bool(headless)}
+            if proxy_url:
+                launch_kwargs["proxy"] = {"server": proxy_url}
+            browser = p.chromium.launch(**launch_kwargs)
+            context_kwargs: Dict[str, Any] = {}
+            if user_agent:
+                context_kwargs["user_agent"] = user_agent
+            context = browser.new_context(**context_kwargs)
+            try:
+                context.add_cookies(browser_cookies)
+            except Exception as add_err:
+                LOGGER.warning("[browser-test] 批量注入 Cookie 失败，改为逐条注入: %s", add_err)
+                injected_count = 0
+                skipped: List[str] = []
+                for item in browser_cookies:
+                    try:
+                        context.add_cookies([item])
+                        injected_count += 1
+                    except Exception:
+                        skipped.append(str(item.get("name") or ""))
+                LOGGER.info(
+                    "[browser-test] 逐条注入完成: success=%s skipped=%s",
+                    injected_count,
+                    skipped,
+                )
+            page = context.new_page()
+            page.goto(target_url, wait_until="domcontentloaded", timeout=90_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:
+                pass
+
+            final_url = page.url
+            title = page.title()
+            likely_logged_in = "accounts.google.com" not in (final_url or "").lower()
+            LOGGER.info("[browser-test] 页面打开完成: final_url=%s title=%s", final_url, title)
+            LOGGER.info("[browser-test] 登录态判断(粗略): %s", likely_logged_in)
+
+            if not headless and wait_seconds > 0:
+                LOGGER.info("[browser-test] 浏览器将保持 %s 秒，便于人工观察页面。", wait_seconds)
+                page.wait_for_timeout(wait_seconds * 1000)
+            return {
+                "success": True,
+                "final_url": final_url,
+                "title": title,
+                "likely_logged_in": likely_logged_in,
+                "cookie_count": len(browser_cookies),
+                "error": None,
+            }
+        except Exception as e:
+            _log_warning("[browser-test] 打开浏览器验证失败: %s", e)
+            return {
+                "success": False,
+                "final_url": final_url,
+                "title": title,
+                "likely_logged_in": likely_logged_in,
+                "cookie_count": len(browser_cookies),
+                "error": str(e),
+            }
+        finally:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
 
 def _extract_set_cookie_values(response) -> List[str]:
@@ -484,23 +720,53 @@ def _extract_set_cookie_values(response) -> List[str]:
 
     headers = response.headers
     values: List[str] = []
+    raw_values: List[str] = []
 
+    # 1) Try list API first (some libs may return stripped cookie pairs here).
     if hasattr(headers, "get_list"):
-        raw_values: List[str] = []
-        raw_values.extend(headers.get_list("set-cookie"))
-        raw_values.extend(headers.get_list("Set-Cookie"))
-        for raw in raw_values:
-            values.extend(_split_combined_set_cookie(raw))
-        return [v for v in values if v]
+        try:
+            raw_values.extend(headers.get_list("set-cookie") or [])
+        except Exception:
+            pass
+        try:
+            raw_values.extend(headers.get_list("Set-Cookie") or [])
+        except Exception:
+            pass
 
-    raw = headers.get("set-cookie") or headers.get("Set-Cookie")
-    if not raw:
+    # 2) Always include raw header accessor as fallback (often keeps attributes).
+    raw_lower = headers.get("set-cookie")
+    raw_upper = headers.get("Set-Cookie")
+    for raw in (raw_lower, raw_upper):
+        if not raw:
+            continue
+        if isinstance(raw, list):
+            raw_values.extend([str(x) for x in raw if x is not None])
+        else:
+            raw_values.append(str(raw))
+
+    # Split all candidates.
+    for raw in raw_values:
+        values.extend(_split_combined_set_cookie(raw))
+    values = [v for v in values if v]
+    if not values:
         return []
-    if isinstance(raw, list):
-        for item in raw:
-            values.extend(_split_combined_set_cookie(item))
-        return [v for v in values if v]
-    return [v for v in _split_combined_set_cookie(raw) if v]
+
+    # Deduplicate by cookie key and keep the longest value (usually includes attributes).
+    merged: Dict[str, str] = {}
+    order: List[str] = []
+    for item in values:
+        m = re.match(r"^\s*([^=;,\s]+)=", item)
+        key = m.group(1).strip().lower() if m else item.strip().lower()
+        prev = merged.get(key)
+        if prev is None:
+            merged[key] = item
+            order.append(key)
+        else:
+            # Prefer fuller entry that keeps Path/Expires/HttpOnly...
+            if len(item) > len(prev):
+                merged[key] = item
+
+    return [merged[k] for k in order]
 
 
 def _extract_token_from_set_cookie_values(set_cookie_values: List[str]) -> Optional[str]:
@@ -509,6 +775,43 @@ def _extract_token_from_set_cookie_values(set_cookie_values: List[str]) -> Optio
         token = extract_session_token_from_cookie_header(set_cookie)
         if token:
             return token
+    return None
+
+
+def _extract_session_set_cookie_raw(set_cookie_values: List[str]) -> Optional[str]:
+    """Extract Set-Cookie raw for session token.
+
+    - exact key exists: return longest exact entry
+    - only chunk keys (.0/.1/...): return all chunk entries joined by index order
+    """
+    if not set_cookie_values:
+        return None
+    key_exact = "__secure-next-auth.session-token="
+    key_chunk = "__secure-next-auth.session-token."
+    exact_items: List[str] = []
+    chunk_items: List[tuple[int, str]] = []
+    for set_cookie in set_cookie_values:
+        text = (set_cookie or "").strip()
+        lower = text.lower()
+        if lower.startswith(key_exact):
+            exact_items.append(text)
+            continue
+        if lower.startswith(key_chunk):
+            m = re.match(r"^\s*__Secure-next-auth\.session-token\.(\d+)=", text, re.IGNORECASE)
+            if m:
+                try:
+                    idx = int(m.group(1))
+                except Exception:
+                    idx = 10**9
+            else:
+                idx = 10**9
+            chunk_items.append((idx, text))
+
+    if exact_items:
+        return max(exact_items, key=len)
+    if chunk_items:
+        chunk_items.sort(key=lambda x: x[0])
+        return ", ".join(item for _, item in chunk_items)
     return None
 
 
@@ -573,7 +876,7 @@ def refresh_cookie_before_relogin(
 
     def record_cookie_state(stage: str, capture_tokens: bool = False) -> None:
         cookie_value = current_cookie()
-        LOGGER.info("%s Cookie全文: %s", stage, cookie_value or "<空Cookie>")
+        # LOGGER.info("%s Cookie全文: %s", stage, cookie_value or "<空Cookie>")
         if capture_tokens:
             session_token = extract_session_token_from_cookie_header(cookie_value)
             record_token(stage, "__Secure-next-auth.session-token", session_token)
@@ -829,18 +1132,21 @@ def refresh_cookie_before_relogin(
 
         step6_set_cookie_values = _extract_set_cookie_values(resp6)
         step6_session_from_set_cookie = _extract_token_from_set_cookie_values(step6_set_cookie_values)
-        LOGGER.info("step6 Set-Cookie 全量条目如下（count=%s）:", len(step6_set_cookie_values))
-        if len(step6_set_cookie_values) == 0:
-            LOGGER.warning(
-                "step6 未收到任何 Set-Cookie。该请求可能成功，但服务端本次未下发 cookie（不一定是失败）。"
-            )
-        for idx, set_cookie_item in enumerate(step6_set_cookie_values, start=1):
-            LOGGER.info("step6 Set-Cookie[%s]: %s", idx, set_cookie_item)
+        step6_session_set_cookie_raw = _extract_session_set_cookie_raw(step6_set_cookie_values)
+        # LOGGER.info("step6 Set-Cookie 全量条目如下（count=%s）:", len(step6_set_cookie_values))
+        # if len(step6_set_cookie_values) == 0:
+        #     LOGGER.warning(
+        #         "step6 未收到任何 Set-Cookie。该请求可能成功，但服务端本次未下发 cookie（不一定是失败）。"
+        #     )
+        # for idx, set_cookie_item in enumerate(step6_set_cookie_values, start=1):
+        #     LOGGER.info("step6 Set-Cookie[%s]: %s", idx, set_cookie_item)
         record_token("step6", "set-cookie.__Secure-next-auth.session-token", step6_session_from_set_cookie)
+        record_token("step6", "set-cookie.__Secure-next-auth.session-token.raw", step6_session_set_cookie_raw)
         record_cookie_state("step6 完成后", capture_tokens=True)
 
     account.cookie = current_cookie()
     account.final_session_token = extract_session_token_from_cookie_header(account.cookie) or ""
+    account.final_session_set_cookie_raw = step6_session_set_cookie_raw or ""
     if not step6_session_from_set_cookie and account.final_session_token:
         LOGGER.info("step6 未下发 session-token，沿用当前 Cookie 中已有 session-token。")
     if not account.final_session_token:
@@ -848,6 +1154,7 @@ def refresh_cookie_before_relogin(
     if not account.final_session_token:
         LOGGER.warning("最终仍未获取到 __Secure-next-auth.session-token，请重点检查 step5/step6 链路与服务端会话状态。")
     record_token("final", "__Secure-next-auth.session-token", account.final_session_token)
+    record_token("final", "__Secure-next-auth.session-token.raw", account.final_session_set_cookie_raw)
     account.observed_tokens = observed_tokens
 
     if test_at_after_refresh:
@@ -891,9 +1198,10 @@ def refresh_cookie_before_relogin(
     LOGGER.info("========== reAuth 功能说明（结束） ==========")
     LOGGER.info("最终Cookie全文: %s", account.cookie or "<空Cookie>")
     LOGGER.info("最终SessionToken(完整): %s", account.final_session_token)
-    LOGGER.info("过程采集到的全部Token如下（按时间顺序）:")
-    for idx, item in enumerate(observed_tokens, start=1):
-        LOGGER.info("  [%s] stage=%s source=%s token=%s", idx, item["stage"], item["source"], item["token"] or "<空>")
+    LOGGER.info("最终Session Set-Cookie原文(完整): %s", account.final_session_set_cookie_raw or "<空>")
+    # LOGGER.info("过程采集到的全部Token如下（按时间顺序）:")
+    # for idx, item in enumerate(observed_tokens, start=1):
+    #     LOGGER.info("  [%s] stage=%s source=%s token=%s", idx, item["stage"], item["source"], item["token"] or "<空>")
     LOGGER.info("==========================================")
     return account.cookie
 
@@ -912,6 +1220,10 @@ def _main() -> None:
     parser.add_argument("--test-at", action="store_true", help="After refresh, test candidate token via /v1/credits once")
     parser.add_argument("--verify-only", action="store_true", help="Only verify input cookie token via /v1/credits once")
     parser.add_argument("--strict-java-flow", action="store_true", help="Strict 1:1 Java flow: cookie update only in step3/5/6, step4 uses cookie_file, step5 uses location header only")
+    parser.add_argument("--test-browser-with-cookie", action="store_true", help="After refresh (or verify-only), open browser with current cookie and visit target url for manual validation")
+    parser.add_argument("--browser-url", default=DEFAULT_BROWSER_TEST_URL, help="Browser validation target url")
+    parser.add_argument("--browser-headless", action="store_true", help="Run browser validation in headless mode")
+    parser.add_argument("--browser-wait-seconds", type=int, default=45, help="Seconds to keep browser open for manual checking")
     parser.add_argument("--debug", action="store_true", help="Enable debug logs")
     args = parser.parse_args()
 
@@ -938,6 +1250,15 @@ def _main() -> None:
                 connect_timeout=args.connect_timeout,
                 timeout=args.timeout,
             )
+            if args.test_browser_with_cookie:
+                output["browser_cookie_test"] = open_browser_with_cookie_for_validation(
+                    args.cookie,
+                    target_url=args.browser_url,
+                    user_agent=args.ua,
+                    proxy_url=effective_proxy,
+                    headless=args.browser_headless,
+                    wait_seconds=args.browser_wait_seconds,
+                )
             print(json.dumps(output, ensure_ascii=False))
             return
 
@@ -960,6 +1281,7 @@ def _main() -> None:
         output["strict_java_flow"] = args.strict_java_flow
         output["observed_tokens"] = account.observed_tokens
         output["final_session_token"] = account.final_session_token
+        output["final_session_set_cookie_raw"] = account.final_session_set_cookie_raw
         if args.test_at:
             st_to_at_result = _st_to_at_via_auth_session(
                 account.final_session_token,
@@ -983,7 +1305,16 @@ def _main() -> None:
                     "userPaygateTier": None,
                     "error": f"ST->AT failed: {st_to_at_result.get('error')}",
                 }
-        print(json.dumps(output, ensure_ascii=False))
+        if args.test_browser_with_cookie:
+            output["browser_cookie_test"] = open_browser_with_cookie_for_validation(
+                account.cookie,
+                target_url=args.browser_url,
+                user_agent=args.ua,
+                proxy_url=effective_proxy,
+                headless=args.browser_headless,
+                wait_seconds=args.browser_wait_seconds,
+            )
+        # print(json.dumps(output, ensure_ascii=False))
     except KeyboardInterrupt:
         print("Interrupted by user.", file=sys.stderr)
         sys.exit(130)

@@ -103,6 +103,7 @@ class ImportTokenItem(BaseModel):
     email: Optional[str] = None
     access_token: Optional[str] = None
     session_token: Optional[str] = None
+    cookie: Optional[str] = None
     is_active: bool = True
     image_enabled: bool = True
     video_enabled: bool = True
@@ -541,6 +542,7 @@ async def import_tokens(
                     await token_manager.update_token(
                         token_id=existing.id,
                         st=st,
+                        cookie=item.cookie,
                         at=at,
                         at_expires=at_expires,
                         image_enabled=item.image_enabled,
@@ -556,6 +558,7 @@ async def import_tokens(
                     # 添加新Token
                     new_token = await token_manager.add_token(
                         st=st,
+                        cookie=item.cookie,
                         image_enabled=item.image_enabled,
                         video_enabled=item.video_enabled,
                         image_concurrency=item.image_concurrency,
@@ -812,12 +815,18 @@ async def update_debug_config(
 ):
     """Update debug configuration"""
     try:
-        # Update in-memory config only (not database)
-        # This ensures debug mode is automatically disabled on restart
-        config.set_debug_enabled(request.enabled)
+        # Persist to database so the choice survives service restart.
+        await db.update_debug_config(enabled=request.enabled)
+
+        # Hot reload: sync database value to in-memory config.
+        await db.reload_config_to_memory()
 
         status = "enabled" if request.enabled else "disabled"
-        return {"success": True, "message": f"Debug mode {status}", "enabled": request.enabled}
+        return {
+            "success": True,
+            "message": f"Debug mode {status}",
+            "enabled": config.debug_enabled,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update debug config: {str(e)}")
 

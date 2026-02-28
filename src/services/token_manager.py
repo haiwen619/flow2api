@@ -343,7 +343,7 @@ class TokenManager:
             )
             return True
 
-    async def _do_refresh_at(self, token_id: int, st: str) -> bool:
+    async def _do_refresh_at(self, token_id: int, st: str, st_raw: Optional[str] = None) -> bool:
         """执行 AT 刷新的核心逻辑
 
         Args:
@@ -356,8 +356,34 @@ class TokenManager:
         try:
             debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 开始刷新AT...")
 
+            # 兼容输入：若误传入 Cookie/Set-Cookie 文本（含 Path/Expires 等属性），先提取纯 ST。
+            st_input = str(st or "")
+            if "__Secure-next-auth.session-token" in st_input or ";" in st_input:
+                try:
+                    from reAuth.refresh_cookie_before_relogin import extract_session_token_from_cookie_header
+                    extracted = extract_session_token_from_cookie_header(st_input)
+                    if extracted:
+                        debug_logger.log_info(
+                            f"[AT_REFRESH] Token {token_id}: 检测到Cookie/Set-Cookie格式输入，已提取纯ST（输入长度={len(st_input)} -> ST长度={len(extracted)}）"
+                        )
+                        st = extracted
+                except Exception as norm_err:
+                    debug_logger.log_warning(
+                        f"[AT_REFRESH] Token {token_id}: ST 输入规范化失败，继续使用原值: {norm_err}"
+                    )
+            
+            # 临时调试位：如需强制使用网页最新 ST 进行测试，可在此处填入。
+            # 留空字符串时不生效，继续使用函数入参 st。
+            debug_st_override = ""
+            st_for_refresh = (str(debug_st_override).strip() or st)
+            if str(debug_st_override).strip():
+                debug_logger.log_warning(f"[AT_REFRESH] Token {token_id}: 使用临时调试 ST 覆盖入参 ST")
+            debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 当前ST长度={len(str(st_for_refresh or ''))}")
+            if st_raw:
+                print(f"  - 当前 ST(原文): {st_raw}")
+            print(f"  - 当前 ST: {st_for_refresh}")
             # 使用ST转AT
-            result = await self.flow_client.st_to_at(st)
+            result = await self.flow_client.st_to_at(st_for_refresh)
             new_at = result["access_token"]
             expires = result.get("expires")
 
@@ -443,7 +469,7 @@ class TokenManager:
             return False
 
     async def _try_refresh_at_via_reauth(self, token_id: int, token) -> bool:
-        """尝试通过 reAuth HTTP 流程恢复 AT（优先按 AT 直验，失败再尝试 ST->AT）"""
+        """尝试通过 reAuth HTTP 流程恢复 AT（优先按 ST/RT->AT，兼容 AT 直验）"""
         try:
             if not token.current_project_id:
                 debug_logger.log_warning(f"[REAUTH_ST] Token {token_id} 没有 project_id，无法执行 reAuth")
@@ -455,7 +481,6 @@ class TokenManager:
             from reAuth.refresh_cookie_before_relogin import (
                 ReAuthAccount,
                 refresh_cookie_before_relogin,
-                extract_session_token_from_cookie_header,
             )
 
             # 优先使用完整 Cookie（由账号池自动化同步），没有则回退最小 ST Cookie
@@ -469,22 +494,35 @@ class TokenManager:
             except Exception as proxy_err:
                 debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: 读取代理配置失败，继续直连: {proxy_err}")
 
-            def _run_reauth() -> str:
+            def _run_reauth() -> tuple[str, str, str]:
                 account = ReAuthAccount(
                     project_id=token.current_project_id,
                     cookie=initial_cookie_header,
                     cookie_file=initial_cookie_header,
                 )
-                return refresh_cookie_before_relogin(
+                refresh_cookie_before_relogin(
                     account=account,
                     timeout=30,
                     proxy_url=proxy_url,
                 )
+                # 使用 account 内部最终状态，避免依赖 refresh 函数返回值格式。
+                refreshed_cookie_value = str(getattr(account, "cookie", "") or "").strip()
+                refreshed_st_value = str(getattr(account, "final_session_token", "") or "").strip()
+                refreshed_st_raw = str(getattr(account, "final_session_set_cookie_raw", "") or "").strip()
+                return refreshed_cookie_value, refreshed_st_value, refreshed_st_raw
 
-            refreshed_cookie = await asyncio.to_thread(_run_reauth)
-            refreshed_st = extract_session_token_from_cookie_header(refreshed_cookie)
+            refreshed_cookie, refreshed_st, refreshed_st_raw = await asyncio.to_thread(_run_reauth)
+            print(f"  - reAuth 返回 cookie: {refreshed_cookie}")
             candidate_token = refreshed_st
+            print(f"  - reAuth 提取 ST: {refreshed_st_raw or refreshed_st}")
             candidate_source = "__Secure-next-auth.session-token"
+            if refreshed_st_raw and ";" in refreshed_st_raw:
+                debug_logger.log_info(
+                    f"[REAUTH_AT] Token {token_id}: 提取到Set-Cookie原文（含Path/Expires属性），ST->AT将使用纯ST值"
+                )
+            debug_logger.log_info(
+                f"[REAUTH_AT] Token {token_id}: reAuth返回cookie长度={len(str(refreshed_cookie or ''))}, 提取ST长度={len(str(refreshed_st or ''))}, 提取ST原文长度={len(str(refreshed_st_raw or ''))}"
+            )
 
             # 保存 reAuth 返回的完整 cookie，供下次 reAuth/排障复用
             await self.db.update_token(token_id, cookie=refreshed_cookie)
@@ -503,14 +541,18 @@ class TokenManager:
             else:
                 debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: reAuth 未提取到 ST，仅使用候选 token 继续恢复 AT")
 
-            # 路径1（优先）：候选 token 在部分环境里就是 AT，先按 AT 直接验证并写回
-            if await self._accept_direct_at_if_valid(token_id, candidate_token):
+            # 路径1（优先）：candidate_token 在当前链路里应视为 ST/RT，先执行 ST->AT
+            fallback_st = refreshed_st or candidate_token
+            if await self._do_refresh_at(
+                token_id,
+                fallback_st,
+                st_raw=(refreshed_st_raw or None),
+            ):
                 return True
 
-            # 路径2（回退）：若不是 AT，再按 ST 执行常规 ST->AT 刷新
-            debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: 候选 token 直验 AT 失败，回退尝试 ST->AT...")
-            fallback_st = refreshed_st or candidate_token
-            if await self._do_refresh_at(token_id, fallback_st):
+            # 路径2（兼容兜底）：极少数环境返回值可能直接是 AT，再尝试按 AT 直验
+            debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: ST->AT 失败，兼容尝试候选 token 直验 AT...")
+            if await self._accept_direct_at_if_valid(token_id, candidate_token):
                 return True
 
             return False

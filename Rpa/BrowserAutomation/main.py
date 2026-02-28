@@ -1403,9 +1403,11 @@ async def _best_effort_google_login(
             raise
 
     # 密码页
+    password_page_present = False
     try:
         pwd_sel = "input[type='password'], input[name='Passwd']"
         if await page.locator(pwd_sel).count() > 0:
+            password_page_present = True
             ok = await _set_input_value_robust(
                 page,
                 selectors=[
@@ -1440,6 +1442,14 @@ async def _best_effort_google_login(
                 page, stage="after_click_password_next", allow_2fa=True
             )
             if is_2fa_enabled:
+                detected_2fa = await _wait_for_google_2fa_page(page, timeout_ms=18_000)
+                if detected_2fa:
+                    _print_and_log("[RPA] 点击密码下一步后检测到 2FA 页面，开始自动填码")
+                else:
+                    _print_and_log(
+                        f"[RPA] 点击密码下一步后未检测到 2FA 页面（当前 URL: {page.url}），继续后续流程",
+                        level="warning",
+                    )
                 await _try_google_2fa_flow(
                     page,
                     twofa_password=(str(twofa_password or "").strip() or ""),
@@ -1449,7 +1459,23 @@ async def _best_effort_google_login(
     except AccountInvalidError:
         raise
     except Exception:
-        pass
+        if password_page_present:
+            raise
+
+    # 有些场景会在密码提交后延迟跳到 2FA 页；这里再兜底尝试一次，避免提前结束。
+    if is_2fa_enabled:
+        try:
+            detected_2fa = await _wait_for_google_2fa_page(page, timeout_ms=10_000)
+            if detected_2fa:
+                _print_and_log("[RPA] 登录尾阶段检测到 2FA 页面，执行兜底自动填码")
+                await _try_google_2fa_flow(
+                    page,
+                    twofa_password=(str(twofa_password or "").strip() or ""),
+                    options=options,
+                )
+        except Exception:
+            # 尾阶段兜底不阻断主流程，但保留日志方便排查。
+            _print_and_log_exception("[RPA] 登录尾阶段 2FA 兜底处理失败")
 
     # 登录流程结束前再检查一次（有些风控会在点击 Next 后延迟出现）
     await _raise_if_google_challenge(
@@ -1519,6 +1545,22 @@ async def _is_google_2fa_page(page) -> bool:
             return True
     except Exception:
         pass
+    return False
+
+
+async def _wait_for_google_2fa_page(page, *, timeout_ms: int = 12_000) -> bool:
+    """等待 Google 2FA 页面出现（用于密码 Next 后的过渡期）。"""
+    deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
+    while time.time() < deadline:
+        try:
+            if await _is_google_2fa_page(page):
+                return True
+        except Exception:
+            pass
+        try:
+            await page.wait_for_timeout(220)
+        except Exception:
+            pass
     return False
 
 

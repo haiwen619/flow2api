@@ -64,3 +64,4 @@ config/setting_warp_example.toml
 /.vs
 /tmp/Token
 /tmp
+/log.txt

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>管理控制台 - Flow2API</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <style>
       @keyframes slide-up {
         from {
@@ -268,6 +269,25 @@
                   <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
                 <span class="text-sm font-medium">导出内部Token</span>
+              </button>
+              <button
+                onclick="openBatchImportModal()"
+                class="inline-flex items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-700 h-8 px-3"
+                title="批量导入内部Token(JSON/ZIP)"
+              >
+                <svg
+                  class="h-4 w-4 mr-2"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <span class="text-sm font-medium">批量导入</span>
               </button>
               <button
                 onclick="openImportModal()"
@@ -1673,8 +1693,102 @@
       </div>
     </div>
 
+    <!-- 内部Token批量导入模态框 -->
+    <div
+      id="batchImportModal"
+      class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+    >
+      <div
+        class="bg-background rounded-lg border border-border w-full max-w-5xl shadow-xl"
+      >
+        <div
+          class="flex items-center justify-between p-5 border-b border-border"
+        >
+          <h3 class="text-lg font-semibold">批量导入内部Token</h3>
+          <button
+            onclick="closeBatchImportModal()"
+            class="text-muted-foreground hover:text-foreground"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-6 space-y-4">
+          <input
+            type="file"
+            id="batchImportFile"
+            accept=".json,.zip,application/json,application/zip"
+            class="hidden"
+          />
+          <div
+            id="batchImportDropZone"
+            class="rounded-lg border-2 border-dashed border-emerald-500 bg-emerald-50/20 p-14 text-center cursor-pointer"
+          >
+            <p class="text-2xl font-semibold mb-2">点击选择文件或拖拽文件到此区域</p>
+            <p class="text-sm text-muted-foreground mb-2">
+              支持 json 和 .zip 格式文件
+            </p>
+            <p class="text-sm text-muted-foreground">
+              ZIP文件会自动解压提取其中的JSON凭证
+            </p>
+          </div>
+          <p id="batchImportFileName" class="text-sm text-muted-foreground">
+            未选择文件
+          </p>
+        </div>
+        <div
+          class="flex items-center justify-end gap-3 p-5 border-t border-border"
+        >
+          <button
+            onclick="closeBatchImportModal()"
+            class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5"
+          >
+            取消
+          </button>
+          <button
+            id="batchImportBtn"
+            onclick="submitBatchImportTokens()"
+            class="inline-flex items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-700 h-9 px-5"
+          >
+            <span id="batchImportBtnText">开始导入</span>
+            <svg
+              id="batchImportBtnSpinner"
+              class="hidden animate-spin h-4 w-4 ml-2"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <script>
       let allTokens = [];
+      let batchImportSelectedFile = null;
       const $ = (id) => document.getElementById(id),
         checkAuth = () => {
           const t = localStorage.getItem("adminToken");
@@ -2301,6 +2415,214 @@
           $("sora2Modal").classList.add("hidden");
           $("sora2TokenId").value = "";
           $("sora2InviteCode").value = "";
+        },
+        extractSessionTokenFromCookieText = (cookieText) => {
+          const text = String(cookieText || "");
+          if (!text) return "";
+
+          const chunkMatches = Array.from(
+            text.matchAll(
+              /(?:^|[;,]\s*)__Secure-next-auth\.session-token\.(\d+)=([^;,\r\n]+)/g,
+            ),
+          );
+          if (chunkMatches.length > 0) {
+            chunkMatches.sort((a, b) => parseInt(a[1], 10) - parseInt(b[1], 10));
+            return chunkMatches.map((m) => String(m[2] || "").trim()).join("");
+          }
+
+          const direct = text.match(
+            /(?:^|[;,]\s*)__Secure-next-auth\.session-token=([^;,\r\n]+)/,
+          );
+          return direct ? String(direct[1] || "").trim() : "";
+        },
+        convertInternalJsonToImportItems = (payload) => {
+          const rows = [];
+          const pushOne = (item) => {
+            if (!item || typeof item !== "object") return;
+            const stRaw =
+              item.session_token ||
+              item.st ||
+              extractSessionTokenFromCookieText(item.cookie || "") ||
+              extractSessionTokenFromCookieText(item.cookieFile || "");
+            const st = String(stRaw || "").trim();
+            const cookie = String(
+              item.cookie || item.cookieFile || "",
+            ).trim();
+            if (!st) return;
+            rows.push({
+              session_token: st,
+              cookie: cookie || null,
+              is_active: item.is_active !== false,
+              image_enabled: item.image_enabled !== false,
+              video_enabled: item.video_enabled !== false,
+              image_concurrency: Number.isNaN(
+                parseInt(item.image_concurrency, 10),
+              )
+                ? -1
+                : parseInt(item.image_concurrency, 10),
+              video_concurrency: Number.isNaN(
+                parseInt(item.video_concurrency, 10),
+              )
+                ? -1
+                : parseInt(item.video_concurrency, 10),
+            });
+          };
+
+          if (Array.isArray(payload)) {
+            payload.forEach(pushOne);
+          } else if (
+            payload &&
+            typeof payload === "object" &&
+            Array.isArray(payload.tokens)
+          ) {
+            payload.tokens.forEach(pushOne);
+          } else {
+            pushOne(payload);
+          }
+          return rows;
+        },
+        parseBatchImportFile = async (file) => {
+          const name = String(file.name || "").toLowerCase();
+          let items = [];
+          let jsonFileCount = 0;
+
+          if (name.endsWith(".zip")) {
+            if (typeof JSZip === "undefined") {
+              throw new Error("JSZip 未加载，无法解析 ZIP");
+            }
+            const zip = await JSZip.loadAsync(await file.arrayBuffer());
+            const jsonEntries = Object.values(zip.files).filter(
+              (entry) => !entry.dir && entry.name.toLowerCase().endsWith(".json"),
+            );
+            if (jsonEntries.length === 0) {
+              throw new Error("ZIP 中未找到 JSON 文件");
+            }
+
+            for (const entry of jsonEntries) {
+              try {
+                const text = await entry.async("string");
+                const data = JSON.parse(text);
+                items = items.concat(convertInternalJsonToImportItems(data));
+                jsonFileCount += 1;
+              } catch (_) {}
+            }
+          } else if (name.endsWith(".json")) {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            items = items.concat(convertInternalJsonToImportItems(data));
+            jsonFileCount = 1;
+          } else {
+            throw new Error("仅支持 .json 或 .zip 文件");
+          }
+
+          const dedup = new Map();
+          items.forEach((row) => {
+            const st = String(row.session_token || "").trim();
+            if (st) dedup.set(st, row);
+          });
+
+          return {
+            tokens: Array.from(dedup.values()),
+            jsonFileCount: jsonFileCount,
+            rawCount: items.length,
+          };
+        },
+        setBatchImportSelectedFile = (file) => {
+          batchImportSelectedFile = file || null;
+          if ($("batchImportFile")) $("batchImportFile").value = "";
+          $("batchImportFileName").textContent = batchImportSelectedFile
+            ? `已选择: ${batchImportSelectedFile.name}`
+            : "未选择文件";
+        },
+        openBatchImportModal = () => {
+          $("batchImportModal").classList.remove("hidden");
+          setBatchImportSelectedFile(null);
+        },
+        closeBatchImportModal = () => {
+          $("batchImportModal").classList.add("hidden");
+          setBatchImportSelectedFile(null);
+        },
+        initBatchImportDropZone = () => {
+          const zone = $("batchImportDropZone");
+          const input = $("batchImportFile");
+          if (!zone || !input) return;
+
+          zone.onclick = () => input.click();
+          input.onchange = () => {
+            const file = input.files && input.files[0] ? input.files[0] : null;
+            setBatchImportSelectedFile(file);
+          };
+
+          const onDrag = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          };
+          const onDragEnter = (e) => {
+            onDrag(e);
+            zone.classList.add("bg-emerald-100/30");
+          };
+          const onDragLeave = (e) => {
+            onDrag(e);
+            zone.classList.remove("bg-emerald-100/30");
+          };
+          const onDrop = (e) => {
+            onDrag(e);
+            zone.classList.remove("bg-emerald-100/30");
+            const files = e.dataTransfer && e.dataTransfer.files;
+            if (!files || files.length === 0) return;
+            setBatchImportSelectedFile(files[0]);
+          };
+
+          zone.addEventListener("dragenter", onDragEnter);
+          zone.addEventListener("dragover", onDragEnter);
+          zone.addEventListener("dragleave", onDragLeave);
+          zone.addEventListener("dragend", onDragLeave);
+          zone.addEventListener("drop", onDrop);
+        },
+        submitBatchImportTokens = async () => {
+          if (!batchImportSelectedFile) {
+            showToast("请选择 JSON 或 ZIP 文件", "error");
+            return;
+          }
+          const btn = $("batchImportBtn"),
+            btnText = $("batchImportBtnText"),
+            btnSpinner = $("batchImportBtnSpinner");
+          btn.disabled = true;
+          btnText.textContent = "导入中...";
+          btnSpinner.classList.remove("hidden");
+          try {
+            const parsed = await parseBatchImportFile(batchImportSelectedFile);
+            if (!parsed.tokens || parsed.tokens.length === 0) {
+              showToast("未解析到有效的 Session Token(ST)", "error");
+              return;
+            }
+
+            const r = await apiRequest("/api/tokens/import", {
+              method: "POST",
+              body: JSON.stringify({ tokens: parsed.tokens }),
+            });
+            if (!r) return;
+            const d = await r.json();
+            if (d.success) {
+              closeBatchImportModal();
+              await refreshTokens();
+              showToast(
+                `导入完成: JSON文件${parsed.jsonFileCount}个, 解析${parsed.rawCount}条, 去重后${parsed.tokens.length}条, 新增${d.added || 0}, 更新${d.updated || 0}`,
+                "success",
+              );
+            } else {
+              showToast(
+                "导入失败: " + (d.detail || d.message || "未知错误"),
+                "error",
+              );
+            }
+          } catch (e) {
+            showToast("批量导入失败: " + e.message, "error");
+          } finally {
+            btn.disabled = false;
+            btnText.textContent = "开始导入";
+            btnSpinner.classList.add("hidden");
+          }
         },
         openImportModal = () => {
           $("importModal").classList.remove("hidden");
@@ -3196,6 +3518,7 @@
         };
       window.addEventListener("DOMContentLoaded", () => {
         checkAuth();
+        initBatchImportDropZone();
         refreshTokens();
         loadATAutoRefreshConfig();
       });

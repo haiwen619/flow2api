@@ -5,6 +5,7 @@
 New-NetFirewallRule -DisplayName "Flow2API-6050" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 6050
 jHrrRDxVD5twXN2t
 
+http://23.159.248.139:8000/manage
 
 https://docs.cqtai.com/nano%E7%94%9F%E6%88%90/
 
@@ -39,6 +40,37 @@ curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
     },
     "stream": true
   }'
+
+
+# ---------------------------------------------------------start
+$body = @'
+{
+  "model": "gemini-3.0-pro-image",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "生成一个牛年大吉的图片给我，场景是雪地，然后注意要把细节处理好，减少AI生成感觉，然后可以加一些其他小动物在旁边"
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": { "aspectRatio": "1:1", "imageSize": "1K" }
+  },
+  "stream": true
+}
+'@
+
+curl.exe -X POST "http://23.159.248.139:3000/v1/chat/completions" `
+  -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" `
+  -H "Content-Type: application/json" `
+  -d $body
+
+#  ----------------------------------------------------------
 
 
 # 2) 基础模型 + imageConfig: 3:4 + 2K

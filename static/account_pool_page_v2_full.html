@@ -210,12 +210,25 @@
         <!-- 批量添加 -->
         <div id="apBatchWrap" class="space-y-3 hidden">
           <div>
-            <label class="block text-sm font-semibold text-slate-700 mb-2">批量导入（每行一个账号和密码，空格隔开）</label>
+            <label class="block text-sm font-semibold text-slate-700 mb-2">批量导入（每行：账号 密码 [2FA密码]，空格隔开）</label>
             <textarea id="apBatchText" rows="10" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all font-mono text-sm" placeholder="例如：
 khaicakhia585@gmail.com 123
-hungthanhha225@gmail.com 123"></textarea>
+hungthanhha225@gmail.com 123
+trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
           </div>
-          <p class="text-xs text-gray-500 leading-relaxed">提示：账号会同时写入 display_name 与 uid（便于后续登录）。重复账号会覆盖更新。</p>
+          <div id="apBatchPreviewBox" class="rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p class="text-xs font-semibold text-amber-800">导入预览</p>
+            <p id="apBatchPreviewSummary" class="text-xs text-amber-700 mt-1">未检测到可导入行</p>
+            <div id="apBatchPreview2faWrap" class="mt-2 hidden">
+              <p class="text-xs text-amber-700">将识别为 2FA 的账号：</p>
+              <div id="apBatchPreview2faList" class="mt-1 max-h-24 overflow-y-auto rounded-lg border border-amber-200 bg-white p-2 text-xs font-mono text-slate-700"></div>
+            </div>
+            <div id="apBatchPreviewErrWrap" class="mt-2 hidden">
+              <p class="text-xs text-amber-700">无效行示例：</p>
+              <div id="apBatchPreviewErrList" class="mt-1 text-xs text-red-600"></div>
+            </div>
+          </div>
+          <p class="text-xs text-gray-500 leading-relaxed">提示：账号会同时写入 display_name 与 uid（便于后续登录）。第三段存在时自动按 2FA 账号导入。重复账号会覆盖更新。</p>
         </div>
 
         <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
@@ -319,11 +332,11 @@ hungthanhha225@gmail.com 123"></textarea>
         if (tipsEl) tipsEl.innerText = '修改后会立即保存到资源池；2FA 平台密码留空则保持原值。';
       } else if (apFormMode === 'batch') {
         if (titleEl) titleEl.innerText = '批量添加';
-        if (subtitleEl) subtitleEl.innerText = '每行：账号(邮箱) 空格 密码；支持多行粘贴';
+        if (subtitleEl) subtitleEl.innerText = '每行：账号(邮箱) 空格 密码 [空格 2FA密码]；支持多行粘贴';
         if (submitTextEl) submitTextEl.innerText = '开始导入';
         if (singleWrap) singleWrap.classList.add('hidden');
         if (batchWrap) batchWrap.classList.remove('hidden');
-        if (tipsEl) tipsEl.innerText = '每行一个账号和密码，空格隔开；导入完成后将自动刷新列表。';
+        if (tipsEl) tipsEl.innerText = '每行格式：账号 密码 [2FA密码]；第三段存在时自动启用 2FA。导入完成后自动刷新列表。';
       } else {
         if (titleEl) titleEl.innerText = '添加新账号';
         if (subtitleEl) subtitleEl.innerText = '请输入账号凭据进行批量导入或手动添加';
@@ -359,6 +372,7 @@ hungthanhha225@gmail.com 123"></textarea>
       setAccountPanelMode('batch');
       const batchEl = document.getElementById('apBatchText');
       if (batchEl) batchEl.value = '';
+      renderBatchImportPreview('');
       toggleSidePanel(true);
     }
 
@@ -539,6 +553,7 @@ hungthanhha225@gmail.com 123"></textarea>
       const lines = String(text || '').split(/\r?\n/);
       const items = [];
       const errors = [];
+      let candidateCount = 0;
 
       for (let i = 0; i < lines.length; i++) {
         const raw = lines[i];
@@ -546,23 +561,83 @@ hungthanhha225@gmail.com 123"></textarea>
         if (!line) continue;
         // 允许前面加 # 注释
         if (line.startsWith('#')) continue;
+        candidateCount++;
 
         const parts = line.split(/\s+/).filter(Boolean);
         if (parts.length < 2) {
-          errors.push({ lineNo: i + 1, line, reason: '格式错误：需要“账号 密码”' });
+          errors.push({ lineNo: i + 1, line, reason: '格式错误：需要“账号 密码 [2FA密码]”' });
           continue;
         }
 
         const account = parts[0].trim();
-        const password = parts.slice(1).join(' ').trim();
+        const password = String(parts[1] || '').trim();
+        const twofa_password = parts.length >= 3 ? parts.slice(2).join(' ').trim() : '';
         if (!account || !password) {
           errors.push({ lineNo: i + 1, line, reason: '账号或密码为空' });
           continue;
         }
-        items.push({ account, password, lineNo: i + 1 });
+        if (parts.length >= 3 && !twofa_password) {
+          errors.push({ lineNo: i + 1, line, reason: '2FA 密码为空' });
+          continue;
+        }
+        items.push({
+          account,
+          password,
+          is_2fa_enabled: !!twofa_password,
+          twofa_password: twofa_password || null,
+          lineNo: i + 1
+        });
       }
 
-      return { items, errors };
+      return { items, errors, candidateCount };
+    }
+
+    function renderBatchImportPreview(text) {
+      const summaryEl = document.getElementById('apBatchPreviewSummary');
+      const twofaWrapEl = document.getElementById('apBatchPreview2faWrap');
+      const twofaListEl = document.getElementById('apBatchPreview2faList');
+      const errWrapEl = document.getElementById('apBatchPreviewErrWrap');
+      const errListEl = document.getElementById('apBatchPreviewErrList');
+      if (!summaryEl || !twofaWrapEl || !twofaListEl || !errWrapEl || !errListEl) return;
+
+      const parsed = parseBatchLines(text);
+      const items = parsed.items || [];
+      const errors = parsed.errors || [];
+      const candidateCount = Number(parsed.candidateCount || 0);
+      const twofaItems = items.filter((x) => !!x.is_2fa_enabled);
+
+      if (candidateCount <= 0) {
+        summaryEl.textContent = '未检测到可导入行（格式：账号 密码 [2FA密码]）';
+        twofaWrapEl.classList.add('hidden');
+        errWrapEl.classList.add('hidden');
+        twofaListEl.innerHTML = '';
+        errListEl.innerHTML = '';
+        return;
+      }
+
+      summaryEl.textContent = `共 ${candidateCount} 行：有效 ${items.length}，识别 2FA ${twofaItems.length}，无效 ${errors.length}`;
+
+      if (twofaItems.length > 0) {
+        twofaWrapEl.classList.remove('hidden');
+        twofaListEl.innerHTML = twofaItems
+          .slice(0, 50)
+          .map((it) => `<div>第 ${it.lineNo} 行: ${escapeHtml(it.account || '')}</div>`)
+          .join('');
+      } else {
+        twofaWrapEl.classList.add('hidden');
+        twofaListEl.innerHTML = '';
+      }
+
+      if (errors.length > 0) {
+        errWrapEl.classList.remove('hidden');
+        errListEl.innerHTML = errors
+          .slice(0, 3)
+          .map((e) => `<div>第 ${e.lineNo} 行: ${escapeHtml(e.reason || '格式错误')}</div>`)
+          .join('');
+      } else {
+        errWrapEl.classList.add('hidden');
+        errListEl.innerHTML = '';
+      }
     }
 
     async function submitBatchAccounts() {
@@ -604,14 +679,20 @@ hungthanhha225@gmail.com 123"></textarea>
         const it = items[idx];
         const account = it.account;
         const password = it.password;
+        const is_2fa_enabled = !!it.is_2fa_enabled;
+        const twofa_password = is_2fa_enabled ? String(it.twofa_password || '').trim() : '';
 
         // 约定：账号写入 display_name 和 uid，便于后续 RPA 使用 uid 优先作为邮箱
         const payload = {
           platform,
           display_name: account,
           uid: account,
-          password
+          password,
+          is_2fa_enabled
         };
+        if (is_2fa_enabled && twofa_password) {
+          payload.twofa_password = twofa_password;
+        }
 
         try {
           const resp = await fetch('/accountpool/accounts', {
@@ -1149,6 +1230,13 @@ hungthanhha225@gmail.com 123"></textarea>
       const is2faEl = document.getElementById('apIs2faEnabled');
       if (is2faEl) is2faEl.addEventListener('change', update2faInputsVisibility);
       update2faInputsVisibility();
+      const batchEl = document.getElementById('apBatchText');
+      if (batchEl) {
+        batchEl.addEventListener('input', () => {
+          renderBatchImportPreview(String(batchEl.value || ''));
+        });
+        renderBatchImportPreview(String(batchEl.value || ''));
+      }
 
       // 分页按钮事件
       const prevBtn = document.getElementById('apPrevPage');
