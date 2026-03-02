@@ -44,6 +44,7 @@ class LoginRequest(BaseModel):
 class AddTokenRequest(BaseModel):
     st: str
     cookie: Optional[str] = None
+    cookie_file: Optional[str] = None
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
@@ -56,6 +57,7 @@ class AddTokenRequest(BaseModel):
 class UpdateTokenRequest(BaseModel):
     st: str  # Session Token (必填，用于刷新AT)
     cookie: Optional[str] = None
+    cookie_file: Optional[str] = None
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
@@ -104,6 +106,7 @@ class ImportTokenItem(BaseModel):
     access_token: Optional[str] = None
     session_token: Optional[str] = None
     cookie: Optional[str] = None
+    cookie_file: Optional[str] = None
     is_active: bool = True
     image_enabled: bool = True
     video_enabled: bool = True
@@ -205,6 +208,7 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             "id": t.id,
             "st": t.st,  # Session Token for editing
             "cookie": t.cookie,  # 完整 Cookie Header（用于 reAuth）
+            "cookieFile": t.cookie_file,  # Google 域名 Cookie Header（用于 reAuth step4）
             "at": t.at,  # Access Token for editing (从ST转换而来)
             "at_expires": t.at_expires.isoformat() if t.at_expires else None,  # 🆕 AT过期时间
             "token": t.at,  # 兼容前端 token.token 的访问方式
@@ -265,6 +269,7 @@ async def add_token(
         new_token = await token_manager.add_token(
             st=request.st,
             cookie=request.cookie,
+            cookie_file=request.cookie_file,
             project_id=request.project_id,  # 🆕 支持用户指定project_id
             project_name=request.project_name,
             remark=request.remark,
@@ -318,6 +323,7 @@ async def update_token(
             token_id=token_id,
             st=request.st,
             cookie=request.cookie,
+            cookie_file=request.cookie_file,
             at=at,
             at_expires=at_expires,  # 🆕 更新AT过期时间
             project_id=request.project_id,
@@ -543,6 +549,7 @@ async def import_tokens(
                         token_id=existing.id,
                         st=st,
                         cookie=item.cookie,
+                        cookie_file=item.cookie_file,
                         at=at,
                         at_expires=at_expires,
                         image_enabled=item.image_enabled,
@@ -559,6 +566,7 @@ async def import_tokens(
                     new_token = await token_manager.add_token(
                         st=st,
                         cookie=item.cookie,
+                        cookie_file=item.cookie_file,
                         image_enabled=item.image_enabled,
                         video_enabled=item.video_enabled,
                         image_concurrency=item.image_concurrency,

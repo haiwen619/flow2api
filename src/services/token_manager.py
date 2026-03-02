@@ -54,6 +54,7 @@ class TokenManager:
         self,
         st: str,
         cookie: Optional[str] = None,
+        cookie_file: Optional[str] = None,
         project_id: Optional[str] = None,
         project_name: Optional[str] = None,
         remark: Optional[str] = None,
@@ -67,6 +68,7 @@ class TokenManager:
         Args:
             st: Session Token (必需)
             cookie: 完整 Cookie Header（可选）
+            cookie_file: Google 域名 Cookie Header（可选）
             project_id: 项目ID (可选,如果提供则直接使用,不创建新项目)
             project_name: 项目名称 (可选,如果不提供则自动生成)
             remark: 备注
@@ -138,6 +140,7 @@ class TokenManager:
         token = Token(
             st=st,
             cookie=cookie,
+            cookie_file=cookie_file,
             at=at,
             at_expires=at_expires,
             email=email,
@@ -175,6 +178,7 @@ class TokenManager:
         token_id: int,
         st: Optional[str] = None,
         cookie: Optional[str] = None,
+        cookie_file: Optional[str] = None,
         at: Optional[str] = None,
         at_expires: Optional[datetime] = None,
         project_id: Optional[str] = None,
@@ -195,6 +199,8 @@ class TokenManager:
             update_fields["st"] = st
         if cookie is not None:
             update_fields["cookie"] = cookie
+        if cookie_file is not None:
+            update_fields["cookie_file"] = cookie_file
         if at is not None:
             update_fields["at"] = at
         if at_expires is not None:
@@ -504,6 +510,7 @@ class TokenManager:
 
             # 优先使用完整 Cookie（由账号池自动化同步），没有则回退最小 ST Cookie
             initial_cookie_header = str(token.cookie or "").strip() or f"__Secure-next-auth.session-token={token.st}"
+            initial_cookie_file_header = str(token.cookie_file or "").strip()
             old_st_value = str(token.st or "").strip()
 
             proxy_url = None
@@ -515,14 +522,15 @@ class TokenManager:
                 debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: 读取代理配置失败，继续直连: {proxy_err}")
 
             seed_cookie = initial_cookie_header
+            seed_cookie_file = initial_cookie_file_header
             last_candidate_token = ""
             candidate_source = "__Secure-next-auth.session-token"
             # 暂时收敛为单次纯协议尝试，便于聚焦六步链路调试。
             strategies = [
-                ("default-pass1", False, False),
+                ("default-pass1", False),
             ]
 
-            for attempt_idx, (strategy_name, strict_mode, use_cookie_file) in enumerate(strategies, start=1):
+            for attempt_idx, (strategy_name, strict_mode) in enumerate(strategies, start=1):
                 debug_logger.log_info(
                     f"[REAUTH_AT] Token {token_id}: 协议刷新尝试 {attempt_idx}/{len(strategies)} strategy={strategy_name} strict={strict_mode}"
                 )
@@ -530,12 +538,12 @@ class TokenManager:
                 def _run_reauth_once(
                     cookie_seed: str = seed_cookie,
                     strict_value: bool = strict_mode,
-                    use_cookie_file_value: bool = use_cookie_file,
+                    cookie_file_seed: str = seed_cookie_file,
                 ) -> tuple[str, str, str]:
                     account = ReAuthAccount(
                         project_id=token.current_project_id,
                         cookie=cookie_seed,
-                        cookie_file=(cookie_seed if use_cookie_file_value else None),
+                        cookie_file=(cookie_file_seed or None),
                     )
                     refresh_cookie_before_relogin(
                         account=account,

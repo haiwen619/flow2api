@@ -178,11 +178,13 @@ class AccountPoolService:
         tm: Any,
         st: str,
         cookie_header: Optional[str],
+        cookie_file_header: Optional[str],
         email_hint: Optional[str],
         job_id: str,
     ) -> Dict[str, Any]:
         hint = str(email_hint or "").strip()
         cookie_value = str(cookie_header or "").strip()
+        cookie_file_value = str(cookie_file_header or "").strip()
         if not hint or "@" not in hint:
             return {"synced": False, "reason": "invalid_email_hint"}
 
@@ -214,9 +216,10 @@ class AccountPoolService:
                 token_id=int(token.id),
                 st=st,
                 cookie=(cookie_value or None),
+                cookie_file=(cookie_file_value or None),
             )
             logger.info(
-                "[AccountPool][TokenSync] job_id=%s fallback synced st/cookie token_id=%s email=%s",
+                "[AccountPool][TokenSync] job_id=%s fallback synced st/cookie/cookie_file token_id=%s email=%s",
                 job_id,
                 int(token.id),
                 hint,
@@ -227,6 +230,7 @@ class AccountPoolService:
                 "token_id": int(token.id),
                 "email": hint,
                 "cookie_synced": bool(cookie_value),
+                "cookie_file_synced": bool(cookie_file_value),
             }
         except Exception as e:
             logger.warning(
@@ -250,11 +254,13 @@ class AccountPoolService:
         session_token: str,
         email_hint: Optional[str],
         cookie_header: Optional[str],
+        cookie_file_header: Optional[str],
         job_id: str,
     ) -> Dict[str, Any]:
         st = str(session_token or "").strip()
         hint = str(email_hint or "").strip()
         cookie_value = str(cookie_header or "").strip()
+        cookie_file_value = str(cookie_file_header or "").strip()
         if not st:
             return {"synced": False, "reason": "empty_session_token"}
 
@@ -291,6 +297,7 @@ class AccountPoolService:
                     tm=tm,
                     st=st,
                     cookie_header=(cookie_value or None),
+                    cookie_file_header=(cookie_file_value or None),
                     email_hint=(hint or None),
                     job_id=job_id,
                 )
@@ -337,7 +344,11 @@ class AccountPoolService:
                 email,
             )
             try:
-                new_token = await tm.add_token(st=st, cookie=(cookie_value or None))
+                new_token = await tm.add_token(
+                    st=st,
+                    cookie=(cookie_value or None),
+                    cookie_file=(cookie_file_value or None),
+                )
                 logger.info(
                     "[AccountPool][TokenSync] job_id=%s auto added token_id=%s email=%s",
                     job_id,
@@ -391,6 +402,7 @@ class AccountPoolService:
                 token_id=int(token.id),
                 st=st,
                 cookie=(cookie_value or None),
+                cookie_file=(cookie_file_value or None),
                 at=at,
                 at_expires=at_expires,
             )
@@ -430,19 +442,22 @@ class AccountPoolService:
             "email": email,
             "credits": credits,
             "cookie_synced": bool(cookie_value),
+            "cookie_file_synced": bool(cookie_file_value),
         }
 
     async def _sync_cookie_to_token_table(
         self,
         *,
         cookie_header: str,
+        cookie_file_header: Optional[str],
         email_hint: Optional[str],
         job_id: str,
     ) -> Dict[str, Any]:
         cookie_value = str(cookie_header or "").strip()
+        cookie_file_value = str(cookie_file_header or "").strip()
         hint = str(email_hint or "").strip()
-        if not cookie_value:
-            return {"synced": False, "reason": "empty_cookie"}
+        if not cookie_value and not cookie_file_value:
+            return {"synced": False, "reason": "empty_cookie_and_cookie_file"}
         if not hint or "@" not in hint:
             return {"synced": False, "reason": "invalid_email_hint"}
 
@@ -482,10 +497,14 @@ class AccountPoolService:
             return {"synced": False, "reason": "token_not_found", "email": email}
 
         try:
-            await tm.update_token(token_id=int(token.id), cookie=cookie_value)
+            await tm.update_token(
+                token_id=int(token.id),
+                cookie=(cookie_value or None),
+                cookie_file=(cookie_file_value or None),
+            )
         except Exception as e:
             logger.warning(
-                "[AccountPool][CookieSync] job_id=%s update cookie failed token_id=%s email=%s error=%s",
+                "[AccountPool][CookieSync] job_id=%s update cookie/cookie_file failed token_id=%s email=%s error=%s",
                 job_id,
                 int(token.id),
                 email,
@@ -500,7 +519,7 @@ class AccountPoolService:
             }
 
         logger.info(
-            "[AccountPool][CookieSync] job_id=%s synced cookie token_id=%s email=%s",
+            "[AccountPool][CookieSync] job_id=%s synced cookie/cookie_file token_id=%s email=%s",
             job_id,
             int(token.id),
             email,
@@ -509,7 +528,8 @@ class AccountPoolService:
             "synced": True,
             "token_id": int(token.id),
             "email": email,
-            "cookie_synced": True,
+            "cookie_synced": bool(cookie_value),
+            "cookie_file_synced": bool(cookie_file_value),
         }
 
     async def trigger_single_validate(
@@ -615,6 +635,7 @@ class AccountPoolService:
             ok = bool(result.get("success"))
             session_token = (str(result.get("session_token") or "").strip() if isinstance(result, dict) else "")
             cookie_header = (str(result.get("cookie") or "").strip() if isinstance(result, dict) else "")
+            cookie_file_header = (str(result.get("cookie_file") or "").strip() if isinstance(result, dict) else "")
             payload_email = (str(result.get("payload_email") or "").strip() if isinstance(result, dict) else "")
             if ok and session_token:
                 await self.repo.set_session_token(account_key=account_key, session_token=session_token)
@@ -628,20 +649,23 @@ class AccountPoolService:
                     session_token=session_token,
                     email_hint=(payload_email or username),
                     cookie_header=(cookie_header or None),
+                    cookie_file_header=(cookie_file_header or None),
                     job_id=job_id,
                 )
                 if isinstance(result, dict):
                     result["token_sync"] = sync_res
             elif ok:
                 logger.warning(
-                    "[AccountPool] validate success but no session token account_key=%s job_id=%s cookie_present=%s",
+                    "[AccountPool] validate success but no session token account_key=%s job_id=%s cookie_present=%s cookie_file_present=%s",
                     account_key,
                     job_id,
                     bool(cookie_header),
+                    bool(cookie_file_header),
                 )
-                if cookie_header:
+                if cookie_header or cookie_file_header:
                     cookie_sync_res = await self._sync_cookie_to_token_table(
                         cookie_header=cookie_header,
+                        cookie_file_header=(cookie_file_header or None),
                         email_hint=(payload_email or username),
                         job_id=job_id,
                     )

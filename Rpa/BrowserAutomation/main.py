@@ -740,6 +740,7 @@ async def validate_antigravity_account(
         final_url = ""
         token_payload_file_path: Optional[str] = None
         token_payload_cookie: Optional[str] = None
+        token_payload_cookie_file: Optional[str] = None
         token_payload_email: Optional[str] = None
         project_id_request_urls: list[str] = []
         next_data_request_cookies: list[str] = []
@@ -1050,7 +1051,9 @@ async def validate_antigravity_account(
                         else ""
                     )
                     cookie_from_payload = str((payload or {}).get("cookie") or "").strip()
+                    cookie_file_from_payload = str((payload or {}).get("cookieFile") or "").strip()
                     token_payload_cookie = cookie_from_next_data or cookie_from_payload or None
+                    token_payload_cookie_file = cookie_file_from_payload or None
                     if cookie_from_next_data:
                         _print_and_log(
                             f"[RPA] token_payload_cookie 已切换为 _next/data 请求头 Cookie，长度: {len(cookie_from_next_data)}"
@@ -1159,6 +1162,7 @@ async def validate_antigravity_account(
         "auto_detected_project": True,
         "session_token": (session_token or None),
         "cookie": token_payload_cookie,
+        "cookieFile": token_payload_cookie_file,
         "payload_email": token_payload_email,
     }
 

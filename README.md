@@ -159,6 +159,22 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 
 
 
+curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
+  -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.0-pro-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
+
+
 
 
 

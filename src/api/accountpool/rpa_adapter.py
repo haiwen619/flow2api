@@ -84,6 +84,7 @@ async def validate_account_via_rpa(
             "auto_detected_project": None,
             "session_token": None,
             "cookie": None,
+            "cookie_file": None,
             "payload_email": None,
         }
     if mode != "browser_automation":
@@ -163,6 +164,9 @@ async def validate_account_via_rpa(
             "auto_detected_project": result.get("auto_detected_project"),
             "session_token": (str(result.get("session_token") or "").strip() or None),
             "cookie": (str(result.get("cookie") or "").strip() or None),
+            "cookie_file": (
+                str(result.get("cookieFile") or result.get("cookie_file") or "").strip() or None
+            ),
             "payload_email": (str(result.get("payload_email") or "").strip() or None),
         }
     except Exception as e:

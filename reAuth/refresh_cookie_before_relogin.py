@@ -897,6 +897,11 @@ def refresh_cookie_before_relogin(
             session_token = extract_session_token_from_cookie_header(cookie_value)
             record_token(stage, "__Secure-next-auth.session-token", session_token)
 
+    def log_step_code(step_no: int, response: Any) -> None:
+        code = getattr(response, "status_code", None)
+        LOGGER.info("step%s 响应code=%s", step_no, code)
+        print(f"[reAuth] step{step_no} code={code}")
+
     with Session() as session:
         def do_request(
             method: str,
@@ -971,6 +976,7 @@ def refresh_cookie_before_relogin(
             headers={"accept": "*/*", "content-type": "application/json"},
             merge_cookies=not strict_java_flow,
         )
+        log_step_code(1, resp1)
         LOGGER.info("step1 完成: status=%s", resp1.status_code)
         record_cookie_state("step1 完成后", capture_tokens=False)
 
@@ -994,6 +1000,7 @@ def refresh_cookie_before_relogin(
             },
             merge_cookies=not strict_java_flow,
         )
+        log_step_code(2, resp2)
         LOGGER.info("step2 GET %s status=%s body=%s", step2_url, resp2.status_code, _clip_long_text(resp2.text))
         try:
             csrf_token = resp2.json().get("csrfToken")
@@ -1033,6 +1040,7 @@ def refresh_cookie_before_relogin(
             data=form_data,
             merge_cookies=True,
         )
+        log_step_code(3, resp3)
         LOGGER.info("step3 POST %s status=%s body=%s", step3_url, resp3.status_code, _clip_long_text(resp3.text))
         record_cookie_state("step3 第一次记录", capture_tokens=False)
 
@@ -1051,19 +1059,19 @@ def refresh_cookie_before_relogin(
             step_no=4,
             title="访问 step3 返回 URL",
             purpose="进入认证中转页，提取 HTML 跳转链接或 location 头。",
-            request_brief="GET next_url，default 模式优先使用当前链路最新 Cookie（strict 模式使用 cookie_file/初始 cookie）。",
+            request_brief="GET next_url，优先使用 cookie_file（google.com 域）作为请求 Cookie。",
             expected_output="得到 location 或 HTML 中的 A HREF。",
             failure_impact="无法继续跳转链路，流程中断。",
         )
         step4_cookie_source = ""
-        if strict_java_flow:
-            # Java: step4 固定走 account.getCookieFile()（为空时退回初始 cookie）
-            if account.cookie_file is not None:
-                step4_cookie = account.cookie_file
-                step4_cookie_source = "strict:cookie_file"
-            else:
-                step4_cookie = account.cookie
-                step4_cookie_source = "strict:account.cookie"
+        cookie_file_value = str(account.cookie_file or "").strip()
+        if cookie_file_value:
+            step4_cookie = cookie_file_value
+            step4_cookie_source = "cookie_file"
+        elif strict_java_flow:
+            # strict 模式下，cookie_file 为空时退回初始 cookie。
+            step4_cookie = account.cookie
+            step4_cookie_source = "strict:account.cookie"
         else:
             # 增强模式：优先使用 step1~3 合并后的最新 Cookie，避免被旧 cookie_file 覆盖。
             # 仅在 current_cookie 为空时才回退 cookie_file/初始 cookie。
@@ -1071,14 +1079,9 @@ def refresh_cookie_before_relogin(
             if latest_cookie:
                 step4_cookie = latest_cookie
                 step4_cookie_source = "default:current_cookie"
-            elif account.cookie_file:
-                step4_cookie = account.cookie_file
-                step4_cookie_source = "default:cookie_file_fallback"
             else:
                 step4_cookie = account.cookie
                 step4_cookie_source = "default:account.cookie_fallback"
-            if account.cookie_file and step4_cookie_source != "default:cookie_file_fallback":
-                LOGGER.info("step4(default) 忽略 cookie_file，改用当前链路最新 Cookie。")
         LOGGER.info("step4 Cookie来源: %s", step4_cookie_source or "unknown")
         LOGGER.info("step4 使用Cookie全文: %s", step4_cookie or "<空Cookie>")
         resp4 = do_request(
@@ -1088,6 +1091,7 @@ def refresh_cookie_before_relogin(
             cookie_override=step4_cookie,
             merge_cookies=not strict_java_flow,
         )
+        log_step_code(4, resp4)
         html = resp4.text or ""
         match = re.search(r'<A HREF="(.*?)">', html, re.IGNORECASE)
         redirect_url = match.group(1) if match else None
@@ -1120,6 +1124,7 @@ def refresh_cookie_before_relogin(
             },
             merge_cookies=True,
         )
+        log_step_code(5, resp5)
         step5_location = resp5.headers.get("location")
         LOGGER.info("step5 GET %s status=%s location=%s", location, resp5.status_code, step5_location)
         record_cookie_state("step5 完成后", capture_tokens=False)
@@ -1145,6 +1150,7 @@ def refresh_cookie_before_relogin(
             merge_cookies=True,
             record_set_cookie_tokens=True,
         )
+        log_step_code(6, resp6)
         LOGGER.info("step6 GET %s status=%s", project_url, resp6.status_code)
         if resp6.status_code >= 400:
             LOGGER.error(
@@ -1263,7 +1269,7 @@ def _main() -> None:
     parser.add_argument("--local-proxy-port", type=int, default=None, help="Use local HTTP proxy port, e.g. 6987")
     parser.add_argument("--test-at", action="store_true", help="After refresh, test candidate token via /v1/credits once")
     parser.add_argument("--verify-only", action="store_true", help="Only verify input cookie token via /v1/credits once")
-    parser.add_argument("--strict-java-flow", action="store_true", help="Strict 1:1 Java flow: cookie update only in step3/5/6, step4 uses cookie_file, step5 uses location header only")
+    parser.add_argument("--strict-java-flow", action="store_true", help="Strict 1:1 Java flow: cookie update only in step3/5/6, step5 uses location header only (step4 默认优先 cookie_file)")
     parser.add_argument("--test-browser-with-cookie", action="store_true", help="After refresh (or verify-only), open browser with current cookie and visit target url for manual validation")
     parser.add_argument("--browser-url", default=DEFAULT_BROWSER_TEST_URL, help="Browser validation target url")
     parser.add_argument("--browser-headless", action="store_true", help="Run browser validation in headless mode")
