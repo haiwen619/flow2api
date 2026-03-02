@@ -474,6 +474,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     token_id INTEGER,
                     operation TEXT NOT NULL,
+                    proxy_source TEXT,
                     request_body TEXT,
                     response_body TEXT,
                     status_code INTEGER NOT NULL,
@@ -607,6 +608,7 @@ class Database:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         token_id INTEGER,
                         operation TEXT NOT NULL,
+                        proxy_source TEXT,
                         request_body TEXT,
                         response_body TEXT,
                         status_code INTEGER NOT NULL,
@@ -618,10 +620,11 @@ class Database:
 
                 # Migrate data from old table (basic migration)
                 await db.execute("""
-                    INSERT INTO request_logs (token_id, operation, request_body, status_code, duration, created_at)
+                    INSERT INTO request_logs (token_id, operation, proxy_source, request_body, status_code, duration, created_at)
                     SELECT
                         token_id,
                         model as operation,
+                        NULL as proxy_source,
                         json_object('model', model, 'prompt', substr(prompt, 1, 100)) as request_body,
                         CASE
                             WHEN status = 'completed' THEN 200
@@ -637,6 +640,11 @@ class Database:
                 await db.execute("DROP TABLE request_logs_old")
 
                 print("✅ request_logs表迁移完成")
+
+            has_proxy_source = await self._column_exists(db, "request_logs", "proxy_source")
+            if not has_proxy_source:
+                await db.execute("ALTER TABLE request_logs ADD COLUMN proxy_source TEXT")
+                print("✅ request_logs表新增 proxy_source 字段")
         except Exception as e:
             print(f"⚠️ request_logs表迁移失败: {e}")
             # Continue even if migration fails
@@ -681,6 +689,16 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens WHERE st = ?", (st,))
+            row = await cursor.fetchone()
+            if row:
+                return Token(**dict(row))
+            return None
+
+    async def get_token_by_at(self, at: str) -> Optional[Token]:
+        """Get token by AT"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM tokens WHERE at = ?", (at,))
             row = await cursor.fetchone()
             if row:
                 return Token(**dict(row))
@@ -1060,9 +1078,9 @@ class Database:
         """Add request log"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                INSERT INTO request_logs (token_id, operation, request_body, response_body, status_code, duration)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (log.token_id, log.operation, log.request_body, log.response_body,
+                INSERT INTO request_logs (token_id, operation, proxy_source, request_body, response_body, status_code, duration)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (log.token_id, log.operation, log.proxy_source, log.request_body, log.response_body,
                   log.status_code, log.duration))
             await db.commit()
 
@@ -1077,6 +1095,7 @@ class Database:
                         rl.id,
                         rl.token_id,
                         rl.operation,
+                        rl.proxy_source,
                         rl.request_body,
                         rl.response_body,
                         rl.status_code,
@@ -1096,6 +1115,7 @@ class Database:
                         rl.id,
                         rl.token_id,
                         rl.operation,
+                        rl.proxy_source,
                         rl.request_body,
                         rl.response_body,
                         rl.status_code,

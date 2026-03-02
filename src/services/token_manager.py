@@ -276,14 +276,38 @@ class TokenManager:
         time_until_expiry = at_expires_aware - now
 
         if time_until_expiry.total_seconds() < 3600:  # 1 hour (3600 seconds)
-            debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT即将过期 (剩余 {time_until_expiry.total_seconds():.0f} 秒),需要刷新")
-            return await self._refresh_at(token_id)
+            debug_logger.log_info(
+                f"[AT_CHECK] Token {token_id}: AT即将过期 (剩余 {time_until_expiry.total_seconds():.0f} 秒),需要刷新"
+            )
+
+            # 优先尝试纯协议 reAuth 刷新会话（更新 Cookie/ST/RT），以延长会话有效期；
+            # 若失败，再回退原有 AT 直刷链路。
+            from ..core.config import config
+            reauth_attempted = False
+            if config.enable_reauth_refresh:
+                reauth_attempted = True
+                debug_logger.log_info(
+                    f"[AT_CHECK] Token {token_id}: 先尝试 reAuth 纯协议刷新会话..."
+                )
+                if await self.refresh_cookie_via_reauth(token_id):
+                    debug_logger.log_info(
+                        f"[AT_CHECK] Token {token_id}: reAuth 纯协议刷新成功"
+                    )
+                    return True
+                debug_logger.log_warning(
+                    f"[AT_CHECK] Token {token_id}: reAuth 纯协议刷新失败，回退 AT 直刷链路"
+                )
+
+            return await self._refresh_at(
+                token_id,
+                skip_reauth_fallback=reauth_attempted,
+            )
 
         # AT有效
         return True
 
 
-    async def _refresh_at(self, token_id: int) -> bool:
+    async def _refresh_at(self, token_id: int, skip_reauth_fallback: bool = False) -> bool:
         """内部方法: 刷新AT
 
         如果 AT 刷新失败（ST 可能过期），会尝试通过浏览器自动刷新 ST，
@@ -304,12 +328,16 @@ class TokenManager:
 
             # AT 刷新失败，可选尝试 HTTP reAuth 恢复可用 AT（可能先拿到 ST 再换 AT，或直接拿到可用 AT）
             from ..core.config import config
-            if config.enable_reauth_refresh:
+            if config.enable_reauth_refresh and not skip_reauth_fallback:
                 debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 第一次 AT 刷新失败，尝试 reAuth 恢复 AT...")
                 reauth_result = await self._try_refresh_at_via_reauth(token_id, token)
                 if reauth_result:
                     debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: reAuth 恢复 AT 成功")
                     return True
+            elif skip_reauth_fallback:
+                debug_logger.log_info(
+                    f"[AT_REFRESH] Token {token_id}: 已在外层执行过 reAuth，跳过本轮 reAuth fallback"
+                )
             else:
                 debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: reAuth 恢复已禁用（flow.enable_reauth_refresh=false），跳过")
 

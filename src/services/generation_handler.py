@@ -1599,9 +1599,13 @@ class GenerationHandler:
     ):
         """记录请求到数据库"""
         try:
+            proxy_source = "direct"
+            if hasattr(self.flow_client, "get_request_proxy_source"):
+                proxy_source = self.flow_client.get_request_proxy_source()
             log = RequestLog(
                 token_id=token_id,
                 operation=operation,
+                proxy_source=proxy_source,
                 request_body=json.dumps(request_data, ensure_ascii=False),
                 response_body=json.dumps(response_data, ensure_ascii=False),
                 status_code=status_code,

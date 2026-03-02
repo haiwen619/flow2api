@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>代理池管理</title>
+  <script src="../vendor/tailwind.min.js"></script>
+  <style>
+    .pp-top {
+      border: 1px solid #e2e8f0;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+
+    .pp-card {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+    }
+
+    .pp-card-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .pp-subtle {
+      color: #475569;
+    }
+
+    .pp-btn {
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 9px 12px;
+      transition: all .2s ease;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: #0f172a;
+    }
+
+    .pp-btn:hover {
+      border-color: #94a3b8;
+      background: #f8fafc;
+    }
+
+    .pp-btn-primary {
+      border-color: #0f172a;
+      background: #0f172a;
+      color: #fff;
+    }
+
+    .pp-btn-primary:hover {
+      background: #1e293b;
+      border-color: #1e293b;
+    }
+
+    .pp-btn-green {
+      border-color: #059669;
+      background: #059669;
+      color: #fff;
+    }
+
+    .pp-btn-green:hover {
+      background: #047857;
+      border-color: #047857;
+    }
+
+    #ppAddForm input,
+    #ppEditForm input,
+    #ppBulkModal input,
+    #ppBulkModal select,
+    #ppBulkText,
+    #ppBindSelect,
+    #ppSearch {
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      background: #fff;
+      transition: border-color .2s ease, box-shadow .2s ease, background-color .2s ease;
+    }
+
+    #ppAddForm input:focus,
+    #ppEditForm input:focus,
+    #ppBulkModal input:focus,
+    #ppBulkModal select:focus,
+    #ppBulkText:focus,
+    #ppBindSelect:focus,
+    #ppSearch:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, .15);
+    }
+
+    #ppTags {
+      border-style: dashed;
+      background: #f8fbff;
+    }
+
+    .pp-table-wrap {
+      margin-top: 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      overflow: auto;
+      background: #fff;
+    }
+
+    .pp-table {
+      min-width: 980px;
+      width: 100%;
+      font-size: 13px;
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+
+    .pp-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #f8fafc;
+      color: #334155;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 10px 10px;
+      font-weight: 700;
+    }
+
+    /* Keep all modals above sticky table headers */
+    #ppEditModal,
+    #ppBulkModal,
+    #ppBindModal {
+      z-index: 1000;
+    }
+
+    #ppEditModal > div,
+    #ppBulkModal > div,
+    #ppBindModal > div {
+      position: relative;
+      z-index: 1001;
+    }
+
+    .pp-table tbody td {
+      padding: 10px 10px;
+      border-bottom: 1px solid #edf2f7;
+      vertical-align: top;
+    }
+
+    .pp-table tbody tr:hover {
+      background: #f8fbff;
+    }
+
+    .pp-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      min-width: 170px;
+    }
+
+    .pp-action-btn {
+      border: 1px solid #d1d9e6;
+      background: #fff;
+      border-radius: 8px;
+      padding: 5px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.1;
+      white-space: nowrap;
+      color: #0f172a;
+      transition: all .15s ease;
+    }
+
+    .pp-action-btn:hover {
+      border-color: #94a3b8;
+      background: #f8fafc;
+    }
+
+    .pp-action-btn[data-action="test"] { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; }
+    .pp-action-btn[data-action="bind"],
+    .pp-action-btn[data-action="rebind"] { color: #0f766e; border-color: #99f6e4; background: #f0fdfa; }
+    .pp-action-btn[data-action="unbind"] { color: #92400e; border-color: #fde68a; background: #fffbeb; }
+    .pp-action-btn[data-action="toggleDisable"] { color: #334155; border-color: #cbd5e1; background: #f8fafc; }
+    .pp-action-btn[data-action="edit"] { color: #4338ca; border-color: #c7d2fe; background: #eef2ff; }
+    .pp-action-btn[data-action="del"] { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+
+    @media (max-width: 1100px) {
+      .pp-actions {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        min-width: 220px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .pp-top {
+        padding: 12px;
+      }
+
+      .pp-card {
+        border-radius: 12px;
+      }
+
+      .pp-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+  <div class="w-full max-w-[1650px] mx-auto p-4 sm:p-6">
+    <div class="pp-top flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold text-slate-900">代理池管理</h1>
+        <p class="text-sm pp-subtle mt-1">支持添加 / 编辑 / 删除 / 批量导入，并可测试代理可用性。</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button id="ppReloadBtn" class="pp-btn pp-btn-primary">刷新列表</button>
+        <button id="ppBulkOpenBtn" class="pp-btn">批量导入</button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-5 items-start">
+      <div class="lg:col-span-1 pp-card p-4 lg:sticky lg:top-4">
+        <h2 class="pp-card-title">添加新代理</h2>
+        <form id="ppAddForm" class="mt-3 space-y-3">
+          <div>
+            <label class="text-sm text-slate-700 font-medium">Host</label>
+            <input id="ppHost" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="例如 gate2.ipweb.cc" required />
+          </div>
+          <div>
+            <label class="text-sm text-slate-700 font-medium">Port</label>
+            <input id="ppPort" type="number" min="1" max="65535" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="例如 7778" required />
+          </div>
+          <div>
+            <label class="text-sm text-slate-700 font-medium">用户名</label>
+            <input id="ppUsername" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="username" required />
+          </div>
+          <div>
+            <label class="text-sm text-slate-700 font-medium">密码</label>
+            <input id="ppPassword" type="password" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="password" required />
+          </div>
+          <div>
+            <label class="text-sm text-slate-700 font-medium">标签（可选，逗号分隔）</label>
+            <input id="ppTags" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="例如 住宅,US" />
+            <div class="mt-1 text-xs text-slate-500">示例：`住宅,US` 或 `机房,低延迟`</div>
+          </div>
+          <div class="flex gap-2">
+            <button class="pp-btn pp-btn-green" type="submit">保存</button>
+            <button id="ppAddClearBtn" class="pp-btn" type="button">清空</button>
+          </div>
+          <div id="ppAddMsg" class="text-sm text-slate-600"></div>
+        </form>
+      </div>
+
+      <div class="lg:col-span-2 pp-card p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="pp-card-title">代理列表</h2>
+          <div class="flex w-full sm:w-auto gap-2">
+            <input id="ppSearch" class="w-full sm:w-64 rounded border px-3 py-2 text-sm" placeholder="搜索 host/username/凭证" />
+            <button id="ppSearchBtn" class="pp-btn">搜索</button>
+          </div>
+        </div>
+
+        <div class="pp-table-wrap">
+          <table class="pp-table">
+            <thead class="text-left text-slate-600">
+              <tr>
+                <th class="py-2 pr-3">Host</th>
+                <th class="py-2 pr-3">Port</th>
+                <th class="py-2 pr-3">用户名</th>
+                <th class="py-2 pr-3">绑定凭证</th>
+                <th class="py-2 pr-3">标签</th>
+                <th class="py-2 pr-3">最近测试</th>
+                <th class="py-2 pr-3">IP</th>
+                <th class="py-2 pr-3">消息</th>
+                <th class="py-2 pr-3 min-w-[190px]">操作</th>
+              </tr>
+            </thead>
+            <tbody id="ppTbody" class="text-slate-800"></tbody>
+          </table>
+        </div>
+        <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <div id="ppListMeta" class="text-xs text-slate-500"></div>
+          <div class="flex items-center gap-2">
+            <button id="ppPrevPage" class="px-3 py-2 rounded border text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:hover:bg-transparent" disabled>上一页</button>
+            <span id="ppPageIndicator" class="text-xs text-slate-600">1/1</span>
+            <button id="ppNextPage" class="px-3 py-2 rounded border text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:hover:bg-transparent" disabled>下一页</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑弹窗 -->
+  <div id="ppEditModal" class="fixed inset-0 hidden items-center justify-center bg-black/40 p-4">
+    <div class="w-full max-w-lg bg-white rounded-lg border p-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-medium">编辑代理</h3>
+        <button id="ppEditClose" class="text-slate-500">关闭</button>
+      </div>
+      <form id="ppEditForm" class="mt-3 space-y-3">
+        <input id="ppEditKey" type="hidden" />
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm text-slate-700">Host</label>
+            <input id="ppEditHost" class="mt-1 w-full rounded border px-3 py-2 text-sm" required />
+          </div>
+          <div>
+            <label class="text-sm text-slate-700">Port</label>
+            <input id="ppEditPort" type="number" min="1" max="65535" class="mt-1 w-full rounded border px-3 py-2 text-sm" required />
+          </div>
+        </div>
+        <div>
+          <label class="text-sm text-slate-700">用户名</label>
+          <input id="ppEditUsername" class="mt-1 w-full rounded border px-3 py-2 text-sm" required />
+        </div>
+        <div>
+          <label class="text-sm text-slate-700">密码（留空则不修改）</label>
+          <input id="ppEditPassword" type="password" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="不修改请留空" />
+        </div>
+        <div>
+          <label class="text-sm text-slate-700">标签（逗号分隔）</label>
+          <input id="ppEditTags" class="mt-1 w-full rounded border px-3 py-2 text-sm" />
+        </div>
+        <div class="flex gap-2">
+          <button class="px-3 py-2 rounded bg-slate-900 text-white text-sm" type="submit">保存</button>
+          <button id="ppEditCancel" class="px-3 py-2 rounded bg-white border text-sm" type="button">取消</button>
+        </div>
+        <div id="ppEditMsg" class="text-sm text-slate-600"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 批量导入弹窗 -->
+  <div id="ppBulkModal" class="fixed inset-0 hidden items-center justify-center bg-black/40 p-4">
+    <div class="w-full max-w-2xl bg-white rounded-lg border p-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-medium">批量导入</h3>
+        <button id="ppBulkClose" class="text-slate-500">关闭</button>
+      </div>
+      <div class="mt-2 text-sm text-slate-600">
+        每行一个代理，支持：
+        <span class="font-mono">host:port:username:password</span>
+        或
+        <span class="font-mono">host:xx port:7778 username:xx password:xx</span>
+      </div>
+      <textarea id="ppBulkText" class="mt-3 w-full h-56 rounded border p-3 text-sm font-mono" placeholder="# 示例\ngate2.ipweb.cc:7778:user:pass\nhost:gate2.ipweb.cc port:7778 username:user password:pass"></textarea>
+      <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label class="text-sm text-slate-700">默认 scheme</label>
+          <select id="ppBulkScheme" class="mt-1 w-full rounded border px-3 py-2 text-sm">
+            <option value="http" selected>http</option>
+            <option value="https">https</option>
+          </select>
+        </div>
+        <div class="sm:col-span-2">
+          <label class="text-sm text-slate-700">导入标签（可选，逗号分隔）</label>
+          <input id="ppBulkTags" class="mt-1 w-full rounded border px-3 py-2 text-sm" placeholder="例如 批量,临时" />
+        </div>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button id="ppBulkSubmit" class="px-3 py-2 rounded bg-emerald-600 text-white text-sm" type="button">开始导入</button>
+        <button id="ppBulkClear" class="px-3 py-2 rounded bg-white border text-sm" type="button">清空</button>
+      </div>
+      <div id="ppBulkMsg" class="mt-2 text-sm text-slate-600"></div>
+    </div>
+  </div>
+
+  <!-- 绑定弹窗 -->
+  <div id="ppBindModal" class="fixed inset-0 hidden items-center justify-center bg-black/40 p-4">
+    <div class="w-full max-w-lg bg-white rounded-lg border p-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-medium">绑定凭证</h3>
+        <button id="ppBindClose" class="text-slate-500">关闭</button>
+      </div>
+      <form id="ppBindForm" class="mt-3 space-y-3">
+        <input id="ppBindKey" type="hidden" />
+        <input id="ppBindForce" type="hidden" />
+        <div>
+          <label class="text-sm text-slate-700">选择 Antigravity 凭证</label>
+          <select id="ppBindSelect" class="mt-1 w-full rounded border px-3 py-2 text-sm"></select>
+          <div class="mt-1 text-xs text-slate-500">仅展示已上传的 Antigravity 凭证文件名</div>
+        </div>
+        <div class="flex gap-2">
+          <button class="px-3 py-2 rounded bg-slate-900 text-white text-sm" type="submit">确认绑定</button>
+          <button id="ppBindCancel" class="px-3 py-2 rounded bg-white border text-sm" type="button">取消</button>
+        </div>
+        <div id="ppBindMsg" class="text-sm text-slate-600"></div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const PP_PAGE_SIZE = 10;
+    let ppPage = 1;
+    let ppTotal = 0;
+    let ppSearch = '';
+
+    const tokenKey = 'gcli2api_auth_token';
+
+    function getToken() {
+      return localStorage.getItem(tokenKey) || '';
+    }
+
+    async function apiFetch(path, options = {}) {
+      const token = getToken();
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+
+      const res = await fetch(path, Object.assign({}, options, { headers }));
+      const contentType = res.headers.get('content-type') || '';
+      const data = contentType.includes('application/json') ? await res.json() : await res.text();
+      if (!res.ok) {
+        const msg = (data && data.detail) ? data.detail : (typeof data === 'string' ? data : JSON.stringify(data));
+        throw new Error(msg || ('HTTP ' + res.status));
+      }
+      return data;
+    }
+
+    function splitTags(v) {
+      const s = (v || '').trim();
+      if (!s) return [];
+      return s.split(',').map(x => x.trim()).filter(Boolean);
+    }
+
+    function fmtTs(ts) {
+      if (!ts) return '-';
+      try {
+        const d = new Date(ts * 1000);
+        return d.toLocaleString();
+      } catch { return String(ts); }
+    }
+
+    function badge(ok) {
+      if (ok === 1 || ok === true) return '<span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">OK</span>';
+      if (ok === 0 || ok === false) return '<span class="px-2 py-0.5 rounded bg-rose-100 text-rose-700">FAIL</span>';
+      return '<span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700">-</span>';
+    }
+
+    function getTotalPages() {
+      const t = Math.max(0, Number(ppTotal) || 0);
+      return Math.max(1, Math.ceil(t / PP_PAGE_SIZE));
+    }
+
+    function renderPagination() {
+      const totalPages = getTotalPages();
+      if (ppPage > totalPages) ppPage = totalPages;
+      if (ppPage < 1) ppPage = 1;
+
+      const prevBtn = document.getElementById('ppPrevPage');
+      const nextBtn = document.getElementById('ppNextPage');
+      const indicatorEl = document.getElementById('ppPageIndicator');
+      const metaEl = document.getElementById('ppListMeta');
+
+      const from = ppTotal === 0 ? 0 : (ppPage - 1) * PP_PAGE_SIZE + 1;
+      const to = Math.min(ppTotal, ppPage * PP_PAGE_SIZE);
+
+      if (indicatorEl) indicatorEl.textContent = `${ppPage}/${totalPages}`;
+      if (metaEl) {
+        const q = ppSearch ? `，搜索：${ppSearch}` : '';
+        metaEl.textContent = `显示 ${from}-${to} / 共 ${ppTotal} 条${q}`;
+      }
+      if (prevBtn) prevBtn.disabled = ppPage <= 1;
+      if (nextBtn) nextBtn.disabled = ppPage >= totalPages;
+    }
+
+    async function loadList(opts) {
+      if (opts && typeof opts.page !== 'undefined') {
+        ppPage = Math.max(1, Number(opts.page) || 1);
+      }
+      if (opts && typeof opts.search !== 'undefined') {
+        ppSearch = String(opts.search || '').trim();
+      }
+
+      const offset = (ppPage - 1) * PP_PAGE_SIZE;
+      const params = new URLSearchParams({ offset: String(offset), limit: String(PP_PAGE_SIZE) });
+      if (ppSearch) params.set('search', ppSearch);
+      const url = '/proxypool/proxies?' + params.toString();
+
+      const data = await apiFetch(url);
+      const tbody = document.getElementById('ppTbody');
+      tbody.innerHTML = '';
+
+      const items = (data && data.items) ? data.items : [];
+      ppTotal = Number(data && data.total) || items.length;
+      renderPagination();
+
+      if (items.length === 0) {
+        const totalPages = getTotalPages();
+        if (ppTotal > 0 && ppPage > totalPages) {
+          ppPage = totalPages;
+          return await loadList();
+        }
+        return;
+      }
+
+      for (const item of items) {
+        const tags = Array.isArray(item.tags) ? item.tags.join(', ') : '';
+        const msg = (item.last_test_msg || '').toString();
+        const msgShort = msg.length > 80 ? (msg.slice(0, 80) + '…') : msg;
+        const boundEmail = (item.bound_credential_email || '').toString();
+        const boundName = (item.bound_credential || '').toString();
+        const boundDisplay = boundEmail || boundName || '-';
+        const boundTitle = boundEmail && boundName ? `${boundEmail} (${boundName})` : boundDisplay;
+
+        const tr = document.createElement('tr');
+        tr.className = item.disabled ? 'opacity-60' : '';
+        tr.innerHTML = `
+          <td>${escapeHtml(item.host || '')}</td>
+          <td>${escapeHtml(String(item.port || ''))}</td>
+          <td>${escapeHtml(item.username || '')}</td>
+          <td class="text-slate-600" title="${escapeHtml(boundTitle)}">${escapeHtml(boundDisplay)}</td>
+          <td class="text-slate-600">${escapeHtml(tags)}</td>
+          <td>${badge(item.last_test_ok)} <span class="ml-2 text-xs text-slate-500">${escapeHtml(fmtTs(item.last_test_at))}</span></td>
+          <td class="text-slate-600">${escapeHtml(item.last_test_ip || '-') }</td>
+          <td class="text-slate-600" title="${escapeHtml(msg)}">${escapeHtml(msgShort || '-') }</td>
+          <td>
+            <div class="pp-actions">
+              <button class="pp-action-btn" data-action="test" data-key="${escapeAttr(item.proxy_key)}">测试</button>
+              <button class="pp-action-btn" data-action="bind" data-key="${escapeAttr(item.proxy_key)}">绑定</button>
+              <button class="pp-action-btn" data-action="rebind" data-key="${escapeAttr(item.proxy_key)}">重绑</button>
+              <button class="pp-action-btn" data-action="unbind" data-key="${escapeAttr(item.proxy_key)}">解绑</button>
+              <button class="pp-action-btn" data-action="toggleDisable" data-key="${escapeAttr(item.proxy_key)}" data-disabled="${escapeAttr(String(!!item.disabled))}">${item.disabled ? '启用' : '禁用'}</button>
+              <button class="pp-action-btn" data-action="edit" data-key="${escapeAttr(item.proxy_key)}" data-host="${escapeAttr(item.host)}" data-port="${escapeAttr(String(item.port))}" data-username="${escapeAttr(item.username)}" data-tags="${escapeAttr(tags)}">编辑</button>
+              <button class="pp-action-btn" data-action="del" data-key="${escapeAttr(item.proxy_key)}">删除</button>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function escapeHtml(s) {
+      return (s || '').toString()
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function escapeAttr(s) {
+      return escapeHtml(s).replaceAll('`', '&#96;');
+    }
+
+    function openEditModal(payload) {
+      document.getElementById('ppEditKey').value = payload.proxy_key;
+      document.getElementById('ppEditHost').value = payload.host;
+      document.getElementById('ppEditPort').value = payload.port;
+      document.getElementById('ppEditUsername').value = payload.username;
+      document.getElementById('ppEditPassword').value = '';
+      document.getElementById('ppEditTags').value = payload.tags || '';
+      document.getElementById('ppEditMsg').textContent = '';
+
+      const modal = document.getElementById('ppEditModal');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closeEditModal() {
+      const modal = document.getElementById('ppEditModal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    function openBulkModal() {
+      const modal = document.getElementById('ppBulkModal');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+      document.getElementById('ppBulkMsg').textContent = '';
+    }
+
+    function closeBulkModal() {
+      const modal = document.getElementById('ppBulkModal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    async function loadAntigravityCreds() {
+      const res = await apiFetch('/creds/status?offset=0&limit=1000&status_filter=all&mode=antigravity');
+      const items = (res && res.items) ? res.items : [];
+      return items
+        .map(x => ({
+          filename: x.filename,
+          user_email: x.user_email,
+          disabled: !!x.disabled,
+        }))
+        .filter(x => !!x.filename);
+    }
+
+    async function openBindModal(proxyKey, force) {
+      const modal = document.getElementById('ppBindModal');
+      const select = document.getElementById('ppBindSelect');
+      const msg = document.getElementById('ppBindMsg');
+      document.getElementById('ppBindKey').value = proxyKey;
+      document.getElementById('ppBindForce').value = force ? '1' : '';
+      msg.textContent = '加载凭证中...';
+      select.innerHTML = '';
+
+      try {
+        const creds = await loadAntigravityCreds();
+        if (!creds.length) {
+          msg.textContent = '暂无 Antigravity 凭证';
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = '暂无可用凭证';
+          select.appendChild(opt);
+        } else {
+          msg.textContent = '';
+          const sorted = creds.slice().sort((a, b) => {
+            if (a.disabled === b.disabled) {
+              return (a.user_email || a.filename).localeCompare(b.user_email || b.filename);
+            }
+            return a.disabled ? 1 : -1;
+          });
+          for (const item of sorted) {
+            const name = item.filename;
+            const email = item.user_email || '';
+            const disabledTag = item.disabled ? '（禁用）' : '';
+            const label = email ? `${email} - ${name}${disabledTag}` : `${name}${disabledTag}`;
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = label;
+            if (item.disabled) {
+              opt.disabled = true;
+            }
+            select.appendChild(opt);
+          }
+        }
+      } catch (err) {
+        msg.textContent = '加载失败：' + (err && err.message ? err.message : String(err));
+      }
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closeBindModal() {
+      const modal = document.getElementById('ppBindModal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    // 绑定事件
+    document.getElementById('ppReloadBtn').addEventListener('click', () => loadList().catch(showTopError));
+    document.getElementById('ppSearchBtn').addEventListener('click', () => {
+      const q = document.getElementById('ppSearch').value.trim();
+      ppPage = 1;
+      loadList({ page: 1, search: q }).catch(showTopError);
+    });
+    document.getElementById('ppBulkOpenBtn').addEventListener('click', openBulkModal);
+    document.getElementById('ppBulkClose').addEventListener('click', closeBulkModal);
+    document.getElementById('ppBulkClear').addEventListener('click', () => { document.getElementById('ppBulkText').value = ''; });
+    document.getElementById('ppBindClose').addEventListener('click', closeBindModal);
+    document.getElementById('ppBindCancel').addEventListener('click', closeBindModal);
+
+    document.getElementById('ppAddClearBtn').addEventListener('click', () => {
+      document.getElementById('ppHost').value = '';
+      document.getElementById('ppPort').value = '';
+      document.getElementById('ppUsername').value = '';
+      document.getElementById('ppPassword').value = '';
+      document.getElementById('ppTags').value = '';
+      document.getElementById('ppAddMsg').textContent = '';
+    });
+
+    document.getElementById('ppAddForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('ppAddMsg');
+      msg.textContent = '保存中...';
+      try {
+        const body = {
+          host: document.getElementById('ppHost').value.trim(),
+          port: Number(document.getElementById('ppPort').value),
+          username: document.getElementById('ppUsername').value.trim(),
+          password: document.getElementById('ppPassword').value,
+          tags: splitTags(document.getElementById('ppTags').value),
+        };
+        await apiFetch('/proxypool/proxies', { method: 'POST', body: JSON.stringify(body) });
+        msg.textContent = '保存成功';
+        await loadList();
+      } catch (err) {
+        msg.textContent = '保存失败：' + (err && err.message ? err.message : String(err));
+      }
+    });
+
+    document.getElementById('ppTbody').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+
+      const action = btn.getAttribute('data-action');
+      const key = btn.getAttribute('data-key');
+      if (!action || !key) return;
+
+      if (action === 'edit') {
+        openEditModal({
+          proxy_key: key,
+          host: btn.getAttribute('data-host') || '',
+          port: btn.getAttribute('data-port') || '',
+          username: btn.getAttribute('data-username') || '',
+          tags: btn.getAttribute('data-tags') || '',
+        });
+        return;
+      }
+
+      if (action === 'del') {
+        if (!confirm('确认删除该代理？')) return;
+        try {
+          await apiFetch('/proxypool/proxies/' + encodeURIComponent(key), { method: 'DELETE' });
+          await loadList();
+        } catch (err) {
+          showTopError(err);
+        }
+        return;
+      }
+
+      if (action === 'test') {
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '测试中...';
+        try {
+          await apiFetch('/proxypool/proxies/' + encodeURIComponent(key) + '/test', {
+            method: 'POST',
+            body: JSON.stringify({ timeout_s: 8.0 }),
+          });
+          await loadList();
+        } catch (err) {
+          showTopError(err);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+      }
+
+      if (action === 'bind' || action === 'rebind') {
+        const force = action === 'rebind';
+        openBindModal(key, force);
+      }
+
+      if (action === 'unbind') {
+        if (!confirm('确认解绑该代理？')) return;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '解绑中...';
+        try {
+          await apiFetch('/proxypool/proxies/' + encodeURIComponent(key) + '/unbind', {
+            method: 'POST',
+          });
+          await loadList();
+        } catch (err) {
+          showTopError(err);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+      }
+
+      if (action === 'toggleDisable') {
+        const currentDisabled = btn.getAttribute('data-disabled') === 'true';
+        const nextDisabled = !currentDisabled;
+        if (!confirm(nextDisabled ? '确认禁用该代理？' : '确认启用该代理？')) return;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = nextDisabled ? '禁用中...' : '启用中...';
+        try {
+          await apiFetch('/proxypool/proxies/' + encodeURIComponent(key) + '/disable', {
+            method: 'POST',
+            body: JSON.stringify({ disabled: nextDisabled }),
+          });
+          await loadList();
+        } catch (err) {
+          showTopError(err);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+      }
+    });
+
+    document.getElementById('ppBindForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('ppBindMsg');
+      const key = document.getElementById('ppBindKey').value;
+      const force = !!document.getElementById('ppBindForce').value;
+      const select = document.getElementById('ppBindSelect');
+      const cred = (select && select.value) ? select.value.trim() : '';
+      if (!cred) {
+        msg.textContent = '请选择有效的凭证';
+        return;
+      }
+      msg.textContent = '提交中...';
+      try {
+        await apiFetch('/proxypool/proxies/' + encodeURIComponent(key) + '/bind', {
+          method: 'POST',
+          body: JSON.stringify({ credential_name: cred, mode: 'antigravity', force }),
+        });
+        msg.textContent = '绑定成功';
+        closeBindModal();
+        await loadList();
+      } catch (err) {
+        msg.textContent = '绑定失败：' + (err && err.message ? err.message : String(err));
+      }
+    });
+
+    document.getElementById('ppEditClose').addEventListener('click', closeEditModal);
+    document.getElementById('ppEditCancel').addEventListener('click', closeEditModal);
+
+    document.getElementById('ppEditForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('ppEditMsg');
+      msg.textContent = '保存中...';
+      try {
+        const key = document.getElementById('ppEditKey').value;
+        const body = {
+          host: document.getElementById('ppEditHost').value.trim(),
+          port: Number(document.getElementById('ppEditPort').value),
+          username: document.getElementById('ppEditUsername').value.trim(),
+          password: document.getElementById('ppEditPassword').value, // 空字符串 => 不改密码
+          tags: splitTags(document.getElementById('ppEditTags').value),
+        };
+        await apiFetch('/proxypool/proxies/' + encodeURIComponent(key), { method: 'PUT', body: JSON.stringify(body) });
+        msg.textContent = '保存成功';
+        closeEditModal();
+        await loadList();
+      } catch (err) {
+        msg.textContent = '保存失败：' + (err && err.message ? err.message : String(err));
+      }
+    });
+
+    document.getElementById('ppBulkSubmit').addEventListener('click', async () => {
+      const msg = document.getElementById('ppBulkMsg');
+      msg.textContent = '导入中...';
+      try {
+        const body = {
+          text: document.getElementById('ppBulkText').value,
+          default_scheme: document.getElementById('ppBulkScheme').value,
+          tags: splitTags(document.getElementById('ppBulkTags').value),
+        };
+        const data = await apiFetch('/proxypool/proxies/bulk', { method: 'POST', body: JSON.stringify(body) });
+        msg.textContent = `导入完成：成功 ${data.imported}，失败 ${data.failed}` + (data.failed ? '（仅展示前 50 条错误）' : '');
+        await loadList();
+      } catch (err) {
+        msg.textContent = '导入失败：' + (err && err.message ? err.message : String(err));
+      }
+    });
+
+    function showTopError(err) {
+      const text = (err && err.message) ? err.message : String(err);
+      alert(text);
+    }
+
+    const ppPrevBtn = document.getElementById('ppPrevPage');
+    const ppNextBtn = document.getElementById('ppNextPage');
+    if (ppPrevBtn) {
+      ppPrevBtn.addEventListener('click', () => {
+        if (ppPage > 1) {
+          ppPage -= 1;
+          loadList({ page: ppPage }).catch(showTopError);
+        }
+      });
+    }
+    if (ppNextBtn) {
+      ppNextBtn.addEventListener('click', () => {
+        const totalPages = getTotalPages();
+        if (ppPage < totalPages) {
+          ppPage += 1;
+          loadList({ page: ppPage }).catch(showTopError);
+        }
+      });
+    }
+
+    // 初始加载
+    loadList().catch(showTopError);
+  </script>
+</body>
+</html>

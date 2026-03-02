@@ -95,6 +95,7 @@ class RequestLog(BaseModel):
     id: Optional[int] = None
     token_id: Optional[int] = None
     operation: str
+    proxy_source: Optional[str] = None
     request_body: Optional[str] = None
     response_body: Optional[str] = None
     status_code: int

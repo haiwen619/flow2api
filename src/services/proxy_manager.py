@@ -1,14 +1,24 @@
 """Proxy management module"""
-from typing import Optional
+import json
+from pathlib import Path
+from typing import Optional, Tuple
 import re
 from ..core.database import Database
 from ..core.models import ProxyConfig
+from ..core.logger import debug_logger
+
 
 class ProxyManager:
     """Proxy configuration manager"""
 
     def __init__(self, db: Database):
         self.db = db
+        self.proxy_pool_service = None
+        self._tmp_token_dir = Path(__file__).resolve().parents[2] / "tmp" / "Token"
+
+    def set_proxy_pool_service(self, service) -> None:
+        """Inject proxy pool service lazily to avoid import coupling."""
+        self.proxy_pool_service = service
 
     def _parse_proxy_line(self, line: str) -> Optional[str]:
         """将用户输入代理转换为标准 URL 格式。
@@ -129,6 +139,135 @@ class ProxyManager:
         if config and config.media_proxy_enabled and config.media_proxy_url:
             return config.media_proxy_url
         return await self.get_request_proxy_url()
+
+    @staticmethod
+    def _extract_email_from_token_file(path: Path) -> Optional[str]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+
+        email = str((payload or {}).get("email") or "").strip()
+        if "@" in email:
+            return email
+
+        stem = path.stem
+        if "_" in stem:
+            prefix, suffix = stem.rsplit("_", 1)
+            if suffix.isdigit():
+                stem = prefix
+        guessed = stem.replace("_at_", "@").strip()
+        if "@" in guessed:
+            return guessed
+        return None
+
+    def _resolve_credential_filename_by_email(self, email: str) -> Optional[str]:
+        mail = str(email or "").strip().lower()
+        if not mail:
+            return None
+        if not self._tmp_token_dir.exists() or not self._tmp_token_dir.is_dir():
+            return None
+
+        matched = []
+        for path in self._tmp_token_dir.glob("*.json"):
+            file_email = str(self._extract_email_from_token_file(path) or "").strip().lower()
+            if file_email == mail:
+                matched.append(path)
+
+        if not matched:
+            return None
+
+        matched.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return matched[0].name
+
+    async def _resolve_credential_name_for_token(
+        self,
+        *,
+        st_token: Optional[str] = None,
+        at_token: Optional[str] = None,
+    ) -> Optional[str]:
+        token = None
+        st = str(st_token or "").strip()
+        at = str(at_token or "").strip()
+        if st:
+            token = await self.db.get_token_by_st(st)
+        if token is None and at:
+            token = await self.db.get_token_by_at(at)
+
+        if token is None:
+            return None
+
+        email = str(getattr(token, "email", "") or "").strip()
+        if not email:
+            return None
+
+        # Prefer real credential filename so manual bindings in proxy pool work.
+        credential_filename = self._resolve_credential_filename_by_email(email)
+        if credential_filename:
+            return credential_filename
+
+        # Fallback: use email as stable binding key.
+        return email
+
+    async def select_proxy_url(
+        self,
+        *,
+        st_token: Optional[str] = None,
+        at_token: Optional[str] = None,
+        use_media_proxy: bool = False,
+    ) -> Optional[str]:
+        """Return selected proxy URL only (compat)."""
+        proxy_url, _ = await self.select_proxy_with_source(
+            st_token=st_token,
+            at_token=at_token,
+            use_media_proxy=use_media_proxy,
+        )
+        return proxy_url
+
+    async def select_proxy_with_source(
+        self,
+        *,
+        st_token: Optional[str] = None,
+        at_token: Optional[str] = None,
+        use_media_proxy: bool = False,
+    ) -> Tuple[Optional[str], str]:
+        """
+        Request proxy priority:
+        1) System proxy config (request/media proxy)
+        2) Proxy pool assigned proxy (credential-bound first, then any available)
+        """
+        # Priority 1: system proxy config
+        system_proxy = await (
+            self.get_media_proxy_url() if use_media_proxy else self.get_request_proxy_url()
+        )
+        if system_proxy:
+            return system_proxy, "system"
+
+        # Priority 2: proxy pool
+        service = self.proxy_pool_service
+        if service is None:
+            return None, "direct"
+
+        try:
+            credential_name = await self._resolve_credential_name_for_token(
+                st_token=st_token,
+                at_token=at_token,
+            )
+            if credential_name:
+                proxy_url = await service.get_proxy_url_for_credential(
+                    credential_name=credential_name,
+                    mode="antigravity",
+                    force_rebind=False,
+                )
+                if proxy_url:
+                    return proxy_url, "proxy_pool"
+            proxy_url = await service.get_any_proxy_url()
+            if proxy_url:
+                return proxy_url, "proxy_pool"
+            return None, "direct"
+        except Exception as e:
+            debug_logger.log_warning(f"[ProxyPool] select_proxy_url failed: {e}")
+            return None, "direct"
 
     async def update_proxy_config(
         self,

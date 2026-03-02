@@ -1114,6 +1114,7 @@ async def get_logs(
         "token_email": log.get("token_email"),
         "token_username": log.get("token_username"),
         "operation": log.get("operation"),
+        "proxy_source": log.get("proxy_source"),
         "status_code": log.get("status_code"),
         "duration": log.get("duration"),
         "created_at": log.get("created_at"),

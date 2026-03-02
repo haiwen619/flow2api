@@ -27,6 +27,11 @@ class FlowClient:
             "flow_request_fingerprint",
             default=None
         )
+        # 当前请求链路代理命中信息（system/proxy_pool/direct）
+        self._request_proxy_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+            "flow_request_proxy",
+            default=None
+        )
 
         # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
         # These will be applied as defaults (won't override caller-provided headers).
@@ -119,9 +124,27 @@ class FlowClient:
         """设置当前请求链路的浏览器指纹上下文。"""
         self._request_fingerprint_ctx.set(dict(fingerprint) if fingerprint else None)
 
+    def _set_request_proxy_state(self, proxy_source: str, proxy_url: Optional[str]):
+        source = str(proxy_source or "direct").strip().lower()
+        if source not in {"system", "proxy_pool", "direct"}:
+            source = "direct"
+        self._request_proxy_ctx.set({
+            "proxy_source": source,
+            "proxy_url": proxy_url if proxy_url else None,
+        })
+
+    def get_request_proxy_source(self) -> str:
+        state = self._request_proxy_ctx.get()
+        if isinstance(state, dict):
+            source = str(state.get("proxy_source") or "").strip().lower()
+            if source in {"system", "proxy_pool", "direct"}:
+                return source
+        return "direct"
+
     def clear_request_fingerprint(self):
         """清理请求链路绑定的浏览器指纹。"""
         self._set_request_fingerprint(None)
+        self._set_request_proxy_state("direct", None)
 
     async def _make_request(
         self,
@@ -153,18 +176,38 @@ class FlowClient:
         fingerprint = self._request_fingerprint_ctx.get()
 
         proxy_url = None
+        proxy_source = "direct"
         if self.proxy_manager:
-            if use_media_proxy and hasattr(self.proxy_manager, "get_media_proxy_url"):
+            if hasattr(self.proxy_manager, "select_proxy_with_source"):
+                proxy_url, proxy_source = await self.proxy_manager.select_proxy_with_source(
+                    st_token=st_token,
+                    at_token=at_token,
+                    use_media_proxy=use_media_proxy,
+                )
+            elif hasattr(self.proxy_manager, "select_proxy_url"):
+                proxy_url = await self.proxy_manager.select_proxy_url(
+                    st_token=st_token,
+                    at_token=at_token,
+                    use_media_proxy=use_media_proxy,
+                )
+                proxy_source = "system" if proxy_url else "direct"
+            elif use_media_proxy and hasattr(self.proxy_manager, "get_media_proxy_url"):
                 proxy_url = await self.proxy_manager.get_media_proxy_url()
+                proxy_source = "system" if proxy_url else "direct"
             elif hasattr(self.proxy_manager, "get_request_proxy_url"):
                 proxy_url = await self.proxy_manager.get_request_proxy_url()
+                proxy_source = "system" if proxy_url else "direct"
             else:
                 proxy_url = await self.proxy_manager.get_proxy_url()
+                proxy_source = "system" if proxy_url else "direct"
 
         if isinstance(fingerprint, dict) and "proxy_url" in fingerprint:
             proxy_url = fingerprint.get("proxy_url")
             if proxy_url == "":
                 proxy_url = None
+            proxy_source = "system" if proxy_url else "direct"
+
+        self._set_request_proxy_state(proxy_source, proxy_url)
         request_timeout = timeout or self.timeout
 
         if headers is None:

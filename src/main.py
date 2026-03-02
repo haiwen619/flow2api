@@ -1,14 +1,16 @@
 """FastAPI application initialization"""
 import asyncio
+import json
 import sys
 import warnings
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import Depends, FastAPI, Query
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Dict, Optional
 
 from .core.config import config
 from .core.database import Database
@@ -24,6 +26,50 @@ from .api.accountpool import (
     AccountPoolService,
     create_accountpool_router,
 )
+from .api.accountpool.auth import verify_panel_token
+from CommonFramePackage.proxy_pool import (
+    ProxyPoolRepository,
+    ProxyPoolService,
+    create_proxy_pool_router,
+)
+
+REPO_ROOT = Path(__file__).parent.parent
+TMP_DIR = REPO_ROOT / "tmp"
+TMP_TOKEN_DIR = TMP_DIR / "Token"
+STATIC_DIR = REPO_ROOT / "static"
+
+
+def _extract_email_from_token_file(path: Path) -> Optional[str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+
+    email = str((payload or {}).get("email") or "").strip()
+    if "@" in email:
+        return email
+
+    stem = path.stem
+    if "_" in stem:
+        prefix, suffix = stem.rsplit("_", 1)
+        if suffix.isdigit():
+            stem = prefix
+    guessed = stem.replace("_at_", "@").strip()
+    if "@" in guessed:
+        return guessed
+    return None
+
+
+async def _resolve_credential_email(credential_name: str, mode: str) -> Optional[str]:
+    if str(mode or "").strip().lower() != "antigravity":
+        return None
+    safe_name = Path(str(credential_name or "")).name
+    if not safe_name:
+        return None
+    file_path = TMP_TOKEN_DIR / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        return None
+    return _extract_email_from_token_file(file_path)
 
 # Playwright on Windows needs subprocess support (Proactor loop).
 if sys.platform.startswith("win"):
@@ -63,6 +109,7 @@ async def lifespan(app: FastAPI):
     # Initialize database tables structure
     await db.init_db()
     await accountpool_service.initialize()
+    await proxy_pool_service.initialize()
 
     # Handle database initialization based on startup type
     if is_first_startup:
@@ -160,6 +207,7 @@ async def lifespan(app: FastAPI):
 
     print(f"✓ Database initialized")
     print("✓ AccountPool initialized")
+    print("✓ ProxyPool initialized")
     print(f"✓ Total tokens: {len(tokens)}")
     print(f"✓ Cache: {'Enabled' if config.cache_enabled else 'Disabled'} (timeout: {config.cache_timeout}s)")
     print(f"✓ File cache cleanup task started")
@@ -204,6 +252,9 @@ generation_handler = GenerationHandler(
 )
 accountpool_repo = AccountPoolRepository()
 accountpool_service = AccountPoolService(accountpool_repo)
+proxy_pool_repo = ProxyPoolRepository(credential_email_resolver=_resolve_credential_email)
+proxy_pool_service = ProxyPoolService(proxy_pool_repo)
+proxy_manager.set_proxy_pool_service(proxy_pool_service)
 
 # Set dependencies
 routes.set_generation_handler(generation_handler)
@@ -230,15 +281,17 @@ app.add_middleware(
 app.include_router(routes.router)
 app.include_router(admin.router)
 app.include_router(create_accountpool_router(accountpool_service), tags=["AccountPool"])
+app.include_router(
+    create_proxy_pool_router(proxy_pool_service, verify_token=verify_panel_token),
+    tags=["ProxyPool"],
+)
 
 # Static files - serve tmp directory for cached files
-tmp_dir = Path(__file__).parent.parent / "tmp"
-tmp_dir.mkdir(exist_ok=True)
-app.mount("/tmp", StaticFiles(directory=str(tmp_dir)), name="tmp")
+TMP_DIR.mkdir(exist_ok=True)
+app.mount("/tmp", StaticFiles(directory=str(TMP_DIR)), name="tmp")
 
 # HTML routes for frontend
-static_path = Path(__file__).parent.parent / "static"
-vendor_path = static_path / "vendor"
+vendor_path = STATIC_DIR / "vendor"
 if vendor_path.exists():
     app.mount("/vendor", StaticFiles(directory=str(vendor_path)), name="vendor")
 
@@ -246,7 +299,7 @@ if vendor_path.exists():
 @app.get("/", response_class=HTMLResponse)
 async def index():
     """Redirect to login page"""
-    login_file = static_path / "login.html"
+    login_file = STATIC_DIR / "login.html"
     if login_file.exists():
         return FileResponse(str(login_file))
     return HTMLResponse(content="<h1>Flow2API</h1><p>Frontend not found</p>", status_code=404)
@@ -255,7 +308,7 @@ async def index():
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Login page"""
-    login_file = static_path / "login.html"
+    login_file = STATIC_DIR / "login.html"
     if login_file.exists():
         return FileResponse(str(login_file))
     return HTMLResponse(content="<h1>Login Page Not Found</h1>", status_code=404)
@@ -264,7 +317,7 @@ async def login_page():
 @app.get("/manage", response_class=HTMLResponse)
 async def manage_page():
     """Management console page"""
-    manage_file = static_path / "manage.html"
+    manage_file = STATIC_DIR / "manage.html"
     if manage_file.exists():
         return FileResponse(str(manage_file))
     return HTMLResponse(content="<h1>Management Page Not Found</h1>", status_code=404)
@@ -273,7 +326,78 @@ async def manage_page():
 @app.get("/account_pool_page_v2_full", response_class=HTMLResponse)
 async def account_pool_page():
     """Account pool automation page"""
-    account_pool_file = static_path / "account_pool_page_v2_full.html"
+    account_pool_file = STATIC_DIR / "account_pool_page_v2_full.html"
     if account_pool_file.exists():
         return FileResponse(str(account_pool_file))
     return HTMLResponse(content="<h1>Account Pool Page Not Found</h1>", status_code=404)
+
+
+@app.get("/proxy_pool_page", response_class=HTMLResponse)
+async def proxy_pool_page():
+    """Proxy pool page"""
+    proxy_pool_file = STATIC_DIR / "ProxyPool" / "proxy_pool_page.html"
+    if proxy_pool_file.exists():
+        return FileResponse(str(proxy_pool_file))
+    return HTMLResponse(content="<h1>Proxy Pool Page Not Found</h1>", status_code=404)
+
+
+@app.get("/creds/status")
+async def creds_status(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(1000, ge=1, le=5000),
+    status_filter: str = Query("all"),
+    mode: str = Query("antigravity"),
+    token: str = Depends(verify_panel_token),
+):
+    """Compatibility endpoint for proxy pool credential selector."""
+    _ = token
+    if str(mode or "").strip().lower() != "antigravity":
+        return JSONResponse(content={"success": True, "total": 0, "offset": offset, "limit": limit, "items": []})
+
+    files = []
+    if TMP_TOKEN_DIR.exists() and TMP_TOKEN_DIR.is_dir():
+        files = sorted(
+            TMP_TOKEN_DIR.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+    token_rows = await db.get_all_tokens()
+    email_to_active: Dict[str, bool] = {}
+    for row in token_rows:
+        email = str(getattr(row, "email", "") or "").strip().lower()
+        if not email:
+            continue
+        email_to_active[email] = email_to_active.get(email, False) or bool(getattr(row, "is_active", False))
+
+    normalized_filter = str(status_filter or "all").strip().lower()
+    items = []
+    for file_path in files:
+        email = _extract_email_from_token_file(file_path) or ""
+        active = email_to_active.get(email.lower()) if email else None
+        disabled = active is False
+
+        if normalized_filter in {"enabled", "active"} and disabled:
+            continue
+        if normalized_filter in {"disabled", "inactive"} and not disabled:
+            continue
+
+        items.append(
+            {
+                "filename": file_path.name,
+                "user_email": email,
+                "disabled": disabled,
+            }
+        )
+
+    total = len(items)
+    paged = items[offset: offset + limit]
+    return JSONResponse(
+        content={
+            "success": True,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "items": paged,
+        }
+    )

@@ -64,7 +64,9 @@ class Config:
     @property
     def enable_reauth_refresh(self) -> bool:
         """Whether AT refresh should try reAuth HTTP recovery path."""
-        return bool(self._config.get("flow", {}).get("enable_reauth_refresh", False))
+        # Default to True so AT auto-refresh can include reAuth cookie/session renewal
+        # even if legacy setting.toml does not yet contain this key.
+        return bool(self._config.get("flow", {}).get("enable_reauth_refresh", True))
 
     def set_enable_reauth_refresh(self, enabled: bool):
         """Set reAuth HTTP recovery switch for AT refresh path."""
