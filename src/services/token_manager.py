@@ -298,9 +298,9 @@ class TokenManager:
                 return False
 
             # # 第一次尝试刷新 AT
-            # result = await self._do_refresh_at(token_id, token.st)
-            # if result:
-            #     return True
+            result = await self._do_refresh_at(token_id, token.st)
+            if result:
+                return True
 
             # AT 刷新失败，可选尝试 HTTP reAuth 恢复可用 AT（可能先拿到 ST 再换 AT，或直接拿到可用 AT）
             from ..core.config import config

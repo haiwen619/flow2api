@@ -67,9 +67,7 @@ from urllib import request as urllib_request
 # BitBrowser：仅本地测试用默认窗口 ID。
 # - 不传 --bitbrowser-id 时，将默认使用该 ID 连接现有窗口。
 # - 若你想恢复默认行为（不指定 id，走 createBrowser()）：把下面这一行注释掉，或改为 ""/None。
-TEST_DEFAULT_BITBROWSER_ID = os.environ.get(
-    "RPA_TEST_BITBROWSER_ID", "f1ef6f8ccb6146988c67a63b92a78971"
-)
+TEST_DEFAULT_BITBROWSER_ID = "f1ef6f8ccb6146988c67a63b92a78971"
 
 
 # playwright-stealth 的 API 在不同版本中不一致：
@@ -92,9 +90,39 @@ _STEALTH = _Stealth() if _Stealth is not None else None
 def _get_test_default_bitbrowser_id() -> Optional[str]:
     """获取测试默认 BitBrowser 窗口 ID。
 
-    要求：只要 `TEST_DEFAULT_BITBROWSER_ID` 没被注释/置空，就优先生效。
+    优先级：
+    1) 环境变量 RPA_TEST_BITBROWSER_ID
+    2) setting.toml 的 [rpa] test_bitbrowser_id_{local/server}（按 [server].host 判断模式）
+    3) 文件内常量 TEST_DEFAULT_BITBROWSER_ID
+
     兼容：如果你把该常量整行注释/删除（导致变量不存在），这里也不会报错。
     """
+    # 1) env override
+    env_val = str(os.environ.get("RPA_TEST_BITBROWSER_ID", "") or "").strip()
+    if env_val:
+        return env_val
+
+    # 2) setting.toml
+    try:
+        import tomli
+
+        setting_path = Path(__file__).resolve().parents[2] / "config" / "setting.toml"
+        if setting_path.exists():
+            with open(setting_path, "rb") as f:
+                setting = tomli.load(f) or {}
+            server_host = str((setting.get("server", {}) or {}).get("host", "") or "").strip().lower()
+            mode = "local" if server_host in {"127.0.0.1", "localhost"} else "server"
+            rpa_cfg = setting.get("rpa", {}) or {}
+            if mode == "local":
+                cfg_val = str(rpa_cfg.get("test_bitbrowser_id_local", "") or "").strip()
+            else:
+                cfg_val = str(rpa_cfg.get("test_bitbrowser_id_server", "") or "").strip()
+            if cfg_val:
+                return cfg_val
+    except Exception:
+        pass
+
+    # 3) fallback constant
     val = globals().get("TEST_DEFAULT_BITBROWSER_ID", None)
     if val is None:
         return None

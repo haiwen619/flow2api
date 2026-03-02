@@ -1,5 +1,6 @@
 """Configuration management for Flow2API"""
 import tomli
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -7,14 +8,14 @@ class Config:
     """Application configuration"""
 
     def __init__(self):
+        self._config_path = Path(__file__).parent.parent.parent / "config" / "setting.toml"
         self._config = self._load_config()
         self._admin_username: Optional[str] = None
         self._admin_password: Optional[str] = None
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from setting.toml"""
-        config_path = Path(__file__).parent.parent.parent / "config" / "setting.toml"
-        with open(config_path, "rb") as f:
+        with open(self._config_path, "rb") as f:
             return tomli.load(f)
 
     def reload_config(self):
@@ -300,6 +301,122 @@ class Config:
         if "captcha" not in self._config:
             self._config["captcha"] = {}
         self._config["captcha"]["capsolver_base_url"] = base_url
+
+    def _upsert_toml_key_in_section(
+        self,
+        content: str,
+        section: str,
+        key: str,
+        value_literal: str,
+    ) -> str:
+        """Insert or replace `key = value` in the target TOML section."""
+        section_pattern = re.compile(rf"(?m)^\[{re.escape(section)}\]\s*$")
+        section_match = section_pattern.search(content)
+
+        # If section does not exist, append a new section to the tail.
+        if not section_match:
+            tail = content
+            if tail and not tail.endswith("\n"):
+                tail += "\n"
+            if tail:
+                tail += "\n"
+            tail += f"[{section}]\n{key} = {value_literal}\n"
+            return tail
+
+        section_body_start = section_match.end()
+        next_section = re.search(r"(?m)^\[[^\]]+\]\s*$", content[section_body_start:])
+        section_body_end = (
+            section_body_start + next_section.start()
+            if next_section
+            else len(content)
+        )
+        section_body = content[section_body_start:section_body_end]
+
+        key_pattern = re.compile(rf"(?m)^(\s*{re.escape(key)}\s*=\s*).*$")
+        if key_pattern.search(section_body):
+            section_body = key_pattern.sub(
+                lambda m: f"{m.group(1)}{value_literal}",
+                section_body,
+                count=1,
+            )
+        else:
+            if section_body and not section_body.endswith("\n"):
+                section_body += "\n"
+            section_body += f"{key} = {value_literal}\n"
+
+        return (
+            content[:section_body_start]
+            + section_body
+            + content[section_body_end:]
+        )
+
+    def get_server_mode(self) -> str:
+        """Infer runtime mode by host value in [server]."""
+        host = str(self._config.get("server", {}).get("host", "") or "").strip().lower()
+        return "local" if host in {"127.0.0.1", "localhost"} else "server"
+
+    def get_rpa_test_bitbrowser_id_local(self) -> str:
+        return str(self._config.get("rpa", {}).get("test_bitbrowser_id_local", "") or "").strip()
+
+    def get_rpa_test_bitbrowser_id_server(self) -> str:
+        return str(self._config.get("rpa", {}).get("test_bitbrowser_id_server", "") or "").strip()
+
+    def get_active_rpa_test_bitbrowser_id(self) -> str:
+        """Get RPA test bitbrowser id based on current server mode."""
+        if self.get_server_mode() == "local":
+            return self.get_rpa_test_bitbrowser_id_local()
+        return self.get_rpa_test_bitbrowser_id_server()
+
+    def update_server_config(self, host: str, port: int):
+        """Persist [server].host/port into setting.toml, then reload memory config."""
+        host_value = str(host or "").strip()
+        if not host_value:
+            raise ValueError("server host 不能为空")
+
+        try:
+            port_value = int(port)
+        except Exception:
+            raise ValueError("server port 必须是整数")
+
+        if port_value < 1 or port_value > 65535:
+            raise ValueError("server port 必须在 1-65535 之间")
+
+        content = self._config_path.read_text(encoding="utf-8")
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="server",
+            key="host",
+            value_literal=f"\"{host_value}\"",
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="server",
+            key="port",
+            value_literal=str(port_value),
+        )
+        self._config_path.write_text(content, encoding="utf-8")
+        self.reload_config()
+
+    def update_rpa_test_bitbrowser_ids(self, *, local_id: str, server_id: str):
+        """Persist [rpa] test bitbrowser id values into setting.toml."""
+        local_value = str(local_id or "").strip()
+        server_value = str(server_id or "").strip()
+
+        content = self._config_path.read_text(encoding="utf-8")
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="rpa",
+            key="test_bitbrowser_id_local",
+            value_literal=f"\"{local_value}\"",
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="rpa",
+            key="test_bitbrowser_id_server",
+            value_literal=f"\"{server_value}\"",
+        )
+        self._config_path.write_text(content, encoding="utf-8")
+        self.reload_config()
 
 
 # Global config instance

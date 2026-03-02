@@ -233,6 +233,20 @@
                 </svg>
               </button>
               <button
+                onclick="bulkToggleTokens(true)"
+                class="inline-flex items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-700 h-8 px-3"
+                title="批量启用全部已禁用Token"
+              >
+                <span class="text-sm font-medium">全部启用</span>
+              </button>
+              <button
+                onclick="bulkToggleTokens(false)"
+                class="inline-flex items-center justify-center rounded-md bg-rose-600 text-white hover:bg-rose-700 h-8 px-3"
+                title="批量禁用全部活跃Token"
+              >
+                <span class="text-sm font-medium">全部禁用</span>
+              </button>
+              <button
                 onclick="exportTokens()"
                 class="inline-flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 h-8 px-3"
                 title="导出所有Token"
@@ -531,6 +545,80 @@
             </div>
             <button
               onclick="saveProxyConfig()"
+              class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 w-full mt-4"
+            >
+              保存配置
+            </button>
+          </div>
+
+          <!-- 服务器配置 -->
+          <div
+            class="rounded-lg border border-border bg-background p-6 flex flex-col"
+          >
+            <h3 class="text-lg font-semibold mb-4">服务器配置</h3>
+            <div class="space-y-4 flex-1">
+              <div>
+                <label class="text-sm font-medium mb-2 block">运行模式</label>
+                <select
+                  id="cfgServerMode"
+                  onchange="applyServerModePreset()"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="server">服务器模式（0.0.0.0）</option>
+                  <option value="local">本地模式（127.0.0.1）</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">监听地址</label>
+                <input
+                  id="cfgServerHost"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="0.0.0.0 或 127.0.0.1"
+                />
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">监听端口</label>
+                <input
+                  id="cfgServerPort"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="8000"
+                />
+                <p class="text-xs text-muted-foreground mt-1">
+                  保存后会写入 <code>config/setting.toml</code>，需重启服务生效
+                </p>
+              </div>
+              <div class="pt-2 border-t border-border">
+                <label class="text-sm font-medium mb-2 block"
+                  >RPA_TEST_BITBROWSER_ID（本地）</label
+                >
+                <input
+                  id="cfgRpaBitbrowserIdLocal"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="f1ef6f8ccb6146988c67a63b92a78971"
+                />
+                <p class="text-xs text-muted-foreground mt-1">
+                  本地模式默认指纹浏览器窗口ID（host=127.0.0.1/localhost 时使用）
+                </p>
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block"
+                  >RPA_TEST_BITBROWSER_ID（服务器）</label
+                >
+                <input
+                  id="cfgRpaBitbrowserIdServer"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="服务器环境对应的窗口ID"
+                />
+                <p class="text-xs text-muted-foreground mt-1">
+                  服务器模式默认指纹浏览器窗口ID（host=0.0.0.0 时使用）
+                </p>
+              </div>
+            </div>
+            <button
+              onclick="saveServerConfig()"
               class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 w-full mt-4"
             >
               保存配置
@@ -2333,6 +2421,63 @@
             showToast("操作失败: " + e.message, "error");
           }
         },
+        bulkToggleTokens = async (targetActive) => {
+          if (!Array.isArray(allTokens) || allTokens.length === 0) {
+            return showToast("暂无Token可操作", "error");
+          }
+
+          const action = targetActive ? "enable" : "disable";
+          const actionText = targetActive ? "启用" : "禁用";
+          const candidates = allTokens.filter(
+            (t) => t && t.id && t.is_active !== targetActive,
+          );
+
+          if (candidates.length === 0) {
+            return showToast(`所有Token已${actionText}`, "info");
+          }
+
+          if (!confirm(`确定要批量${actionText} ${candidates.length} 个Token吗？`)) {
+            return;
+          }
+
+          showToast(`正在批量${actionText}...`, "info");
+
+          const chunkSize = 5;
+          let successCount = 0;
+          let failedCount = 0;
+
+          for (let i = 0; i < candidates.length; i += chunkSize) {
+            const chunk = candidates.slice(i, i + chunkSize);
+            const results = await Promise.allSettled(
+              chunk.map(async (t) => {
+                const r = await apiRequest(`/api/tokens/${t.id}/${action}`, {
+                  method: "POST",
+                });
+                if (!r) throw new Error("请求失败");
+                const d = await r.json();
+                if (!d.success)
+                  throw new Error(d.detail || d.message || "未知错误");
+                return t.id;
+              }),
+            );
+
+            results.forEach((res) => {
+              if (res.status === "fulfilled") successCount += 1;
+              else failedCount += 1;
+            });
+          }
+
+          await refreshTokens();
+
+          if (failedCount === 0) {
+            showToast(`批量${actionText}成功，共 ${successCount} 个Token`, "success");
+          } else {
+            showToast(
+              `批量${actionText}完成：成功 ${successCount}，失败 ${failedCount}`,
+              failedCount === candidates.length ? "error" : "info",
+            );
+          }
+        },
         toggleTokenStatus = async (id, active) => {
           try {
             const r = await apiRequest(`/api/tokens/${id}/status`, {
@@ -3053,6 +3198,67 @@
             showToast("保存失败: " + e.message, "error");
           }
         },
+        applyServerModePreset = () => {
+          const mode = ($("cfgServerMode").value || "server").toLowerCase();
+          if (mode === "local") {
+            $("cfgServerHost").value = "127.0.0.1";
+          } else {
+            $("cfgServerHost").value = "0.0.0.0";
+          }
+        },
+        loadServerConfig = async () => {
+          try {
+            const r = await apiRequest("/api/server/config");
+            if (!r) return;
+            const d = await r.json();
+            if (!d.success || !d.config) return;
+            const mode = String(d.config.mode || "server").toLowerCase();
+            $("cfgServerMode").value = mode === "local" ? "local" : "server";
+            $("cfgServerHost").value = d.config.host || "";
+            $("cfgServerPort").value = d.config.port || 8000;
+            $("cfgRpaBitbrowserIdLocal").value =
+              d.config.rpa_test_bitbrowser_id_local ||
+              "f1ef6f8ccb6146988c67a63b92a78971";
+            $("cfgRpaBitbrowserIdServer").value =
+              d.config.rpa_test_bitbrowser_id_server || "";
+          } catch (e) {
+            console.error("加载服务器配置失败:", e);
+          }
+        },
+        saveServerConfig = async () => {
+          const mode = ($("cfgServerMode").value || "server").toLowerCase();
+          const host = $("cfgServerHost").value.trim();
+          const port = parseInt($("cfgServerPort").value, 10) || 8000;
+          const localBitId = $("cfgRpaBitbrowserIdLocal").value.trim();
+          const serverBitId = $("cfgRpaBitbrowserIdServer").value.trim();
+
+          if (!host) return showToast("请输入监听地址", "error");
+          if (port < 1 || port > 65535)
+            return showToast("端口必须在 1-65535 之间", "error");
+
+          try {
+            const r = await apiRequest("/api/server/config", {
+              method: "POST",
+              body: JSON.stringify({
+                mode: mode,
+                host: host,
+                port: port,
+                rpa_test_bitbrowser_id_local: localBitId || null,
+                rpa_test_bitbrowser_id_server: serverBitId || null,
+              }),
+            });
+            if (!r) return;
+            const d = await r.json();
+            if (d.success) {
+              showToast("服务器配置已保存，重启服务后生效", "success");
+              await loadServerConfig();
+            } else {
+              showToast("保存失败: " + (d.detail || d.message || "未知错误"), "error");
+            }
+          } catch (e) {
+            showToast("保存失败: " + e.message, "error");
+          }
+        },
         toggleCacheOptions = () => {
           const enabled = $("cfgCacheEnabled").checked;
           $("cacheOptions").style.display = enabled ? "block" : "none";
@@ -3591,6 +3797,7 @@
           });
           if (t === "settings") {
             loadAdminConfig();
+            loadServerConfig();
             loadProxyConfig();
             loadCacheConfig();
             loadGenerationTimeout();

@@ -72,6 +72,14 @@ class ProxyConfigRequest(BaseModel):
     proxy_url: Optional[str] = None
 
 
+class ServerConfigRequest(BaseModel):
+    mode: str  # local | server
+    host: Optional[str] = None
+    port: Optional[int] = None
+    rpa_test_bitbrowser_id_local: Optional[str] = None
+    rpa_test_bitbrowser_id_server: Optional[str] = None
+
+
 class GenerationConfigRequest(BaseModel):
     image_timeout: int
     video_timeout: int
@@ -593,6 +601,77 @@ async def import_tokens(
 
 
 # ========== Config Management ==========
+
+@router.get("/api/server/config")
+async def get_server_config(token: str = Depends(verify_admin_token)):
+    """Get server runtime mode and bind config from setting.toml."""
+    return {
+        "success": True,
+        "config": {
+            "mode": config.get_server_mode(),
+            "host": config.server_host,
+            "port": config.server_port,
+            "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
+            "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
+            "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
+            "restart_required": True,
+        },
+    }
+
+
+@router.post("/api/server/config")
+async def update_server_config(
+    request: ServerConfigRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """Update server bind config in setting.toml.
+
+    Note: this only affects next process start; restart is required.
+    """
+    mode = str(request.mode or "").strip().lower()
+    if mode not in {"local", "server"}:
+        raise HTTPException(status_code=400, detail="mode 必须是 local 或 server")
+
+    host = str(request.host or "").strip()
+    if not host:
+        host = "127.0.0.1" if mode == "local" else "0.0.0.0"
+    port = request.port if request.port is not None else int(config.server_port)
+    local_bit_id = (
+        str(request.rpa_test_bitbrowser_id_local).strip()
+        if request.rpa_test_bitbrowser_id_local is not None
+        else config.get_rpa_test_bitbrowser_id_local()
+    )
+    server_bit_id = (
+        str(request.rpa_test_bitbrowser_id_server).strip()
+        if request.rpa_test_bitbrowser_id_server is not None
+        else config.get_rpa_test_bitbrowser_id_server()
+    )
+
+    try:
+        config.update_server_config(host=host, port=port)
+        config.update_rpa_test_bitbrowser_ids(
+            local_id=local_bit_id,
+            server_id=server_bit_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存服务器配置失败: {str(e)}")
+
+    return {
+        "success": True,
+        "message": "服务器配置已保存，重启服务后生效",
+        "config": {
+            "mode": config.get_server_mode(),
+            "host": config.server_host,
+            "port": config.server_port,
+            "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
+            "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
+            "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
+            "restart_required": True,
+        },
+    }
+
 
 @router.get("/api/config/proxy")
 async def get_proxy_config(token: str = Depends(verify_admin_token)):
