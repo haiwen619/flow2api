@@ -277,6 +277,10 @@ class Database:
                     ("cookie_file", "TEXT"),  # Google domain Cookie Header for reAuth step4
                     ("at", "TEXT"),  # Access Token
                     ("at_expires", "TIMESTAMP"),  # AT expiration time
+                    ("last_refresh_at", "TIMESTAMP"),  # Last refresh time
+                    ("last_refresh_method", "TEXT"),  # Last refresh method
+                    ("last_refresh_status", "TEXT"),  # Last refresh status
+                    ("last_refresh_detail", "TEXT"),  # Last refresh detail
                     ("credits", "INTEGER DEFAULT 0"),  # Balance
                     ("user_paygate_tier", "TEXT"),  # User tier
                     ("current_project_id", "TEXT"),  # Current project UUID
@@ -395,6 +399,10 @@ class Database:
                     cookie_file TEXT,
                     at TEXT,
                     at_expires TIMESTAMP,
+                    last_refresh_at TIMESTAMP,
+                    last_refresh_method TEXT,
+                    last_refresh_status TEXT,
+                    last_refresh_detail TEXT,
                     email TEXT NOT NULL,
                     name TEXT,
                     remark TEXT,
@@ -737,9 +745,8 @@ class Database:
             params = []
 
             for key, value in kwargs.items():
-                if value is not None:
-                    updates.append(f"{key} = ?")
-                    params.append(value)
+                updates.append(f"{key} = ?")
+                params.append(value)
 
             if updates:
                 params.append(token_id)

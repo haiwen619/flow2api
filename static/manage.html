@@ -26,6 +26,87 @@
       .tab-btn {
         transition: all 0.2s ease;
       }
+
+      .token-list-table th {
+        white-space: nowrap;
+      }
+
+      .token-list-table td {
+        vertical-align: middle;
+      }
+
+      .token-list-table .email-cell {
+        min-width: 150px;
+        max-width: 180px;
+      }
+
+      .token-list-table .email-cell .email-text {
+        display: inline-block;
+        max-width: 170px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+      }
+
+      .token-list-table .cookie-cell,
+      .token-list-table .cookie-file-cell {
+        min-width: 120px;
+      }
+
+      .token-list-table .refresh-record-cell {
+        min-width: 180px;
+        white-space: normal;
+      }
+
+      .token-list-table .cookie-refresh-remaining-cell {
+        min-width: 120px;
+        white-space: nowrap;
+      }
+
+      .token-list-table .project-name-cell {
+        min-width: 110px;
+      }
+
+      .token-list-table .project-id-cell {
+        min-width: 100px;
+      }
+
+      .token-list-table .action-cell {
+        min-width: 240px;
+        white-space: nowrap;
+      }
+
+      .token-list-table .action-header,
+      .token-list-table .action-cell {
+        position: sticky;
+        right: 0;
+        background: hsl(0 0% 100%);
+      }
+
+      .token-list-table .action-header {
+        z-index: 30;
+      }
+
+      .token-list-table .action-cell {
+        z-index: 20;
+      }
+
+      .token-list-table .action-header::before,
+      .token-list-table .action-cell::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -12px;
+        width: 12px;
+        background: linear-gradient(
+          to right,
+          rgba(255, 255, 255, 0),
+          hsl(0 0% 100%)
+        );
+        pointer-events: none;
+      }
     </style>
     <script>
       tailwind.config = {
@@ -62,7 +143,7 @@
     <header
       class="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur"
     >
-      <div class="mx-auto flex h-14 max-w-7xl items-center px-6">
+      <div class="mx-auto flex h-14 w-full max-w-[95vw] items-center px-6">
         <div class="mr-4 flex items-baseline gap-3">
           <span class="font-bold text-xl">Flow2API</span>
         </div>
@@ -106,7 +187,7 @@
       </div>
     </header>
 
-    <main class="mx-auto max-w-7xl px-6 py-6">
+    <main class="mx-auto w-full max-w-[95vw] px-6 py-6">
       <!-- Tab 导航 -->
       <div class="border-b border-border mb-6">
         <nav class="flex space-x-8">
@@ -193,7 +274,7 @@
             class="flex items-center justify-between gap-4 p-4 border-b border-border"
           >
             <h3 class="text-lg font-semibold">Token 列表</h3>
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center justify-end gap-2">
               <!-- 自动刷新AT标签和开关 -->
               <div class="flex items-center gap-2">
                 <span class="text-xs text-muted-foreground">自动刷新AT</span>
@@ -214,6 +295,32 @@
                     class="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
                   >
                     Token距离过期<1h时自动使用ST刷新AT
+                    <div
+                      class="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-900"
+                    ></div>
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted-foreground"
+                  >Cookie失效自动登录</span
+                >
+                <div class="relative inline-flex items-center group">
+                  <label class="inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      id="reauthInvalidAutoLoginToggle"
+                      onchange="toggleReauthInvalidAutoLogin()"
+                      class="sr-only peer"
+                    />
+                    <div
+                      class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"
+                    ></div>
+                  </label>
+                  <div
+                    class="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
+                  >
+                    reAuth命中interaction_required时，自动触发账号池同邮箱登录
                     <div
                       class="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-900"
                     ></div>
@@ -350,8 +457,8 @@
             </div>
           </div>
 
-          <div class="relative w-full overflow-auto">
-            <table class="w-full text-sm">
+          <div class="relative w-full overflow-x-auto overflow-y-hidden">
+            <table class="token-list-table min-w-[1940px] text-sm">
               <thead>
                 <tr class="border-b border-border">
                   <th
@@ -378,6 +485,16 @@
                     class="h-10 px-3 text-left align-middle font-medium text-muted-foreground"
                   >
                     过期时间
+                  </th>
+                  <th
+                    class="h-10 px-3 text-left align-middle font-medium text-muted-foreground"
+                  >
+                    距刷新Cookie
+                  </th>
+                  <th
+                    class="h-10 px-3 text-left align-middle font-medium text-muted-foreground"
+                  >
+                    刷新记录
                   </th>
                   <th
                     class="h-10 px-3 text-left align-middle font-medium text-muted-foreground"
@@ -420,7 +537,7 @@
                     备注
                   </th>
                   <th
-                    class="h-10 px-3 text-right align-middle font-medium text-muted-foreground"
+                    class="h-10 px-3 text-right align-middle font-medium text-muted-foreground action-header"
                   >
                     操作
                   </th>
@@ -1370,6 +1487,43 @@
         </div>
       </div>
 
+      <!-- 刷新记录详情模态框 -->
+      <div
+        id="refreshRecordModal"
+        class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+      >
+        <div
+          class="bg-background rounded-lg border border-border w-full max-w-2xl shadow-xl max-h-[80vh] flex flex-col"
+        >
+          <div
+            class="flex items-center justify-between p-5 border-b border-border"
+          >
+            <h3 class="text-lg font-semibold">刷新记录详情</h3>
+            <button
+              onclick="closeRefreshRecordModal()"
+              class="text-muted-foreground hover:text-foreground"
+            >
+              <svg
+                class="h-3.5 w-3.5"
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div class="p-5 overflow-y-auto">
+            <div id="refreshRecordDetailContent" class="space-y-3 text-sm">
+              <!-- 动态填充 -->
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 页脚 -->
       <footer
         class="mt-12 pt-6 border-t border-border text-center text-xs text-muted-foreground"
@@ -2000,6 +2154,9 @@
     <script>
       let allTokens = [];
       let batchImportSelectedFile = null;
+      let cookieRefreshTicker = null;
+      let refreshRecordMap = {};
+      let autoLoginRecoveryWatchers = {};
       const $ = (id) => document.getElementById(id),
         checkAuth = () => {
           const t = localStorage.getItem("adminToken");
@@ -2083,6 +2240,165 @@
             return `<span class="text-orange-600" title="${dateStr} ${timeStr}">${days}天</span>`;
           return `<span class="text-muted-foreground" title="${dateStr} ${timeStr}">${days}天</span>`;
         },
+        getCookieRefreshRemaining = (exp) => {
+          if (!exp) {
+            return {
+              text: "未知",
+              className: "text-muted-foreground",
+              title: "AT过期时间未知，无法计算Cookie刷新倒计时",
+            };
+          }
+          const expDate = new Date(exp);
+          if (Number.isNaN(expDate.getTime())) {
+            return {
+              text: "未知",
+              className: "text-muted-foreground",
+              title: "AT过期时间格式无效，无法计算Cookie刷新倒计时",
+            };
+          }
+
+          const targetMs = expDate.getTime() - 3600 * 1000;
+          const diffMs = targetMs - Date.now();
+          const targetTimeText = new Date(targetMs)
+            .toLocaleString("zh-CN", {
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false,
+            })
+            .replace(/\//g, "-");
+
+          if (expDate.getTime() <= Date.now()) {
+            return {
+              text: "已过期(跳过)",
+              className: "text-red-600 font-medium",
+              title: `AT已过期（时间: ${targetTimeText}），纯定时自动刷新将跳过`,
+            };
+          }
+
+          if (diffMs <= 0) {
+            return {
+              text: "应刷新",
+              className: "text-red-600 font-medium",
+              title: `已到刷新窗口（目标时间: ${targetTimeText}，AT过期前1小时）`,
+            };
+          }
+
+          const totalSeconds = Math.floor(diffMs / 1000);
+          const days = Math.floor(totalSeconds / 86400);
+          const hours = Math.floor((totalSeconds % 86400) / 3600);
+          const minutes = Math.floor((totalSeconds % 3600) / 60);
+          const seconds = totalSeconds % 60;
+
+          let text = "";
+          if (days > 0) {
+            text = `${days}天${hours}小时`;
+          } else if (hours > 0) {
+            text = `${hours}小时${minutes}分`;
+          } else if (minutes > 0) {
+            text = `${minutes}分${seconds}秒`;
+          } else {
+            text = `${seconds}秒`;
+          }
+
+          let className = "text-muted-foreground";
+          if (diffMs <= 15 * 60 * 1000) {
+            className = "text-red-600 font-medium";
+          } else if (diffMs <= 60 * 60 * 1000) {
+            className = "text-orange-600 font-medium";
+          }
+
+          return {
+            text,
+            className,
+            title: `预计刷新时间: ${targetTimeText}（AT过期前1小时）`,
+          };
+        },
+        escapeHtml = (text) =>
+          String(text || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;"),
+        renderCookieRefreshRemaining = (exp) => {
+          const item = getCookieRefreshRemaining(exp);
+          const expText = exp ? String(exp) : "";
+          return `<span class="cookie-refresh-countdown ${item.className}" data-at-expires="${escapeHtml(expText)}" title="${escapeHtml(item.title)}">${escapeHtml(item.text)}</span>`;
+        },
+        updateCookieRefreshCountdowns = () => {
+          document
+            .querySelectorAll("#tokenTableBody .cookie-refresh-countdown")
+            .forEach((el) => {
+              const exp = el.getAttribute("data-at-expires") || "";
+              const item = getCookieRefreshRemaining(exp);
+              el.className = `cookie-refresh-countdown ${item.className}`;
+              el.textContent = item.text;
+              el.title = item.title;
+            });
+        },
+        ensureCookieRefreshTicker = () => {
+          if (cookieRefreshTicker) return;
+          cookieRefreshTicker = setInterval(updateCookieRefreshCountdowns, 1000);
+        },
+        formatRefreshTime = (ts) => {
+          if (!ts) return "-";
+          const d = new Date(ts);
+          if (Number.isNaN(d.getTime())) return "-";
+          return d
+            .toLocaleString("zh-CN", {
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })
+            .replace(/\//g, "-");
+        },
+        formatRefreshRecord = (t) => {
+          const status = String(t.last_refresh_status || "").toUpperCase();
+          const time = formatRefreshTime(t.last_refresh_at);
+          const isRunning =
+            status === "PENDING" ||
+            status === "RUNNING" ||
+            status === "IN_PROGRESS";
+          const statusClass =
+            status === "SUCCESS"
+              ? "bg-green-50 text-green-700"
+              : isRunning
+              ? "bg-amber-50 text-amber-700"
+              : status === "FAILED"
+              ? "bg-red-50 text-red-700"
+              : "bg-gray-100 text-gray-700";
+          const statusLabel =
+            status === "SUCCESS"
+              ? "成功"
+              : isRunning
+              ? "执行中"
+              : status === "FAILED"
+              ? "失败"
+              : "未记录";
+          const progressHint = isRunning
+            ? '<div class="text-amber-600 animate-pulse">账号池自动登录执行中...</div>'
+            : "";
+          const hasDetail = Boolean(
+            t.last_refresh_at ||
+              t.last_refresh_method ||
+              t.last_refresh_detail ||
+              t.last_refresh_status
+          );
+          const viewBtnClass = hasDetail
+            ? "inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs"
+            : "inline-flex items-center justify-center rounded-md h-7 px-2 text-xs text-muted-foreground cursor-not-allowed";
+          const viewBtn = hasDetail
+            ? `<button onclick="showRefreshRecordDetail(${t.id})" class="${viewBtnClass}">查看信息</button>`
+            : `<button class="${viewBtnClass}" disabled>查看信息</button>`;
+          return `<div class="text-xs leading-5"><div><span class="inline-flex items-center rounded px-2 py-0.5 ${statusClass}">${statusLabel}</span></div><div class="text-muted-foreground" title="${escapeHtml(time)}">${escapeHtml(time)}</div>${progressHint}<div>${viewBtn}</div></div>`;
+        },
         formatPlanType = (type) => {
           if (!type) return "-";
           const typeMap = {
@@ -2127,8 +2443,13 @@
         },
         renderTokens = () => {
           const tb = $("tokenTableBody");
+          refreshRecordMap = {};
           tb.innerHTML = allTokens
             .map((t) => {
+              const emailRaw = String(t.email || "-");
+              const emailShort =
+                emailRaw.length > 24 ? `${emailRaw.substring(0, 24)}...` : emailRaw;
+              const emailDisplay = `<span class="email-text" title="${escapeHtml(emailRaw)}">${escapeHtml(emailShort)}</span>`;
               const imageDisplay = t.image_enabled
                 ? `${t.image_count || 0}`
                 : "-";
@@ -2152,9 +2473,47 @@
                   : `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id}</span>`
                 : "-";
               const expiryDisplay = formatExpiry(t.at_expires);
-              return `<tr><td class="py-2.5 px-3">${t.email}</td><td class="py-2.5 px-3 text-xs">${cookieDisplay}</td><td class="py-2.5 px-3 text-xs">${cookieFileDisplay}</td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${t.is_active ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-700"}">${t.is_active ? "活跃" : "禁用"}</span></td><td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3"><button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button></td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs">${projectDisplay}</td><td class="py-2.5 px-3 text-xs">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right"><button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button><button onclick="refreshTokenCookie(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-amber-50 hover:text-amber-700 h-7 px-2 text-xs mr-1" title="仅 reAuth 刷新 Cookie">刷Cookie</button><button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button><button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button><button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
+              const cookieRefreshRemainingDisplay = renderCookieRefreshRemaining(
+                t.at_expires
+              );
+              const refreshRecordDisplay = formatRefreshRecord(t);
+              const refreshStatusRaw = String(t.last_refresh_status || "").toUpperCase();
+              const refreshStatusLabel =
+                refreshStatusRaw === "SUCCESS"
+                  ? "成功"
+                  : refreshStatusRaw === "PENDING" ||
+                    refreshStatusRaw === "RUNNING" ||
+                    refreshStatusRaw === "IN_PROGRESS"
+                  ? "执行中"
+                  : refreshStatusRaw === "FAILED"
+                  ? "失败"
+                  : "未记录";
+              const isCookieInvalidNeedRelogin =
+                String(t.ban_reason || "") === "cookie_invalid_need_relogin";
+              const statusClass = isCookieInvalidNeedRelogin
+                ? "bg-amber-100 text-amber-800"
+                : t.is_active
+                ? "bg-green-50 text-green-700"
+                : "bg-gray-100 text-gray-700";
+              const statusText = isCookieInvalidNeedRelogin
+                ? "Cookie失效(需重新自动登录)"
+                : t.is_active
+                ? "活跃"
+                : "禁用";
+              const statusCellHtml = `<td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${statusClass}">${statusText}</span></td>`;
+              refreshRecordMap[t.id] = {
+                email: emailRaw,
+                time: formatRefreshTime(t.last_refresh_at),
+                status: refreshStatusRaw || "-",
+                statusLabel: refreshStatusLabel,
+                method: t.last_refresh_method || "-",
+                detail: t.last_refresh_detail || "-",
+              };
+              return `<tr><td class="py-2.5 px-3 email-cell">${emailDisplay}</td><td class="py-2.5 px-3 text-xs cookie-cell">${cookieDisplay}</td><td class="py-2.5 px-3 text-xs cookie-file-cell">${cookieFileDisplay}</td>${statusCellHtml}<td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3 text-xs cookie-refresh-remaining-cell">${cookieRefreshRemainingDisplay}</td><td class="py-2.5 px-3 text-xs refresh-record-cell">${refreshRecordDisplay}</td><td class="py-2.5 px-3"><button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button></td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs project-name-cell">${projectDisplay}</td><td class="py-2.5 px-3 text-xs project-id-cell">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground max-w-[200px] truncate" title="${escapeHtml(t.remark || "-")}">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right action-cell"><button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button><button onclick="refreshTokenCookie(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-amber-50 hover:text-amber-700 h-7 px-2 text-xs mr-1" title="仅 reAuth 刷新 Cookie">刷Cookie</button><button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button><button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button><button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
             })
             .join("");
+          updateCookieRefreshCountdowns();
+          ensureCookieRefreshTicker();
         },
         refreshTokenCredits = async (id) => {
           try {
@@ -2234,10 +2593,54 @@
               showToast(`Cookie刷新成功! 新过期时间: ${expiresStr}`, "success");
               await refreshTokens();
             } else {
-              showToast("刷新失败: " + (d.detail || "未知错误"), "error");
+              const failDetail = String(d.detail || d.message || "未知错误");
+              const autoLoginTriggered = failDetail.includes("已触发账号池自动登录");
+              if (autoLoginTriggered) {
+                showToast("reAuth刷新失败，已触发账号池自动登录，任务执行中...", "info");
+              } else {
+                showToast("刷新失败: " + failDetail, "error");
+              }
+              await refreshTokens();
+              if (autoLoginTriggered) {
+                waitTokenRecoveryAfterAutoLogin(id);
+              }
             }
           } catch (e) {
             showToast("刷新失败: " + e.message, "error");
+          }
+        },
+        waitTokenRecoveryAfterAutoLogin = async (id) => {
+          const key = String(id);
+          if (autoLoginRecoveryWatchers[key]) return;
+          autoLoginRecoveryWatchers[key] = true;
+          try {
+            showToast("已触发账号池自动登录，正在等待 Token 状态恢复...", "info");
+            const maxRounds = 30;
+            const intervalMs = 4000;
+            for (let i = 0; i < maxRounds; i++) {
+              await new Promise((resolve) => setTimeout(resolve, intervalMs));
+              const r = await apiRequest("/api/tokens");
+              if (!r) return;
+              const list = await r.json();
+              if (!Array.isArray(list)) continue;
+              const item = list.find((t) => Number(t.id) === Number(id));
+              if (!item) continue;
+              const recovered =
+                Boolean(item.is_active) &&
+                String(item.ban_reason || "") !== "cookie_invalid_need_relogin";
+              if (!recovered) continue;
+
+              allTokens = list;
+              renderTokens();
+              await loadStats();
+              showToast("账号池自动登录成功，Token已恢复活跃", "success");
+              return;
+            }
+            await refreshTokens();
+          } catch (err) {
+            console.error("等待自动登录恢复状态失败:", err);
+          } finally {
+            delete autoLoginRecoveryWatchers[key];
           }
         },
         refreshTokens = async () => {
@@ -3869,7 +4272,7 @@
             const enabled = $("atAutoRefreshToggle").checked;
             const r = await apiRequest("/api/token-refresh/enabled", {
               method: "POST",
-              body: JSON.stringify({ enabled: enabled }),
+              body: JSON.stringify({ at_auto_refresh_enabled: enabled }),
             });
             if (!r) {
               $("atAutoRefreshToggle").checked = !enabled;
@@ -3890,6 +4293,36 @@
             $("atAutoRefreshToggle").checked = !enabled;
           }
         },
+        toggleReauthInvalidAutoLogin = async () => {
+          try {
+            const enabled = $("reauthInvalidAutoLoginToggle").checked;
+            const r = await apiRequest("/api/token-refresh/enabled", {
+              method: "POST",
+              body: JSON.stringify({
+                reauth_cookie_invalid_auto_login_enabled: enabled,
+              }),
+            });
+            if (!r) {
+              $("reauthInvalidAutoLoginToggle").checked = !enabled;
+              return;
+            }
+            const d = await r.json();
+            if (d.success) {
+              showToast(
+                enabled
+                  ? "Cookie失效自动登录已启用"
+                  : "Cookie失效自动登录已禁用",
+                "success",
+              );
+            } else {
+              showToast("操作失败: " + (d.detail || "未知错误"), "error");
+              $("reauthInvalidAutoLoginToggle").checked = !enabled;
+            }
+          } catch (e) {
+            showToast("操作失败: " + e.message, "error");
+            $("reauthInvalidAutoLoginToggle").checked = !enabled;
+          }
+        },
         loadATAutoRefreshConfig = async () => {
           try {
             const r = await apiRequest("/api/token-refresh/config");
@@ -3898,6 +4331,8 @@
             if (d.success && d.config) {
               $("atAutoRefreshToggle").checked =
                 d.config.at_auto_refresh_enabled || false;
+              $("reauthInvalidAutoLoginToggle").checked =
+                d.config.reauth_cookie_invalid_auto_login_enabled || false;
             } else {
               console.error("AT自动刷新配置数据格式错误:", d);
             }
@@ -3946,6 +4381,30 @@
           } catch (e) {
             showToast("清空失败: " + e.message, "error");
           }
+        },
+        showRefreshRecordDetail = (tokenId) => {
+          const record = refreshRecordMap[tokenId];
+          if (!record) {
+            showToast("暂无刷新记录详情", "info");
+            return;
+          }
+
+          $("refreshRecordDetailContent").innerHTML = `
+            <div class="space-y-2">
+              <div><span class="text-muted-foreground">邮箱:</span> ${escapeHtml(record.email || "-")}</div>
+              <div><span class="text-muted-foreground">时间:</span> ${escapeHtml(record.time || "-")}</div>
+              <div><span class="text-muted-foreground">状态:</span> ${escapeHtml(record.statusLabel || "-")} (${escapeHtml(record.status || "-")})</div>
+              <div><span class="text-muted-foreground">方式:</span> ${escapeHtml(record.method || "-")}</div>
+            </div>
+            <div class="pt-2">
+              <div class="text-muted-foreground mb-2">详细信息</div>
+              <pre class="rounded-md border border-border p-3 bg-muted/30 text-xs whitespace-pre-wrap break-words">${escapeHtml(record.detail || "-")}</pre>
+            </div>
+          `;
+          $("refreshRecordModal").classList.remove("hidden");
+        },
+        closeRefreshRecordModal = () => {
+          $("refreshRecordModal").classList.add("hidden");
         },
         showLogDetail = (logId) => {
           renderLogDetail(logId);

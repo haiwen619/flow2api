@@ -140,6 +140,19 @@ class AccountPoolService:
         ]
         return any(m in msg for m in markers)
 
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on", "enabled"}:
+            return True
+        if text in {"0", "false", "no", "n", "off", "disabled"}:
+            return False
+        return default
+
     async def _st_to_at_with_retry(self, *, tm: Any, st: str, job_id: str) -> Dict[str, Any]:
         max_attempts = 3
         base_sleep = 1.0
@@ -532,6 +545,62 @@ class AccountPoolService:
             "cookie_file_synced": bool(cookie_file_value),
         }
 
+    async def _auto_enable_token_after_sync(
+        self,
+        *,
+        sync_result: Optional[Dict[str, Any]],
+        job_id: str,
+        account_key: str,
+        refresh_method: str,
+        detail_prefix: str,
+    ) -> Dict[str, Any]:
+        if not isinstance(sync_result, dict):
+            return {"enabled": False, "reason": "invalid_sync_result"}
+        if not bool(sync_result.get("synced")):
+            return {"enabled": False, "reason": "sync_not_success"}
+
+        token_id_raw = sync_result.get("token_id")
+        if token_id_raw is None:
+            return {"enabled": False, "reason": "token_id_missing"}
+        try:
+            token_id = int(token_id_raw)
+        except Exception:
+            return {"enabled": False, "reason": "token_id_invalid", "token_id": token_id_raw}
+
+        try:
+            from .. import admin as admin_api
+        except Exception as e:
+            return {"enabled": False, "reason": "admin_import_failed", "error": str(e), "token_id": token_id}
+
+        tm = getattr(admin_api, "token_manager", None)
+        if tm is None:
+            return {"enabled": False, "reason": "token_manager_not_ready", "token_id": token_id}
+
+        detail = f"{detail_prefix}（job_id={job_id}, account_key={account_key}）"
+        try:
+            await tm.enable_token(token_id)
+            await tm._record_refresh_event(
+                token_id,
+                refresh_method,
+                "SUCCESS",
+                detail,
+            )
+            logger.info(
+                "[AccountPool][TokenSync] job_id=%s auto enabled token_id=%s account_key=%s",
+                job_id,
+                token_id,
+                account_key,
+            )
+            return {"enabled": True, "token_id": token_id}
+        except Exception as e:
+            logger.warning(
+                "[AccountPool][TokenSync] job_id=%s auto enable token failed token_id=%s error=%s",
+                job_id,
+                token_id,
+                str(e),
+            )
+            return {"enabled": False, "reason": "enable_failed", "token_id": token_id, "error": str(e)}
+
     async def trigger_single_validate(
         self,
         *,
@@ -607,6 +676,10 @@ class AccountPoolService:
             return
 
         started = time.time()
+        auto_enable_token_on_sync = self._as_bool(
+            (params or {}).get("auto_enable_token_on_sync"),
+            default=False,
+        )
         job["status"] = "running"
         job["updated_at"] = time.time()
         logger.info(
@@ -654,6 +727,16 @@ class AccountPoolService:
                 )
                 if isinstance(result, dict):
                     result["token_sync"] = sync_res
+                if auto_enable_token_on_sync:
+                    auto_enable_res = await self._auto_enable_token_after_sync(
+                        sync_result=sync_res,
+                        job_id=job_id,
+                        account_key=account_key,
+                        refresh_method="ACCOUNTPOOL_AUTO_LOGIN",
+                        detail_prefix="账号池自动登录完成，已同步并恢复Token活跃状态",
+                    )
+                    if isinstance(result, dict):
+                        result["token_auto_enable"] = auto_enable_res
             elif ok:
                 logger.warning(
                     "[AccountPool] validate success but no session token account_key=%s job_id=%s cookie_present=%s cookie_file_present=%s",
@@ -671,6 +754,16 @@ class AccountPoolService:
                     )
                     if isinstance(result, dict):
                         result["token_sync"] = cookie_sync_res
+                    if auto_enable_token_on_sync:
+                        auto_enable_res = await self._auto_enable_token_after_sync(
+                            sync_result=cookie_sync_res,
+                            job_id=job_id,
+                            account_key=account_key,
+                            refresh_method="ACCOUNTPOOL_AUTO_LOGIN_COOKIE",
+                            detail_prefix="账号池自动登录完成，Cookie已同步并恢复Token活跃状态",
+                        )
+                        if isinstance(result, dict):
+                            result["token_auto_enable"] = auto_enable_res
             duration_ms = int((time.time() - started) * 1000)
             job["result"] = result
             job["status"] = "success" if ok else "failed"

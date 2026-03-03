@@ -1,5 +1,5 @@
 """Data models for Flow2API"""
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional, List, Union, Any
 from datetime import datetime
 
@@ -14,6 +14,10 @@ class Token(BaseModel):
     cookie_file: Optional[str] = None  # Google 域名下的 Cookie Header（step4 使用）
     at: Optional[str] = None  # Access Token (从ST转换而来)
     at_expires: Optional[datetime] = None  # AT过期时间
+    last_refresh_at: Optional[datetime] = None  # 最近刷新时间
+    last_refresh_method: Optional[str] = None  # 最近刷新方式
+    last_refresh_status: Optional[str] = None  # 最近刷新状态
+    last_refresh_detail: Optional[str] = None  # 最近刷新详情
 
     # 基础信息
     email: str
@@ -43,6 +47,28 @@ class Token(BaseModel):
     # 429禁用相关
     ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" 或 None
     banned_at: Optional[datetime] = None  # 禁用时间
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_nullable_legacy_fields(cls, data):
+        """兼容历史数据：数据库旧行里部分字段可能为NULL。"""
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        defaults = {
+            "is_active": True,
+            "use_count": 0,
+            "credits": 0,
+            "image_enabled": True,
+            "video_enabled": True,
+            "image_concurrency": -1,
+            "video_concurrency": -1,
+        }
+        for field, default_value in defaults.items():
+            if normalized.get(field) is None:
+                normalized[field] = default_value
+        return normalized
 
 
 class Project(BaseModel):

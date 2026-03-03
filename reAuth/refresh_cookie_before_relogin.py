@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from html import unescape
 from http.cookies import SimpleCookie
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urlparse
@@ -79,6 +80,7 @@ DEFAULT_USER_AGENT = (
 BASE_URL = "https://labs.google/fx"
 FLOW_API_BASE_URL = "https://aisandbox-pa.googleapis.com/v1"
 DEFAULT_BROWSER_TEST_URL = "https://labs.google/fx/tools/flow"
+REAUTH_COOKIE_INVALID_NEED_RELOGIN = "REAUTH_COOKIE_INVALID_NEED_RELOGIN"
 
 
 def _log_warning(message: str, *args) -> None:
@@ -94,6 +96,9 @@ class ReAuthAccount:
     observed_tokens: List[Dict[str, str]] = field(default_factory=list)
     final_session_token: str = ""
     final_session_set_cookie_raw: str = ""
+    refresh_outcome: str = ""
+    refresh_detail: str = ""
+    needs_relogin: bool = False
 
 
 def _clip_long_text(value: Optional[str], max_len: int = 220) -> str:
@@ -105,6 +110,19 @@ def _clip_long_text(value: Optional[str], max_len: int = 220) -> str:
     tail = max_len - head
     omitted = len(text) - max_len
     return f"{text[:head]} ...[已省略 {omitted} 字符]... {text[-tail:]}"
+
+
+def _has_interaction_required(*values: Optional[str]) -> bool:
+    """Detect OAuth interaction_required callback which indicates stale/invalid login state."""
+    for raw in values:
+        text = unescape(str(raw or "")).strip().lower()
+        if not text:
+            continue
+        if "interaction_required" in text:
+            return True
+        if "error_subtype=access_denied" in text and "error=interaction_required" in text:
+            return True
+    return False
 
 
 def _cookie_header_to_dict(cookie_header: str) -> Dict[str, str]:
@@ -863,6 +881,10 @@ def refresh_cookie_before_relogin(
     Returns:
         Updated cookie header string.
     """
+    account.refresh_outcome = "IN_PROGRESS"
+    account.refresh_detail = "reAuth流程执行中"
+    account.needs_relogin = False
+
     _log_flow_overview(
         project_id=account.project_id,
         timeout=timeout,
@@ -1098,6 +1120,13 @@ def refresh_cookie_before_relogin(
         location_header = resp4.headers.get("location")
         LOGGER.info("step4 GET %s status=%s", next_url, resp4.status_code)
         LOGGER.info("step4 redirect_url=%s location=%s", redirect_url, location_header)
+        if _has_interaction_required(location_header, redirect_url):
+            detail = "step4 命中 access_denied/interaction_required，当前记录的Cookie已失效或受其他登录态影响，需要重新自动登录"
+            account.refresh_outcome = "COOKIE_INVALID_NEED_RELOGIN"
+            account.refresh_detail = detail
+            account.needs_relogin = True
+            LOGGER.warning("%s", detail)
+            raise RuntimeError(f"{REAUTH_COOKIE_INVALID_NEED_RELOGIN}: {detail}")
         record_cookie_state("step4 完成后", capture_tokens=False)
 
         # Step 5: GET location from step 4
@@ -1253,6 +1282,9 @@ def refresh_cookie_before_relogin(
     # for idx, item in enumerate(observed_tokens, start=1):
     #     LOGGER.info("  [%s] stage=%s source=%s token=%s", idx, item["stage"], item["source"], item["token"] or "<空>")
     LOGGER.info("==========================================")
+    account.refresh_outcome = "SUCCESS"
+    account.refresh_detail = "reAuth 6步链路执行完成"
+    account.needs_relogin = False
     return account.cookie
 
 

@@ -3,7 +3,7 @@ import asyncio
 import base64
 import traceback
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from ..core.database import Database
 from ..core.models import Token, Project
 from ..core.logger import debug_logger
@@ -18,6 +18,136 @@ class TokenManager:
         self.db = db
         self.flow_client = flow_client
         self._lock = asyncio.Lock()
+
+    def _parse_expiry_datetime(
+        self,
+        expires: Optional[str],
+        fallback_token: Optional[str] = None,
+    ) -> Optional[datetime]:
+        """解析过期时间，优先接口字段，失败时回退 JWT exp。"""
+        if isinstance(expires, str) and expires.strip():
+            try:
+                return datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            except Exception:
+                pass
+        if fallback_token:
+            return self._parse_jwt_exp(fallback_token)
+        return None
+
+    def _format_refresh_expiry(self, exp: Optional[datetime]) -> str:
+        """统一格式化刷新记录中的过期时间展示。"""
+        if not exp:
+            return "未知"
+        try:
+            exp_aware = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+            return exp_aware.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return "未知"
+
+    def _is_cookie_invalid_need_relogin_detail(self, detail: str) -> bool:
+        """判断 reAuth 失败详情是否属于 cookie 已失效、需重新自动登录。"""
+        text = str(detail or "").lower()
+        if not text:
+            return False
+        return (
+            "interaction_required" in text
+            or "cookie_invalid_need_relogin" in text
+            or ("需要重新自动登录" in text and "cookie" in text)
+        )
+
+    def _is_auto_login_triggered_message(self, message: str) -> bool:
+        """判断是否已成功触发账号池自动登录任务。"""
+        text = str(message or "").strip()
+        return text.startswith("已触发账号池自动登录(")
+
+    async def _trigger_accountpool_auto_login_if_enabled(
+        self,
+        token_id: int,
+        email: Optional[str],
+    ) -> str:
+        """当开关启用时，按邮箱尝试触发账号池单账号自动登录（验活）一次。"""
+        from ..core.config import config
+
+        if not config.reauth_cookie_invalid_auto_login_enabled:
+            return "自动登录开关未启用"
+
+        mail = str(email or "").strip().lower()
+        if not mail or "@" not in mail:
+            return "邮箱为空或格式无效，无法触发账号池自动登录"
+
+        try:
+            from .. import main as main_app
+        except Exception as import_err:
+            return f"账号池服务导入失败: {import_err}"
+
+        accountpool_service = getattr(main_app, "accountpool_service", None)
+        if accountpool_service is None:
+            return "账号池服务未初始化"
+
+        try:
+            listed = await accountpool_service.list_accounts(
+                offset=0,
+                limit=200,
+                search=mail,
+                platform=None,
+            )
+            items = listed.get("items", []) if isinstance(listed, dict) else []
+        except Exception as list_err:
+            return f"查询账号池失败: {list_err}"
+
+        matched: Optional[Dict[str, Any]] = None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            display_name = str(item.get("display_name") or "").strip().lower()
+            uid = str(item.get("uid") or "").strip().lower()
+            account_key = str(item.get("account_key") or "").strip().lower()
+            if display_name == mail or uid == mail or account_key.endswith(f":{mail}"):
+                matched = item
+                break
+
+        if not matched:
+            return f"账号池不存在邮箱为 {mail} 的账号，未触发自动登录"
+
+        account_key = str(matched.get("account_key") or "").strip()
+        if not account_key:
+            return "账号池匹配记录缺少account_key，未触发自动登录"
+
+        try:
+            job_id = await accountpool_service.trigger_single_validate(
+                account_key=account_key,
+                params={
+                    "external_browser": False,
+                    "manual": False,
+                    "timeout_sec": 300,
+                    "auto_enable_token_on_sync": True,
+                },
+            )
+            debug_logger.log_info(
+                f"[AT_REFRESH] Token {token_id}: 已触发账号池自动登录 account_key={account_key} job_id={job_id}"
+            )
+            return f"已触发账号池自动登录(account_key={account_key}, job_id={job_id})"
+        except Exception as trigger_err:
+            return f"触发账号池自动登录失败: {trigger_err}"
+
+    async def _record_refresh_event(
+        self,
+        token_id: int,
+        method: str,
+        status: str,
+        detail: str,
+    ):
+        """记录最近一次刷新结果，供管理页直接展示。"""
+        try:
+            await self.db.update_token(
+                token_id,
+                last_refresh_at=datetime.now(timezone.utc),
+                last_refresh_method=method,
+                last_refresh_status=status,
+                last_refresh_detail=(str(detail or "").strip()[:500] or "-"),
+            )
+        except Exception as log_err:
+            debug_logger.log_warning(f"[AT_REFRESH] Token {token_id}: 写入刷新记录失败 - {log_err}")
 
     # ========== Token CRUD ==========
 
@@ -40,7 +170,12 @@ class TokenManager:
     async def enable_token(self, token_id: int):
         """Enable a token and reset error count"""
         # Enable the token
-        await self.db.update_token(token_id, is_active=True)
+        await self.db.update_token(
+            token_id,
+            is_active=True,
+            ban_reason=None,
+            banned_at=None,
+        )
         # Reset error count when enabling (only reset total error_count, keep today_error_count)
         await self.db.reset_error_count(token_id)
 
@@ -96,12 +231,7 @@ class TokenManager:
             name = user_info.get("name", email.split("@")[0] if email else "")
 
             # 解析过期时间
-            at_expires = None
-            if expires:
-                try:
-                    at_expires = datetime.fromisoformat(expires.replace('Z', '+00:00'))
-                except:
-                    pass
+            at_expires = self._parse_expiry_datetime(expires, fallback_token=at)
 
         except Exception as e:
             raise ValueError(f"ST转AT失败: {str(e)}")
@@ -258,12 +388,12 @@ class TokenManager:
         # 如果AT不存在,需要刷新
         if not token.at:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT不存在,需要刷新")
-            return await self._refresh_at(token_id)
+            return await self._refresh_at(token_id, refresh_source="AUTO_MISSING_AT")
 
         # 如果没有过期时间,假设需要刷新
         if not token.at_expires:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT过期时间未知,尝试刷新")
-            return await self._refresh_at(token_id)
+            return await self._refresh_at(token_id, refresh_source="AUTO_NO_EXPIRY")
 
         # 检查是否即将过期 (提前1小时刷新)
         now = datetime.now(timezone.utc)
@@ -289,11 +419,20 @@ class TokenManager:
                 debug_logger.log_info(
                     f"[AT_CHECK] Token {token_id}: 先尝试 reAuth 纯协议刷新会话..."
                 )
-                if await self.refresh_cookie_via_reauth(token_id):
+                if await self.refresh_cookie_via_reauth(token_id, refresh_source="AUTO_REAUTH"):
                     debug_logger.log_info(
                         f"[AT_CHECK] Token {token_id}: reAuth 纯协议刷新成功"
                     )
                     return True
+
+                latest = await self.db.get_token(token_id)
+                last_detail = str(getattr(latest, "last_refresh_detail", "") or "")
+                if self._is_cookie_invalid_need_relogin_detail(last_detail):
+                    debug_logger.log_warning(
+                        f"[AT_CHECK] Token {token_id}: {last_detail}"
+                    )
+                    return False
+
                 debug_logger.log_warning(
                     f"[AT_CHECK] Token {token_id}: reAuth 纯协议刷新失败，回退 AT 直刷链路"
                 )
@@ -301,13 +440,19 @@ class TokenManager:
             return await self._refresh_at(
                 token_id,
                 skip_reauth_fallback=reauth_attempted,
+                refresh_source="AUTO_NEAR_EXPIRY",
             )
 
         # AT有效
         return True
 
 
-    async def _refresh_at(self, token_id: int, skip_reauth_fallback: bool = False) -> bool:
+    async def _refresh_at(
+        self,
+        token_id: int,
+        skip_reauth_fallback: bool = False,
+        refresh_source: str = "MANUAL_AT",
+    ) -> bool:
         """内部方法: 刷新AT
 
         如果 AT 刷新失败（ST 可能过期），会尝试通过浏览器自动刷新 ST，
@@ -324,16 +469,63 @@ class TokenManager:
             # # 第一次尝试刷新 AT
             result = await self._do_refresh_at(token_id, token.st)
             if result:
+                updated = await self.db.get_token(token_id)
+                await self._record_refresh_event(
+                    token_id,
+                    f"{refresh_source}:ST_TO_AT",
+                    "SUCCESS",
+                    f"AT刷新成功，过期时间={self._format_refresh_expiry(updated.at_expires if updated else None)}",
+                )
                 return True
 
             # AT 刷新失败，可选尝试 HTTP reAuth 恢复可用 AT（可能先拿到 ST 再换 AT，或直接拿到可用 AT）
             from ..core.config import config
+            reauth_detail = ""
             if config.enable_reauth_refresh and not skip_reauth_fallback:
                 debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 第一次 AT 刷新失败，尝试 reAuth 恢复 AT...")
-                reauth_result = await self._try_refresh_at_via_reauth(token_id, token)
+                reauth_result, reauth_detail = await self._try_refresh_at_via_reauth(token_id, token)
                 if reauth_result:
                     debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: reAuth 恢复 AT 成功")
+                    updated = await self.db.get_token(token_id)
+                    await self._record_refresh_event(
+                        token_id,
+                        f"{refresh_source}:REAUTH_FALLBACK",
+                        "SUCCESS",
+                        f"reAuth恢复AT成功，过期时间={self._format_refresh_expiry(updated.at_expires if updated else None)}",
+                    )
                     return True
+                if reauth_detail:
+                    debug_logger.log_warning(f"[AT_REFRESH] Token {token_id}: reAuth 恢复失败详情: {reauth_detail}")
+                    if self._is_cookie_invalid_need_relogin_detail(reauth_detail):
+                        invalid_detail = (
+                            "reAuth命中interaction_required，判定当前记录的Cookie已失效，"
+                            "已标记为失效并停用，后续自动刷新将跳过，需重新自动登录恢复"
+                        )
+                        auto_login_msg = await self._trigger_accountpool_auto_login_if_enabled(
+                            token_id,
+                            getattr(token, "email", None),
+                        )
+                        auto_login_triggered = self._is_auto_login_triggered_message(auto_login_msg)
+                        if auto_login_msg:
+                            invalid_detail = f"{invalid_detail}；{auto_login_msg}"
+                        if auto_login_triggered:
+                            invalid_detail = f"{invalid_detail}；账号池自动登录执行中，请稍候自动恢复"
+                        await self.db.update_token(
+                            token_id,
+                            is_active=False,
+                            ban_reason="cookie_invalid_need_relogin",
+                            banned_at=datetime.now(timezone.utc),
+                        )
+                        await self._record_refresh_event(
+                            token_id,
+                            f"{refresh_source}:REAUTH_INVALID_COOKIE_AUTO_LOGIN_PENDING"
+                            if auto_login_triggered
+                            else f"{refresh_source}:REAUTH_INVALID_COOKIE",
+                            "PENDING" if auto_login_triggered else "FAILED",
+                            invalid_detail,
+                        )
+                        debug_logger.log_warning(f"[AT_REFRESH] Token {token_id}: {invalid_detail}")
+                        return False
             elif skip_reauth_fallback:
                 debug_logger.log_info(
                     f"[AT_REFRESH] Token {token_id}: 已在外层执行过 reAuth，跳过本轮 reAuth fallback"
@@ -348,14 +540,34 @@ class TokenManager:
                 debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 浏览器刷新 ST 成功，重试 AT 刷新...")
                 result = await self._do_refresh_at(token_id, new_st)
                 if result:
+                    updated = await self.db.get_token(token_id)
+                    await self._record_refresh_event(
+                        token_id,
+                        f"{refresh_source}:BROWSER_ST",
+                        "SUCCESS",
+                        f"浏览器刷新ST后AT刷新成功，过期时间={self._format_refresh_expiry(updated.at_expires if updated else None)}",
+                    )
                     return True
 
             # 所有刷新尝试都失败，禁用 Token
             debug_logger.log_error(f"[AT_REFRESH] Token {token_id}: 所有刷新尝试失败，禁用 Token")
+            failed_detail = "ST直刷/reAuth恢复/浏览器刷新均失败，Token已自动禁用"
+            if reauth_detail:
+                failed_detail = f"{failed_detail}；reAuth详情={str(reauth_detail)[:240]}"
+            await self._record_refresh_event(
+                token_id,
+                f"{refresh_source}:ALL",
+                "FAILED",
+                failed_detail,
+            )
             await self.disable_token(token_id)
             return False
 
-    async def refresh_cookie_via_reauth(self, token_id: int) -> bool:
+    async def refresh_cookie_via_reauth(
+        self,
+        token_id: int,
+        refresh_source: str = "MANUAL_COOKIE",
+    ) -> bool:
         """仅通过 reAuth 刷新 Cookie/会话，不执行首次 ST->AT 直刷。
 
         用于手动“刷新Cookie”按钮：
@@ -369,16 +581,57 @@ class TokenManager:
 
             old_cookie = str(token.cookie or "").strip()
             debug_logger.log_info(f"[REAUTH_ONLY] Token {token_id}: 开始仅 reAuth 刷新 Cookie...")
-            success = await self._try_refresh_at_via_reauth(token_id, token)
+            success, reauth_detail = await self._try_refresh_at_via_reauth(token_id, token)
             if not success:
                 debug_logger.log_warning(f"[REAUTH_ONLY] Token {token_id}: reAuth 刷新失败")
+                detail_msg = str(reauth_detail or "reAuth刷新Cookie失败（未恢复可用AT）")
+                auto_login_triggered = False
+                if self._is_cookie_invalid_need_relogin_detail(detail_msg):
+                    detail_msg = (
+                        "reAuth命中interaction_required，判定当前记录的Cookie已失效，"
+                        "已标记为失效并停用，后续自动刷新将跳过，需重新自动登录恢复"
+                    )
+                    auto_login_msg = await self._trigger_accountpool_auto_login_if_enabled(
+                        token_id,
+                        getattr(token, "email", None),
+                    )
+                    auto_login_triggered = self._is_auto_login_triggered_message(auto_login_msg)
+                    if auto_login_msg:
+                        detail_msg = f"{detail_msg}；{auto_login_msg}"
+                    if auto_login_triggered:
+                        detail_msg = f"{detail_msg}；账号池自动登录执行中，请稍候自动恢复"
+                    await self.db.update_token(
+                        token_id,
+                        is_active=False,
+                        ban_reason="cookie_invalid_need_relogin",
+                        banned_at=datetime.now(timezone.utc),
+                    )
+                await self._record_refresh_event(
+                    token_id,
+                    f"{refresh_source}:REAUTH_ONLY_AUTO_LOGIN_PENDING"
+                    if auto_login_triggered
+                    else f"{refresh_source}:REAUTH_ONLY",
+                    "PENDING" if auto_login_triggered else "FAILED",
+                    detail_msg,
+                )
                 return False
 
             updated = await self.db.get_token(token_id)
             new_cookie = str((updated.cookie if updated else "") or "").strip()
             cookie_changed = bool(new_cookie and new_cookie != old_cookie)
+            reactivated = False
+            if updated and str(getattr(updated, "ban_reason", "") or "") == "cookie_invalid_need_relogin":
+                await self.enable_token(token_id)
+                updated = await self.db.get_token(token_id)
+                reactivated = True
             debug_logger.log_info(
-                f"[REAUTH_ONLY] Token {token_id}: reAuth 刷新成功 cookie_changed={cookie_changed}"
+                f"[REAUTH_ONLY] Token {token_id}: reAuth 刷新成功 cookie_changed={cookie_changed} reactivated={reactivated}"
+            )
+            await self._record_refresh_event(
+                token_id,
+                f"{refresh_source}:REAUTH_ONLY",
+                "SUCCESS",
+                f"reAuth刷新成功 cookie_changed={cookie_changed} reactivated={reactivated}，过期时间={self._format_refresh_expiry(updated.at_expires if updated else None)}",
             )
             return True
 
@@ -427,12 +680,7 @@ class TokenManager:
             expires = result.get("expires")
 
             # 解析过期时间
-            new_at_expires = None
-            if expires:
-                try:
-                    new_at_expires = datetime.fromisoformat(expires.replace('Z', '+00:00'))
-                except:
-                    pass
+            new_at_expires = self._parse_expiry_datetime(expires, fallback_token=new_at)
 
             # 更新数据库
             await self.db.update_token(
@@ -519,12 +767,12 @@ class TokenManager:
             debug_logger.log_warning(f"[REAUTH_AT] Token {token_id}: 候选 token 作为 AT 验证失败 - {str(e)}")
             return False
 
-    async def _try_refresh_at_via_reauth(self, token_id: int, token) -> bool:
+    async def _try_refresh_at_via_reauth(self, token_id: int, token) -> tuple[bool, str]:
         """尝试通过 reAuth HTTP 流程恢复 AT（优先按 ST/RT->AT，兼容 AT 直验）"""
         try:
             if not token.current_project_id:
                 debug_logger.log_warning(f"[REAUTH_ST] Token {token_id} 没有 project_id，无法执行 reAuth")
-                return False
+                return False, "缺少 project_id，无法执行 reAuth"
 
             debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: 开始执行 reAuth，尝试恢复 AT...")
 
@@ -534,6 +782,7 @@ class TokenManager:
                 refresh_cookie_before_relogin,
                 _st_to_at_via_auth_session,
                 _verify_at_via_get_credits,
+                REAUTH_COOKIE_INVALID_NEED_RELOGIN,
             )
 
             # 优先使用完整 Cookie（由账号池自动化同步），没有则回退最小 ST Cookie
@@ -553,6 +802,7 @@ class TokenManager:
             seed_cookie_file = initial_cookie_file_header
             last_candidate_token = ""
             candidate_source = "__Secure-next-auth.session-token"
+            failure_detail = "reAuth流程未恢复可用AT"
             # 暂时收敛为单次纯协议尝试，便于聚焦六步链路调试。
             strategies = [
                 ("default-pass1", False),
@@ -585,7 +835,25 @@ class TokenManager:
                     refreshed_st_raw = str(getattr(account, "final_session_set_cookie_raw", "") or "").strip()
                     return refreshed_cookie_value, refreshed_st_value, refreshed_st_raw
 
-                refreshed_cookie, refreshed_st, refreshed_st_raw = await asyncio.to_thread(_run_reauth_once)
+                try:
+                    refreshed_cookie, refreshed_st, refreshed_st_raw = await asyncio.to_thread(_run_reauth_once)
+                except Exception as reauth_err:
+                    err_text = str(reauth_err or "")
+                    err_text_l = err_text.lower()
+                    if (REAUTH_COOKIE_INVALID_NEED_RELOGIN in err_text) or ("interaction_required" in err_text_l):
+                        failure_detail = (
+                            "reAuth检测到step4返回 interaction_required，判定当前记录的cookie已失效或受其他登录状态影响，"
+                            "需要重新自动登录"
+                        )
+                        debug_logger.log_warning(
+                            f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} {failure_detail}"
+                        )
+                        return False, failure_detail
+                    failure_detail = f"reAuth流程异常（{strategy_name}）: {err_text}"
+                    debug_logger.log_warning(
+                        f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} 执行异常 - {err_text}"
+                    )
+                    continue
                 print(f"  - reAuth[{strategy_name}] 返回 cookie: {refreshed_cookie}")
                 print(f"  - reAuth[{strategy_name}] 提取 ST: {refreshed_st_raw or refreshed_st}")
                 candidate_token = refreshed_st
@@ -654,12 +922,10 @@ class TokenManager:
                             timeout=30,
                         )
                         if verify_direct.get("success"):
-                            direct_at_expires = None
-                            if isinstance(direct_expires, str) and direct_expires.strip():
-                                try:
-                                    direct_at_expires = datetime.fromisoformat(direct_expires.replace('Z', '+00:00'))
-                                except Exception:
-                                    direct_at_expires = None
+                            direct_at_expires = self._parse_expiry_datetime(
+                                direct_expires,
+                                fallback_token=direct_at,
+                            )
                             await self.db.update_token(
                                 token_id,
                                 at=direct_at,
@@ -669,7 +935,7 @@ class TokenManager:
                             debug_logger.log_info(
                                 f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} reAuth同链路 AT 验证成功（余额: {verify_direct.get('credits', 0)}）"
                             )
-                            return True
+                            return True, ""
                         debug_logger.log_warning(
                             f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} reAuth同链路 AT 验证失败: {verify_direct.get('error')}"
                         )
@@ -691,7 +957,7 @@ class TokenManager:
                     debug_logger.log_info(
                         f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} ST->AT 成功"
                     )
-                    return True
+                    return True, ""
 
                 debug_logger.log_warning(
                     f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} ST->AT 失败，切换下一策略"
@@ -701,13 +967,13 @@ class TokenManager:
             if last_candidate_token:
                 debug_logger.log_info(f"[REAUTH_AT] Token {token_id}: 所有 ST->AT 策略失败，兼容尝试候选 token 直验 AT...")
                 if await self._accept_direct_at_if_valid(token_id, last_candidate_token):
-                    return True
+                    return True, ""
 
-            return False
+            return False, failure_detail
 
         except Exception as e:
             debug_logger.log_error(f"[REAUTH_AT] Token {token_id}: reAuth 恢复 AT 失败 - {str(e)}")
-            return False
+            return False, f"reAuth恢复AT异常: {str(e)}"
 
     async def _try_refresh_st(self, token_id: int, token) -> Optional[str]:
         """尝试通过浏览器刷新 Session Token
@@ -941,6 +1207,55 @@ class TokenManager:
                 )
                 # 重置错误计数
                 await self.db.reset_error_count(token.id)
+
+    async def auto_refresh_active_tokens(self) -> tuple[int, int, int]:
+        """后台巡检活跃Token并触发AT自动刷新。
+
+        Returns:
+            (checked_count, refresh_attempted_count, refresh_failed_count)
+        """
+        active_tokens = await self.db.get_active_tokens()
+        now = datetime.now(timezone.utc)
+
+        checked = 0
+        refresh_attempted = 0
+        refresh_failed = 0
+
+        for token in active_tokens:
+            checked += 1
+
+            needs_refresh = False
+            if not token.at or not token.at_expires:
+                needs_refresh = True
+            else:
+                if token.at_expires.tzinfo is None:
+                    at_expires_aware = token.at_expires.replace(tzinfo=timezone.utc)
+                else:
+                    at_expires_aware = token.at_expires
+                # 纯定时巡检策略：
+                # - 已过期：跳过（不做自动刷新尝试）
+                # - 未过期且<1h：触发自动刷新
+                time_left_seconds = (at_expires_aware - now).total_seconds()
+                if time_left_seconds <= 0:
+                    debug_logger.log_info(
+                        f"[AT_AUTO_SCAN] Token {token.id}: AT已过期，跳过纯定时自动刷新"
+                    )
+                    continue
+                needs_refresh = time_left_seconds < 3600
+
+            if not needs_refresh:
+                continue
+
+            refresh_attempted += 1
+            try:
+                ok = await self.is_at_valid(token.id)
+                if not ok:
+                    refresh_failed += 1
+            except Exception as e:
+                refresh_failed += 1
+                debug_logger.log_error(f"[AT_AUTO_SCAN] Token {token.id}: 自动刷新巡检异常 - {str(e)}")
+
+        return checked, refresh_attempted, refresh_failed
 
     # ========== 余额刷新 ==========
 

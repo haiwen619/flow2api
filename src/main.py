@@ -203,7 +203,22 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"❌ Auto-unban task error: {e}")
 
+    async def auto_refresh_at_task():
+        """定时任务：每分钟巡检活跃Token并触发AT自动刷新"""
+        while True:
+            try:
+                await asyncio.sleep(60)  # 每分钟执行一次
+                checked, attempted, failed = await token_manager.auto_refresh_active_tokens()
+                if attempted > 0 or failed > 0:
+                    print(
+                        f"✓ AT auto-refresh scan: checked={checked}, "
+                        f"attempted={attempted}, failed={failed}"
+                    )
+            except Exception as e:
+                print(f"❌ Auto-refresh task error: {e}")
+
     auto_unban_task_handle = asyncio.create_task(auto_unban_task())
+    auto_refresh_task_handle = asyncio.create_task(auto_refresh_at_task())
 
     print(f"✓ Database initialized")
     print("✓ AccountPool initialized")
@@ -212,6 +227,7 @@ async def lifespan(app: FastAPI):
     print(f"✓ Cache: {'Enabled' if config.cache_enabled else 'Disabled'} (timeout: {config.cache_timeout}s)")
     print(f"✓ File cache cleanup task started")
     print(f"✓ 429 auto-unban task started (runs every hour)")
+    print(f"✓ AT auto-refresh task started (runs every minute)")
     print(f"✓ Server running on http://{config.server_host}:{config.server_port}")
     print("=" * 60)
 
@@ -227,12 +243,19 @@ async def lifespan(app: FastAPI):
         await auto_unban_task_handle
     except asyncio.CancelledError:
         pass
+    # Stop auto-refresh task
+    auto_refresh_task_handle.cancel()
+    try:
+        await auto_refresh_task_handle
+    except asyncio.CancelledError:
+        pass
     # Close browser if initialized
     if browser_service:
         await browser_service.close()
         print("✓ Browser captcha service closed")
     print("✓ File cache cleanup task stopped")
     print("✓ 429 auto-unban task stopped")
+    print("✓ AT auto-refresh task stopped")
 
 
 # Initialize components

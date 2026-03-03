@@ -422,11 +422,17 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             "cookieFile": t.cookie_file,  # Google 域名 Cookie Header（用于 reAuth step4）
             "at": t.at,  # Access Token for editing (从ST转换而来)
             "at_expires": t.at_expires.isoformat() if t.at_expires else None,  # 🆕 AT过期时间
+            "last_refresh_at": t.last_refresh_at.isoformat() if t.last_refresh_at else None,
+            "last_refresh_method": t.last_refresh_method,
+            "last_refresh_status": t.last_refresh_status,
+            "last_refresh_detail": t.last_refresh_detail,
             "token": t.at,  # 兼容前端 token.token 的访问方式
             "email": t.email,
             "name": t.name,
             "remark": t.remark,
             "is_active": t.is_active,
+            "ban_reason": t.ban_reason,
+            "banned_at": t.banned_at.isoformat() if t.banned_at else None,
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
             "use_count": t.use_count,
@@ -617,7 +623,7 @@ async def refresh_at(
     
     try:
         # 调用token_manager的内部刷新方法（包含 ST 自动刷新逻辑）
-        success = await token_manager._refresh_at(token_id)
+        success = await token_manager._refresh_at(token_id, refresh_source="MANUAL_AT")
 
         if success:
             # 获取更新后的token信息
@@ -635,7 +641,11 @@ async def refresh_at(
                 "token": {
                     "id": updated_token.id,
                     "email": updated_token.email,
-                    "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None
+                    "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None,
+                    "last_refresh_at": updated_token.last_refresh_at.isoformat() if updated_token.last_refresh_at else None,
+                    "last_refresh_method": updated_token.last_refresh_method,
+                    "last_refresh_status": updated_token.last_refresh_status,
+                    "last_refresh_detail": updated_token.last_refresh_detail,
                 }
             }
         else:
@@ -664,7 +674,7 @@ async def refresh_cookie(
     debug_logger.log_info(f"[API] 手动刷新 Cookie(reAuth-only) 请求: token_id={token_id}")
 
     try:
-        success = await token_manager.refresh_cookie_via_reauth(token_id)
+        success = await token_manager.refresh_cookie_via_reauth(token_id, refresh_source="MANUAL_COOKIE")
         if success:
             updated_token = await token_manager.get_token(token_id)
             debug_logger.log_info(f"[API] 刷新 Cookie 成功: token_id={token_id}")
@@ -676,11 +686,20 @@ async def refresh_cookie(
                     "email": updated_token.email,
                     "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None,
                     "cookie_present": bool(str(updated_token.cookie or "").strip()),
+                    "last_refresh_at": updated_token.last_refresh_at.isoformat() if updated_token.last_refresh_at else None,
+                    "last_refresh_method": updated_token.last_refresh_method,
+                    "last_refresh_status": updated_token.last_refresh_status,
+                    "last_refresh_detail": updated_token.last_refresh_detail,
                 }
             }
 
-        debug_logger.log_error(f"[API] 刷新 Cookie 失败: token_id={token_id}")
-        raise HTTPException(status_code=500, detail="Cookie刷新失败（reAuth-only）")
+        updated_token = await token_manager.get_token(token_id)
+        fail_detail = (
+            str(getattr(updated_token, "last_refresh_detail", "") or "").strip()
+            or "Cookie刷新失败（reAuth-only）"
+        )
+        debug_logger.log_error(f"[API] 刷新 Cookie 失败: token_id={token_id}, detail={fail_detail}")
+        raise HTTPException(status_code=500, detail=fail_detail)
     except HTTPException:
         raise
     except Exception as e:
@@ -1229,23 +1248,48 @@ async def update_generation_timeout(
 
 @router.get("/api/token-refresh/config")
 async def get_token_refresh_config(token: str = Depends(verify_admin_token)):
-    """Get AT auto refresh configuration (默认启用)"""
+    """Get token refresh configuration switches."""
     return {
         "success": True,
         "config": {
-            "at_auto_refresh_enabled": True  # Flow2API默认启用AT自动刷新
+            "at_auto_refresh_enabled": True,  # Flow2API默认启用AT自动刷新
+            "reauth_cookie_invalid_auto_login_enabled": bool(
+                config.reauth_cookie_invalid_auto_login_enabled
+            ),
         }
     }
 
 
 @router.post("/api/token-refresh/enabled")
 async def update_token_refresh_enabled(
+    request: dict,
     token: str = Depends(verify_admin_token)
 ):
-    """Update AT auto refresh enabled (Flow2API固定启用,此接口仅用于前端兼容)"""
+    """Update token refresh related switches."""
+    # AT 自动刷新为固定开启（仅保留前端开关兼容，不支持关闭）。
+    requested_at_enabled = request.get("at_auto_refresh_enabled")
+    if requested_at_enabled is None and "enabled" in request:
+        requested_at_enabled = request.get("enabled")
+
+    # Cookie失效触发账号池自动登录开关
+    if "reauth_cookie_invalid_auto_login_enabled" in request:
+        config.set_reauth_cookie_invalid_auto_login_enabled(
+            bool(request.get("reauth_cookie_invalid_auto_login_enabled"))
+        )
+
+    at_msg = "AT自动刷新固定启用"
+    if requested_at_enabled is False:
+        at_msg = "AT自动刷新固定启用，忽略关闭请求"
+
     return {
         "success": True,
-        "message": "Flow2API的AT自动刷新默认启用且无法关闭"
+        "message": at_msg,
+        "config": {
+            "at_auto_refresh_enabled": True,
+            "reauth_cookie_invalid_auto_login_enabled": bool(
+                config.reauth_cookie_invalid_auto_login_enabled
+            ),
+        },
     }
 
 

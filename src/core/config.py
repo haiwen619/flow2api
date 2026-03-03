@@ -75,6 +75,22 @@ class Config:
         self._config["flow"]["enable_reauth_refresh"] = bool(enabled)
 
     @property
+    def reauth_cookie_invalid_auto_login_enabled(self) -> bool:
+        """Whether cookie-invalid(interaction_required) should trigger account-pool auto login."""
+        return bool(
+            self._config.get("flow", {}).get(
+                "reauth_cookie_invalid_auto_login_enabled",
+                False,
+            )
+        )
+
+    def set_reauth_cookie_invalid_auto_login_enabled(self, enabled: bool):
+        """Set account-pool auto login switch for cookie-invalid reAuth failures."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        self._config["flow"]["reauth_cookie_invalid_auto_login_enabled"] = bool(enabled)
+
+    @property
     def poll_interval(self) -> float:
         return self._config["flow"]["poll_interval"]
 
