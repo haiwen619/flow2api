@@ -172,6 +172,7 @@ def _normalize_ratio_suffix_from_model(model_ratio: Optional[str]) -> Optional[s
         return None
 
     ratio = model_ratio.strip().lower()
+    compact = ratio.replace(" ", "").replace("_", "-").replace("/", "x").replace(":", "x")
     mapping = {
         "landscape": "landscape",
         "16x9": "landscape",
@@ -184,7 +185,7 @@ def _normalize_ratio_suffix_from_model(model_ratio: Optional[str]) -> Optional[s
         "three-four": "three-four",
         "3x4": "three-four",
     }
-    return mapping.get(ratio)
+    return mapping.get(compact) or mapping.get(ratio)
 
 
 def _normalize_image_model_alias(model: str) -> str:
@@ -194,6 +195,10 @@ def _normalize_image_model_alias(model: str) -> str:
     - gemini-3.0-pro-image-4k-16x9
     - gemini-3.0-pro-image-2k-9x16
     - gemini-3.0-pro-image-1k (等价基础分辨率)
+    - gemini-3.1-flash-image-4x3
+    - gemini-3.1-flash-image-4k-16x9
+    - gemini-3.1-flash-image-2k-9x16
+    - gemini-3.1-flash-image-1k (等价基础分辨率)
     """
     model_normalized = str(model).strip().lower()
     if not model_normalized:
@@ -202,29 +207,56 @@ def _normalize_image_model_alias(model: str) -> str:
     if model_normalized in MODEL_CONFIG:
         return model_normalized
 
-    size_suffix = None
-    family_candidate = model_normalized
-    for suffix in ("-4k", "-2k", "-1k"):
-        if family_candidate.endswith(suffix):
-            size_suffix = suffix[1:]
-            family_candidate = family_candidate[: -len(suffix)]
+    family_candidate = None
+    alias_suffix = ""
+    for family in sorted(IMAGE_MODEL_FAMILIES, key=len, reverse=True):
+        if model_normalized == family:
+            family_candidate = family
+            alias_suffix = ""
+            break
+        prefix = f"{family}-"
+        if model_normalized.startswith(prefix):
+            family_candidate = family
+            alias_suffix = model_normalized[len(prefix):]
             break
 
-    ratio_suffix = None
-    for ratio_alias in (
-        "-four-three", "-three-four",
-        "-landscape", "-portrait", "-square",
-        "-21x9", "-16x9", "-9x16", "-1x1", "-4x3", "-3x4"
-    ):
-        if family_candidate.endswith(ratio_alias):
-            ratio_suffix = ratio_alias[1:]
-            family_candidate = family_candidate[: -len(ratio_alias)]
-            break
-
-    if family_candidate not in IMAGE_MODEL_FAMILIES:
+    if not family_candidate:
         return model_normalized
 
-    if ratio_suffix == "21x9":
+    size_suffix = None
+    ratio_suffix = None
+    if alias_suffix:
+        tokens = [token for token in alias_suffix.split("-") if token]
+        size_tokens = [token for token in tokens if token in {"1k", "2k", "4k"}]
+        if len(size_tokens) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported model alias '{model}': multiple image size suffixes found."
+            )
+
+        if size_tokens:
+            size_suffix = size_tokens[0]
+            size_removed = False
+            ratio_tokens: List[str] = []
+            for token in tokens:
+                if not size_removed and token == size_suffix:
+                    size_removed = True
+                    continue
+                ratio_tokens.append(token)
+            ratio_suffix = "-".join(ratio_tokens) if ratio_tokens else None
+        else:
+            ratio_suffix = "-".join(tokens) if tokens else None
+
+    ratio_suffix_compact = (
+        str(ratio_suffix or "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("_", "-")
+        .replace("/", "x")
+        .replace(":", "x")
+    )
+    if ratio_suffix_compact == "21x9":
         raise HTTPException(
             status_code=400,
             detail="Unsupported model ratio suffix: 21x9. 21:9 is not supported by current image models."

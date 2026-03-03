@@ -3,9 +3,11 @@
 
 放通防火墙端口（如需外网访问）
 New-NetFirewallRule -DisplayName "Flow2API-6050" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 6050
-jHrrRDxVD5twXN2t
+
 
 http://23.159.248.139:8000/manage
+jHrrRDxVD5twXN2t
+
 
 https://docs.cqtai.com/nano%E7%94%9F%E6%88%90/
 
@@ -173,6 +175,60 @@ curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
     },
     "stream": true
   }'
+
+
+
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
+
+curl -X POST "http://127.0.0.1:3000/v1/chat/completions" \
+  -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
