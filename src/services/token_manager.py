@@ -60,6 +60,35 @@ class TokenManager:
         text = str(message or "").strip()
         return text.startswith("已触发账号池自动登录(")
 
+    def _get_auto_refresh_advance_seconds(
+        self,
+        token_id: int,
+        at_expires: Optional[datetime],
+    ) -> int:
+        """获取 AT 自动刷新提前窗口（稳定随机 2-4 小时，按 token+过期时间确定）。"""
+        min_seconds = 2 * 3600
+        max_seconds = 4 * 3600
+        span = max_seconds - min_seconds
+
+        exp_seed = 0
+        if at_expires:
+            try:
+                exp_aware = (
+                    at_expires
+                    if at_expires.tzinfo
+                    else at_expires.replace(tzinfo=timezone.utc)
+                )
+                exp_seed = int(exp_aware.timestamp())
+            except Exception:
+                exp_seed = 0
+
+        seed_text = f"{int(token_id)}|{exp_seed}"
+        hashed = 0
+        for ch in seed_text:
+            hashed = (hashed * 131 + ord(ch)) % 2147483647
+
+        return min_seconds + (hashed % (span + 1))
+
     async def _trigger_accountpool_auto_login_if_enabled(
         self,
         token_id: int,
@@ -395,7 +424,7 @@ class TokenManager:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT过期时间未知,尝试刷新")
             return await self._refresh_at(token_id, refresh_source="AUTO_NO_EXPIRY")
 
-        # 检查是否即将过期 (提前1小时刷新)
+        # 检查是否即将过期（提前窗口随机 2-4 小时）
         now = datetime.now(timezone.utc)
         # 确保at_expires也是timezone-aware
         if token.at_expires.tzinfo is None:
@@ -404,10 +433,16 @@ class TokenManager:
             at_expires_aware = token.at_expires
 
         time_until_expiry = at_expires_aware - now
+        advance_seconds = self._get_auto_refresh_advance_seconds(
+            token_id=token_id,
+            at_expires=at_expires_aware,
+        )
 
-        if time_until_expiry.total_seconds() < 3600:  # 1 hour (3600 seconds)
+        if time_until_expiry.total_seconds() < advance_seconds:
             debug_logger.log_info(
-                f"[AT_CHECK] Token {token_id}: AT即将过期 (剩余 {time_until_expiry.total_seconds():.0f} 秒),需要刷新"
+                f"[AT_CHECK] Token {token_id}: AT即将过期 "
+                f"(剩余 {time_until_expiry.total_seconds():.0f} 秒, "
+                f"触发阈值 {advance_seconds / 3600:.2f} 小时),需要刷新"
             )
 
             # 优先尝试纯协议 reAuth 刷新会话（更新 Cookie/ST/RT），以延长会话有效期；
@@ -1234,14 +1269,18 @@ class TokenManager:
                     at_expires_aware = token.at_expires
                 # 纯定时巡检策略：
                 # - 已过期：跳过（不做自动刷新尝试）
-                # - 未过期且<1h：触发自动刷新
+                # - 未过期且进入提前窗口：触发自动刷新
                 time_left_seconds = (at_expires_aware - now).total_seconds()
                 if time_left_seconds <= 0:
                     debug_logger.log_info(
                         f"[AT_AUTO_SCAN] Token {token.id}: AT已过期，跳过纯定时自动刷新"
                     )
                     continue
-                needs_refresh = time_left_seconds < 3600
+                advance_seconds = self._get_auto_refresh_advance_seconds(
+                    token_id=token.id,
+                    at_expires=at_expires_aware,
+                )
+                needs_refresh = time_left_seconds < advance_seconds
 
             if not needs_refresh:
                 continue

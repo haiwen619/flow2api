@@ -178,21 +178,6 @@ curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
 
 
 
-curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
-  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-3.1-flash-image",
-    "contents": [
-      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
-    ],
-    "generationConfig": {
-      "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
-    },
-    "stream": true
-  }'
-
 curl -X POST "http://127.0.0.1:3000/v1/chat/completions" \
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
   -H "Content-Type: application/json" \
@@ -208,7 +193,53 @@ curl -X POST "http://127.0.0.1:3000/v1/chat/completions" \
     "stream": true
   }'
 
+curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
+  -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image",
+    "contents": [
+      { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
+    ],
+    "generationConfig": {
+      "responseModalities": ["IMAGE"],
+      "imageConfig": { "aspectRatio": "16:9", "imageSize": "1K" }
+    },
+    "stream": true
+  }'
 
+
+
+
+# ---------------------------------------------------------start
+$body = @'
+{
+  "model": "gemini-3.1-flash-image",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "生成一个牛年大吉的图片给我，场景是雪地，然后注意要把细节处理好，减少AI生成感觉，然后可以加一些其他小动物在旁边"
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": { "aspectRatio": "16:9", "imageSize": "1K" }
+  },
+  "stream": true
+}
+'@
+
+curl.exe -X POST "http://127.0.0.1:3000/v1/chat/completions" `
+  -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" `
+  -H "Content-Type: application/json" `
+  -d $body
+
+#  ----------------------------------------------------------
 
 
 

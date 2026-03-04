@@ -328,6 +328,12 @@ class ImportTokenItem(BaseModel):
 class ImportTokensRequest(BaseModel):
     """导入Token请求"""
     tokens: List[ImportTokenItem]
+    confirm_replace_by_email: bool = False
+
+
+class InternalTokenExportRequest(BaseModel):
+    """内部Token导出请求"""
+    files: List[str]
 
 
 # ========== Auth Middleware ==========
@@ -452,28 +458,159 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
     return result  # 直接返回数组,兼容前端
 
 
-@router.get("/api/tokens/internal/export")
-async def export_internal_tokens(token: str = Depends(verify_admin_token)):
-    """导出 tmp/Token 下所有 JSON 为 zip 压缩包。"""
-    repo_root = Path(__file__).resolve().parents[2]
-    token_dir = repo_root / "tmp" / "Token"
+def _normalize_internal_token_email_from_name(file_name: str) -> str:
+    """从文件名推断邮箱标识：foo_at_bar.com_123456.json -> foo@bar.com"""
+    stem = Path(file_name).stem
+    stem = re.sub(r"_\d{6,}$", "", stem)
+    return stem.replace("_at_", "@")
 
-    if not token_dir.exists() or not token_dir.is_dir():
-        raise HTTPException(status_code=404, detail="tmp/Token 目录不存在")
 
+def _scan_internal_token_files(token_dir: Path) -> List[Dict[str, Any]]:
+    """扫描 tmp/Token 下 JSON 文件并标记每个邮箱的最新文件。"""
     json_files = sorted(token_dir.glob("*.json"))
     if not json_files:
         raise HTTPException(status_code=404, detail="tmp/Token 下没有可导出的 JSON 文件")
 
+    file_items: List[Dict[str, Any]] = []
+    latest_by_email: Dict[str, Dict[str, Any]] = {}
+
+    for file_path in json_files:
+        stat = file_path.stat()
+        email = _normalize_internal_token_email_from_name(file_path.name)
+        item = {
+            "name": file_path.name,
+            "email": email,
+            "size": int(stat.st_size),
+            "mtime_ts": float(stat.st_mtime),
+            "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "is_latest_for_email": False,
+        }
+        file_items.append(item)
+
+        current_latest = latest_by_email.get(email)
+        if (
+            current_latest is None
+            or item["mtime_ts"] > current_latest["mtime_ts"]
+            or (
+                item["mtime_ts"] == current_latest["mtime_ts"]
+                and str(item["name"]) > str(current_latest["name"])
+            )
+        ):
+            latest_by_email[email] = item
+
+    latest_names = {v["name"] for v in latest_by_email.values()}
+    for item in file_items:
+        item["is_latest_for_email"] = item["name"] in latest_names
+        item["default_selected"] = item["is_latest_for_email"]
+
+    # 展示顺序：邮箱升序，邮箱内按修改时间降序
+    file_items.sort(key=lambda x: (str(x["email"]).lower(), -float(x["mtime_ts"]), str(x["name"]).lower()))
+    return file_items
+
+
+def _build_internal_export_zip_response(
+    token_dir: Path,
+    selected_names: List[str],
+    filename_prefix: str = "internal_tokens",
+) -> StreamingResponse:
+    """按指定文件名打包导出 zip。"""
+    available_map = {p.name: p for p in token_dir.glob("*.json")}
+    normalized_selected: List[str] = []
+    seen = set()
+    for name in selected_names:
+        n = str(name or "").strip()
+        if not n or n in seen:
+            continue
+        normalized_selected.append(n)
+        seen.add(n)
+
+    if not normalized_selected:
+        raise HTTPException(status_code=400, detail="未选择任何可导出的 JSON 文件")
+
+    invalid_names = [n for n in normalized_selected if n not in available_map]
+    if invalid_names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"存在无效文件: {', '.join(invalid_names[:5])}",
+        )
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_path in json_files:
+        for file_name in normalized_selected:
+            file_path = available_map[file_name]
             zf.write(file_path, arcname=file_path.name)
     zip_buffer.seek(0)
 
-    filename = f"internal_tokens_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
+
+
+@router.get("/api/tokens/internal/files")
+async def list_internal_token_files(token: str = Depends(verify_admin_token)):
+    """列出 tmp/Token 下可导出的 JSON 文件，并标记每个邮箱最新文件。"""
+    _ = token
+    repo_root = Path(__file__).resolve().parents[2]
+    token_dir = repo_root / "tmp" / "Token"
+    if not token_dir.exists() or not token_dir.is_dir():
+        file_items = []
+    else:
+        try:
+            file_items = _scan_internal_token_files(token_dir)
+        except HTTPException as e:
+            if e.status_code == 404:
+                file_items = []
+            else:
+                raise
+
+    default_selected_names = [f["name"] for f in file_items if f.get("default_selected")]
+    unique_emails = len({str(f.get("email") or "").strip().lower() for f in file_items})
+
+    return {
+        "success": True,
+        "token_dir": "tmp/Token",
+        "total_files": len(file_items),
+        "unique_emails": unique_emails,
+        "default_selected_count": len(default_selected_names),
+        "files": file_items,
+    }
+
+
+@router.get("/api/tokens/internal/export")
+async def export_internal_tokens(token: str = Depends(verify_admin_token)):
+    """导出 tmp/Token 去重后的默认文件（每个邮箱仅最新文件）。"""
+    _ = token
+    repo_root = Path(__file__).resolve().parents[2]
+    token_dir = repo_root / "tmp" / "Token"
+    if not token_dir.exists() or not token_dir.is_dir():
+        raise HTTPException(status_code=404, detail="tmp/Token 目录不存在")
+
+    file_items = _scan_internal_token_files(token_dir)
+    default_selected_names = [f["name"] for f in file_items if f.get("default_selected")]
+    return _build_internal_export_zip_response(
+        token_dir=token_dir,
+        selected_names=default_selected_names,
+        filename_prefix="internal_tokens",
+    )
+
+
+@router.post("/api/tokens/internal/export")
+async def export_internal_tokens_selected(
+    request: InternalTokenExportRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """按勾选文件导出 tmp/Token JSON 压缩包。"""
+    _ = token
+    repo_root = Path(__file__).resolve().parents[2]
+    token_dir = repo_root / "tmp" / "Token"
+    if not token_dir.exists() or not token_dir.is_dir():
+        raise HTTPException(status_code=404, detail="tmp/Token 目录不存在")
+
+    return _build_internal_export_zip_response(
+        token_dir=token_dir,
+        selected_names=request.files or [],
+        filename_prefix="internal_tokens_selected",
+    )
 
 
 @router.post("/api/tokens")
@@ -736,7 +873,15 @@ async def import_tokens(
 
     added = 0
     updated = 0
+    skipped = 0
     errors = []
+    existing_by_email = {}
+
+    existing_tokens = await token_manager.get_all_tokens()
+    for token_item in existing_tokens:
+        email_key = str(token_item.email or "").strip().lower()
+        if email_key and email_key not in existing_by_email:
+            existing_by_email[email_key] = token_item
 
     for idx, item in enumerate(request.tokens):
         try:
@@ -757,6 +902,11 @@ async def import_tokens(
                     errors.append(f"第{idx+1}项: 无法获取邮箱信息")
                     continue
 
+                email_key = str(email).strip().lower()
+                if not email_key:
+                    errors.append(f"第{idx+1}项: 邮箱为空")
+                    continue
+
                 # 解析过期时间
                 at_expires = None
                 is_expired = False
@@ -770,10 +920,13 @@ async def import_tokens(
                         pass
 
                 # 使用邮箱检查是否已存在
-                existing_tokens = await token_manager.get_all_tokens()
-                existing = next((t for t in existing_tokens if t.email == email), None)
+                existing = existing_by_email.get(email_key)
 
                 if existing:
+                    if not request.confirm_replace_by_email:
+                        skipped += 1
+                        continue
+
                     # 更新现有Token
                     await token_manager.update_token(
                         token_id=existing.id,
@@ -787,6 +940,15 @@ async def import_tokens(
                         image_concurrency=item.image_concurrency,
                         video_concurrency=item.video_concurrency
                     )
+                    if item.is_active:
+                        await token_manager.db.update_token(
+                            existing.id,
+                            is_active=True,
+                            ban_reason=None,
+                            banned_at=None
+                        )
+                    else:
+                        await token_manager.disable_token(existing.id)
                     # 如果过期则禁用
                     if is_expired:
                         await token_manager.disable_token(existing.id)
@@ -802,10 +964,13 @@ async def import_tokens(
                         image_concurrency=item.image_concurrency,
                         video_concurrency=item.video_concurrency
                     )
+                    if not item.is_active:
+                        await token_manager.disable_token(new_token.id)
                     # 如果过期则禁用
                     if is_expired:
                         await token_manager.disable_token(new_token.id)
                     added += 1
+                    existing_by_email[email_key] = new_token
 
             except Exception as e:
                 errors.append(f"第{idx+1}项: {str(e)}")
@@ -817,8 +982,12 @@ async def import_tokens(
         "success": True,
         "added": added,
         "updated": updated,
+        "skipped": skipped,
         "errors": errors if errors else None,
-        "message": f"导入完成: 新增 {added} 个, 更新 {updated} 个" + (f", {len(errors)} 个失败" if errors else "")
+        "message": (
+            f"导入完成: 新增 {added} 个, 更新 {updated} 个, 跳过 {skipped} 个"
+            + (f", {len(errors)} 个失败" if errors else "")
+        )
     }
 
 
@@ -1142,6 +1311,39 @@ async def get_logs(
     } for log in logs]
 
 
+@router.get("/api/docs/readme")
+async def get_readme_document(token: str = Depends(verify_admin_token)):
+    """Get README markdown for management panel preview."""
+    _ = token
+    project_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        project_root / "docs" / "README.md",
+        project_root / "README.md",
+    ]
+
+    for file_path in candidates:
+        if not file_path.exists() or not file_path.is_file():
+            continue
+        try:
+            markdown = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            markdown = file_path.read_text(encoding="utf-8-sig")
+
+        try:
+            rel_path = str(file_path.relative_to(project_root)).replace("\\", "/")
+        except Exception:
+            rel_path = file_path.name
+
+        return {
+            "success": True,
+            "path": rel_path,
+            "updated_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
+            "markdown": markdown,
+        }
+
+    raise HTTPException(status_code=404, detail="README.md not found")
+
+
 @router.delete("/api/logs")
 async def clear_logs(token: str = Depends(verify_admin_token)):
     """Clear all logs"""
@@ -1273,9 +1475,18 @@ async def update_token_refresh_enabled(
 
     # Cookie失效触发账号池自动登录开关
     if "reauth_cookie_invalid_auto_login_enabled" in request:
-        config.set_reauth_cookie_invalid_auto_login_enabled(
-            bool(request.get("reauth_cookie_invalid_auto_login_enabled"))
+        requested_reauth_auto_login_enabled = bool(
+            request.get("reauth_cookie_invalid_auto_login_enabled")
         )
+        try:
+            config.update_flow_switches(
+                reauth_cookie_invalid_auto_login_enabled=requested_reauth_auto_login_enabled
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"保存 Cookie失效自动登录配置失败: {str(e)}",
+            )
 
     at_msg = "AT自动刷新固定启用"
     if requested_at_enabled is False:

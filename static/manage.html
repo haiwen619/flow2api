@@ -6,6 +6,8 @@
     <title>管理控制台 - Flow2API</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
     <style>
       @keyframes slide-up {
         from {
@@ -107,6 +109,87 @@
         );
         pointer-events: none;
       }
+
+      .readme-markdown {
+        line-height: 1.7;
+        color: hsl(0 0% 12%);
+      }
+
+      .readme-markdown h1,
+      .readme-markdown h2,
+      .readme-markdown h3,
+      .readme-markdown h4 {
+        font-weight: 700;
+        margin-top: 1.25rem;
+        margin-bottom: 0.625rem;
+      }
+
+      .readme-markdown h1 {
+        font-size: 1.5rem;
+      }
+
+      .readme-markdown h2 {
+        font-size: 1.25rem;
+      }
+
+      .readme-markdown h3 {
+        font-size: 1.1rem;
+      }
+
+      .readme-markdown p,
+      .readme-markdown ul,
+      .readme-markdown ol {
+        margin: 0.625rem 0;
+      }
+
+      .readme-markdown ul,
+      .readme-markdown ol {
+        padding-left: 1.25rem;
+      }
+
+      .readme-markdown code {
+        background: hsl(0 0% 96%);
+        padding: 0.1rem 0.3rem;
+        border-radius: 0.25rem;
+        font-size: 0.9em;
+      }
+
+      .readme-markdown pre {
+        background: hsl(0 0% 97%);
+        border: 1px solid hsl(0 0% 90%);
+        border-radius: 0.5rem;
+        padding: 0.75rem;
+        overflow-x: auto;
+      }
+
+      .readme-markdown pre code {
+        background: transparent;
+        padding: 0;
+      }
+
+      .readme-markdown table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.75rem 0;
+      }
+
+      .readme-markdown th,
+      .readme-markdown td {
+        border: 1px solid hsl(0 0% 89%);
+        padding: 0.45rem 0.55rem;
+      }
+
+      .readme-markdown blockquote {
+        border-left: 3px solid hsl(0 0% 84%);
+        padding-left: 0.75rem;
+        color: hsl(0 0% 35%);
+        margin: 0.75rem 0;
+      }
+
+      .readme-markdown a {
+        color: rgb(37 99 235);
+        text-decoration: underline;
+      }
     </style>
     <script>
       tailwind.config = {
@@ -148,6 +231,24 @@
           <span class="font-bold text-xl">Flow2API</span>
         </div>
         <div class="flex flex-1 items-center justify-end gap-3">
+          <button
+            onclick="openReadmeModal()"
+            class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1"
+            title="查看 README 说明文档"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2z" />
+            </svg>
+            说明文档
+          </button>
           <a
             href="https://github.com/TheSmallHanCat/flow2api"
             target="_blank"
@@ -294,7 +395,7 @@
                   <div
                     class="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
                   >
-                    Token距离过期<1h时自动使用ST刷新AT
+                    Token距离过期<随机2-4小时时自动使用ST刷新AT
                     <div
                       class="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-900"
                     ></div>
@@ -381,44 +482,6 @@
                 <span class="text-sm font-medium">导出</span>
               </button>
               <button
-                onclick="exportInternalTokens()"
-                class="inline-flex items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 h-8 px-3"
-                title="导出 tmp/Token 下全部内部Token压缩包"
-              >
-                <svg
-                  class="h-4 w-4 mr-2"
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                <span class="text-sm font-medium">导出内部Token</span>
-              </button>
-              <button
-                onclick="openBatchImportModal()"
-                class="inline-flex items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-700 h-8 px-3"
-                title="批量导入内部Token(JSON/ZIP)"
-              >
-                <svg
-                  class="h-4 w-4 mr-2"
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                <span class="text-sm font-medium">批量导入</span>
-              </button>
-              <button
                 onclick="openImportModal()"
                 class="inline-flex items-center justify-center rounded-md bg-green-600 text-white hover:bg-green-700 h-8 px-3"
                 title="导入Token"
@@ -454,6 +517,54 @@
                 </svg>
                 <span class="text-sm font-medium">新增</span>
               </button>
+              <div
+                class="inline-flex items-center gap-2 ml-2 pl-3 border-l border-amber-300/80"
+              >
+                <span
+                  class="inline-flex items-center rounded-md h-7 px-2 text-xs font-semibold bg-amber-100 text-amber-800"
+                  title="仅内部使用"
+                >
+                  内部使用
+                </span>
+                <button
+                  onclick="openInternalExportModal()"
+                  class="inline-flex items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 h-8 px-3"
+                  title="选择并导出内部Token压缩包"
+                >
+                  <svg
+                    class="h-4 w-4 mr-2"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  <span class="text-sm font-medium">导出内部Token</span>
+                </button>
+                <button
+                  onclick="openBatchImportModal()"
+                  class="inline-flex items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-700 h-8 px-3"
+                  title="批量导入内部Token(JSON/ZIP)"
+                >
+                  <svg
+                    class="h-4 w-4 mr-2"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  <span class="text-sm font-medium">批量导入</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1524,6 +1635,53 @@
         </div>
       </div>
 
+      <!-- README 文档模态框 -->
+      <div
+        id="readmeModal"
+        class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+        onclick="if(event.target===this) closeReadmeModal()"
+      >
+        <div
+          class="bg-background rounded-lg border border-border w-full max-w-5xl shadow-xl max-h-[85vh] flex flex-col"
+        >
+          <div
+            class="flex items-center justify-between gap-4 p-4 border-b border-border"
+          >
+            <div class="min-w-0">
+              <h3 class="text-lg font-semibold">README 说明文档</h3>
+              <p
+                id="readmeDocMeta"
+                class="text-xs text-muted-foreground mt-1 truncate"
+              >
+                -
+              </p>
+            </div>
+            <button
+              onclick="closeReadmeModal()"
+              class="text-muted-foreground hover:text-foreground"
+              title="关闭"
+            >
+              <svg
+                class="h-3.5 w-3.5"
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div class="p-5 overflow-y-auto">
+            <div id="readmeDocContent" class="text-sm">
+              <div class="text-muted-foreground">加载中...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 页脚 -->
       <footer
         class="mt-12 pt-6 border-t border-border text-center text-xs text-muted-foreground"
@@ -2013,9 +2171,21 @@
             class="rounded-md bg-blue-50 dark:bg-blue-900/20 p-3 border border-blue-200 dark:border-blue-800"
           >
             <p class="text-xs text-blue-800 dark:text-blue-200">
-              <strong>说明：</strong>如果邮箱存在则会覆盖更新，不存在则会新增
+              <strong>说明：</strong>勾选确认后，导入会按邮箱覆盖现有 Token；未勾选不会覆盖
             </p>
           </div>
+          <label
+            class="flex items-start gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 p-3 border border-amber-200 dark:border-amber-800 cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              id="importConfirmReplace"
+              class="mt-0.5 h-4 w-4 rounded border-input"
+            />
+            <span class="text-xs text-amber-800 dark:text-amber-200">
+              我确认导入文件中的 Token 是最新可用数据，并同意按邮箱替换本地已有 Token
+            </span>
+          </label>
         </div>
         <div
           class="flex items-center justify-end gap-3 p-5 border-t border-border"
@@ -2151,12 +2321,139 @@
       </div>
     </div>
 
+    <!-- 内部Token导出选择模态框 -->
+    <div
+      id="internalExportModal"
+      class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+    >
+      <div
+        class="bg-background rounded-lg border border-border w-full max-w-5xl shadow-xl max-h-[85vh] flex flex-col"
+      >
+        <div
+          class="flex items-center justify-between gap-3 p-5 border-b border-border"
+        >
+          <h3 class="text-lg font-semibold">导出内部Token</h3>
+          <button
+            onclick="closeInternalExportModal()"
+            class="text-muted-foreground hover:text-foreground"
+            title="关闭"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-5 space-y-4 overflow-y-auto">
+          <div
+            class="flex flex-wrap items-center gap-2 rounded-md bg-indigo-50/70 border border-indigo-200 p-3"
+          >
+            <span id="internalExportSummary" class="text-sm text-indigo-900"
+              >加载中...</span
+            >
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              onclick="selectInternalExportFiles('latest')"
+              class="inline-flex items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 h-8 px-3 text-sm"
+            >
+              仅选每邮箱最新
+            </button>
+            <button
+              onclick="selectInternalExportFiles('all')"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm"
+            >
+              全选
+            </button>
+            <button
+              onclick="selectInternalExportFiles('none')"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm"
+            >
+              清空选择
+            </button>
+          </div>
+          <div class="rounded-md border border-border overflow-hidden">
+            <div class="max-h-[48vh] overflow-y-auto overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-muted/30">
+                  <tr class="border-b border-border">
+                    <th class="px-3 py-2 text-left font-medium">选择</th>
+                    <th class="px-3 py-2 text-left font-medium">邮箱</th>
+                    <th class="px-3 py-2 text-left font-medium">文件名</th>
+                    <th class="px-3 py-2 text-left font-medium">修改时间</th>
+                    <th class="px-3 py-2 text-left font-medium">大小</th>
+                    <th class="px-3 py-2 text-left font-medium">状态</th>
+                  </tr>
+                </thead>
+                <tbody id="internalExportTableBody"></tbody>
+              </table>
+            </div>
+            <div
+              id="internalExportEmpty"
+              class="hidden p-6 text-sm text-muted-foreground"
+            >
+              没有可导出的内部Token文件
+            </div>
+          </div>
+        </div>
+        <div
+          class="flex items-center justify-end gap-3 p-5 border-t border-border"
+        >
+          <button
+            onclick="closeInternalExportModal()"
+            class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5"
+          >
+            取消
+          </button>
+          <button
+            id="internalExportBtn"
+            onclick="submitInternalExportSelection()"
+            class="inline-flex items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 h-9 px-5"
+          >
+            <span id="internalExportBtnText">导出选中项</span>
+            <svg
+              id="internalExportBtnSpinner"
+              class="hidden animate-spin h-4 w-4 ml-2"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <script>
       let allTokens = [];
       let batchImportSelectedFile = null;
+      let internalExportFiles = [];
+      let internalExportMeta = {};
+      let internalExportSelectedNames = new Set();
       let cookieRefreshTicker = null;
       let refreshRecordMap = {};
       let autoLoginRecoveryWatchers = {};
+      let readmeDocCache = null;
       const $ = (id) => document.getElementById(id),
         checkAuth = () => {
           const t = localStorage.getItem("adminToken");
@@ -2240,7 +2537,29 @@
             return `<span class="text-orange-600" title="${dateStr} ${timeStr}">${days}天</span>`;
           return `<span class="text-muted-foreground" title="${dateStr} ${timeStr}">${days}天</span>`;
         },
-        getCookieRefreshRemaining = (exp) => {
+        getAutoRefreshAdvanceSeconds = (tokenId, exp) => {
+          const minSeconds = 2 * 3600;
+          const maxSeconds = 4 * 3600;
+          const span = maxSeconds - minSeconds;
+
+          let expSeed = 0;
+          if (exp) {
+            const d = new Date(exp);
+            if (!Number.isNaN(d.getTime())) {
+              expSeed = Math.floor(d.getTime() / 1000);
+            }
+          }
+
+          const idNum = Number.parseInt(String(tokenId || "0"), 10);
+          const safeId = Number.isNaN(idNum) ? 0 : idNum;
+          const seedText = `${safeId}|${expSeed}`;
+          let hashed = 0;
+          for (let i = 0; i < seedText.length; i += 1) {
+            hashed = (hashed * 131 + seedText.charCodeAt(i)) % 2147483647;
+          }
+          return minSeconds + (hashed % (span + 1));
+        },
+        getCookieRefreshRemaining = (tokenId, exp) => {
           if (!exp) {
             return {
               text: "未知",
@@ -2257,7 +2576,9 @@
             };
           }
 
-          const targetMs = expDate.getTime() - 3600 * 1000;
+          const advanceSeconds = getAutoRefreshAdvanceSeconds(tokenId, exp);
+          const advanceHoursText = (advanceSeconds / 3600).toFixed(2);
+          const targetMs = expDate.getTime() - advanceSeconds * 1000;
           const diffMs = targetMs - Date.now();
           const targetTimeText = new Date(targetMs)
             .toLocaleString("zh-CN", {
@@ -2283,7 +2604,7 @@
             return {
               text: "应刷新",
               className: "text-red-600 font-medium",
-              title: `已到刷新窗口（目标时间: ${targetTimeText}，AT过期前1小时）`,
+              title: `已到刷新窗口（目标时间: ${targetTimeText}，AT过期前随机2-4小时，当前阈值${advanceHoursText}小时）`,
             };
           }
 
@@ -2314,7 +2635,7 @@
           return {
             text,
             className,
-            title: `预计刷新时间: ${targetTimeText}（AT过期前1小时）`,
+            title: `预计刷新时间: ${targetTimeText}（AT过期前随机2-4小时，当前阈值${advanceHoursText}小时）`,
           };
         },
         escapeHtml = (text) =>
@@ -2324,17 +2645,21 @@
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;"),
-        renderCookieRefreshRemaining = (exp) => {
-          const item = getCookieRefreshRemaining(exp);
+        renderCookieRefreshRemaining = (tokenId, exp) => {
+          const item = getCookieRefreshRemaining(tokenId, exp);
           const expText = exp ? String(exp) : "";
-          return `<span class="cookie-refresh-countdown ${item.className}" data-at-expires="${escapeHtml(expText)}" title="${escapeHtml(item.title)}">${escapeHtml(item.text)}</span>`;
+          const tokenIdText = tokenId !== undefined && tokenId !== null
+            ? String(tokenId)
+            : "";
+          return `<span class="cookie-refresh-countdown ${item.className}" data-token-id="${escapeHtml(tokenIdText)}" data-at-expires="${escapeHtml(expText)}" title="${escapeHtml(item.title)}">${escapeHtml(item.text)}</span>`;
         },
         updateCookieRefreshCountdowns = () => {
           document
             .querySelectorAll("#tokenTableBody .cookie-refresh-countdown")
             .forEach((el) => {
+              const tokenId = el.getAttribute("data-token-id") || "0";
               const exp = el.getAttribute("data-at-expires") || "";
-              const item = getCookieRefreshRemaining(exp);
+              const item = getCookieRefreshRemaining(tokenId, exp);
               el.className = `cookie-refresh-countdown ${item.className}`;
               el.textContent = item.text;
               el.title = item.title;
@@ -2474,6 +2799,7 @@
                 : "-";
               const expiryDisplay = formatExpiry(t.at_expires);
               const cookieRefreshRemainingDisplay = renderCookieRefreshRemaining(
+                t.id,
                 t.at_expires
               );
               const refreshRecordDisplay = formatRefreshRecord(t);
@@ -3318,7 +3644,10 @@
 
             const r = await apiRequest("/api/tokens/import", {
               method: "POST",
-              body: JSON.stringify({ tokens: parsed.tokens }),
+              body: JSON.stringify({
+                tokens: parsed.tokens,
+                confirm_replace_by_email: true,
+              }),
             });
             if (!r) return;
             const d = await r.json();
@@ -3326,7 +3655,7 @@
               closeBatchImportModal();
               await refreshTokens();
               showToast(
-                `导入完成: JSON文件${parsed.jsonFileCount}个, 解析${parsed.rawCount}条, 去重后${parsed.tokens.length}条, 新增${d.added || 0}, 更新${d.updated || 0}`,
+                `导入完成: JSON文件${parsed.jsonFileCount}个, 解析${parsed.rawCount}条, 去重后${parsed.tokens.length}条, 新增${d.added || 0}, 更新${d.updated || 0}, 跳过${d.skipped || 0}`,
                 "success",
               );
             } else {
@@ -3346,10 +3675,12 @@
         openImportModal = () => {
           $("importModal").classList.remove("hidden");
           $("importFile").value = "";
+          $("importConfirmReplace").checked = false;
         },
         closeImportModal = () => {
           $("importModal").classList.add("hidden");
           $("importFile").value = "";
+          $("importConfirmReplace").checked = false;
         },
         exportTokens = () => {
           if (allTokens.length === 0) {
@@ -3378,17 +3709,157 @@
           URL.revokeObjectURL(url);
           showToast(`已导出 ${allTokens.length} 个Token`, "success");
         },
-        exportInternalTokens = async () => {
+        formatInternalExportFileSize = (size) => {
+          const v = Number(size || 0);
+          if (!Number.isFinite(v) || v <= 0) return "0 B";
+          if (v < 1024) return `${v} B`;
+          if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+          return `${(v / (1024 * 1024)).toFixed(2)} MB`;
+        },
+        formatInternalExportDateTime = (text) => {
+          if (!text) return "-";
+          const d = new Date(text);
+          if (Number.isNaN(d.getTime())) return String(text);
+          return d.toLocaleString("zh-CN");
+        },
+        updateInternalExportSummary = () => {
+          const total = Number(
+            internalExportMeta.total_files || internalExportFiles.length || 0,
+          );
+          const uniqueEmails =
+            Number(internalExportMeta.unique_emails) ||
+            new Set(
+              internalExportFiles.map((f) =>
+                String(f.email || "").trim().toLowerCase(),
+              ),
+            ).size;
+          const latestCount = internalExportFiles.filter(
+            (f) => f.is_latest_for_email,
+          ).length;
+          const selectedCount = internalExportSelectedNames.size;
+          $("internalExportSummary").textContent = `共 ${total} 个文件（${uniqueEmails} 个邮箱），默认最新 ${latestCount} 个，当前已选 ${selectedCount} 个`;
+        },
+        toggleInternalExportFile = (fileName, checked) => {
+          const n = String(fileName || "").trim();
+          if (!n) return;
+          if (checked) internalExportSelectedNames.add(n);
+          else internalExportSelectedNames.delete(n);
+          updateInternalExportSummary();
+        },
+        renderInternalExportTable = () => {
+          const tb = $("internalExportTableBody");
+          const empty = $("internalExportEmpty");
+          if (!tb || !empty) return;
+
+          if (!internalExportFiles.length) {
+            tb.innerHTML = "";
+            empty.classList.remove("hidden");
+            updateInternalExportSummary();
+            return;
+          }
+
+          empty.classList.add("hidden");
+          tb.innerHTML = internalExportFiles
+            .map((item) => {
+              const checked = internalExportSelectedNames.has(item.name)
+                ? "checked"
+                : "";
+              const statusHtml = item.is_latest_for_email
+                ? '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-emerald-50 text-emerald-700">最新</span>'
+                : '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-slate-100 text-slate-600">旧版本</span>';
+              return `<tr class="border-b border-border/80"><td class="px-3 py-2"><input type="checkbox" class="h-4 w-4 rounded border-input" data-file-name="${escapeHtml(item.name)}" ${checked}></td><td class="px-3 py-2 text-xs">${escapeHtml(item.email || "-")}</td><td class="px-3 py-2 text-xs font-mono">${escapeHtml(item.name || "-")}</td><td class="px-3 py-2 text-xs">${escapeHtml(formatInternalExportDateTime(item.modified_at))}</td><td class="px-3 py-2 text-xs">${escapeHtml(formatInternalExportFileSize(item.size))}</td><td class="px-3 py-2 text-xs">${statusHtml}</td></tr>`;
+            })
+            .join("");
+
+          tb.querySelectorAll("input[data-file-name]").forEach((el) => {
+            el.addEventListener("change", () => {
+              toggleInternalExportFile(
+                el.getAttribute("data-file-name") || "",
+                !!el.checked,
+              );
+            });
+          });
+          updateInternalExportSummary();
+        },
+        selectInternalExportFiles = (mode) => {
+          if (mode === "all") {
+            internalExportSelectedNames = new Set(
+              internalExportFiles.map((f) => String(f.name || "").trim()),
+            );
+          } else if (mode === "latest") {
+            internalExportSelectedNames = new Set(
+              internalExportFiles
+                .filter((f) => f.is_latest_for_email)
+                .map((f) => String(f.name || "").trim()),
+            );
+          } else {
+            internalExportSelectedNames = new Set();
+          }
+          renderInternalExportTable();
+        },
+        closeInternalExportModal = () => {
+          $("internalExportModal").classList.add("hidden");
+        },
+        openInternalExportModal = async () => {
+          $("internalExportModal").classList.remove("hidden");
+          $("internalExportSummary").textContent = "正在加载内部Token文件...";
+          $("internalExportTableBody").innerHTML = "";
+          $("internalExportEmpty").classList.add("hidden");
+          internalExportFiles = [];
+          internalExportMeta = {};
+          internalExportSelectedNames = new Set();
+
+          try {
+            const r = await apiRequest("/api/tokens/internal/files");
+            if (!r) return;
+            const d = await r.json();
+            if (!r.ok || !d.success) {
+              throw new Error(d.detail || d.message || "加载失败");
+            }
+
+            internalExportMeta = d || {};
+            internalExportFiles = Array.isArray(d.files) ? d.files : [];
+            internalExportSelectedNames = new Set(
+              internalExportFiles
+                .filter((f) => f.default_selected)
+                .map((f) => String(f.name || "").trim()),
+            );
+
+            renderInternalExportTable();
+          } catch (e) {
+            $("internalExportTableBody").innerHTML = "";
+            const empty = $("internalExportEmpty");
+            empty.classList.remove("hidden");
+            empty.textContent = `加载失败：${e.message || "未知错误"}`;
+            showToast("加载内部Token列表失败: " + (e.message || "未知错误"), "error");
+            updateInternalExportSummary();
+          }
+        },
+        submitInternalExportSelection = async () => {
+          const selectedFiles = Array.from(internalExportSelectedNames);
+          if (selectedFiles.length === 0) {
+            showToast("请至少选择一个文件", "error");
+            return;
+          }
+
+          const btn = $("internalExportBtn"),
+            btnText = $("internalExportBtnText"),
+            btnSpinner = $("internalExportBtnSpinner");
+          btn.disabled = true;
+          btnText.textContent = "导出中...";
+          btnSpinner.classList.remove("hidden");
+
           try {
             const t = checkAuth();
             if (!t) return;
 
-            showToast("正在打包内部Token...", "info");
             const r = await fetch("/api/tokens/internal/export", {
-              method: "GET",
+              method: "POST",
               headers: {
                 Authorization: `Bearer ${t}`,
+                "Content-Type": "application/json",
               },
+              body: JSON.stringify({ files: selectedFiles }),
             });
 
             if (r.status === 401) {
@@ -3429,15 +3900,29 @@
             link.click();
             document.body.removeChild(link);
             URL.revokeObjectURL(url);
-            showToast("内部Token导出成功", "success");
+            closeInternalExportModal();
+            showToast(`内部Token导出成功（${selectedFiles.length} 个文件）`, "success");
           } catch (e) {
             showToast("导出失败: " + e.message, "error");
+          } finally {
+            btn.disabled = false;
+            btnText.textContent = "导出选中项";
+            btnSpinner.classList.add("hidden");
           }
         },
+        exportInternalTokens = async () => openInternalExportModal(),
         submitImportTokens = async () => {
           const fileInput = $("importFile");
+          const confirmReplaceEl = $("importConfirmReplace");
+          const confirmReplace = !!(
+            confirmReplaceEl && confirmReplaceEl.checked
+          );
           if (!fileInput.files || fileInput.files.length === 0) {
             showToast("请选择文件", "error");
+            return;
+          }
+          if (!confirmReplace) {
+            showToast("请先确认按邮箱替换 Token", "error");
             return;
           }
           const file = fileInput.files[0];
@@ -3465,7 +3950,10 @@
             try {
               const r = await apiRequest("/api/tokens/import", {
                 method: "POST",
-                body: JSON.stringify({ tokens: importData }),
+                body: JSON.stringify({
+                  tokens: importData,
+                  confirm_replace_by_email: confirmReplace,
+                }),
               });
               if (!r) {
                 btn.disabled = false;
@@ -3477,7 +3965,7 @@
               if (d.success) {
                 closeImportModal();
                 await refreshTokens();
-                const msg = `导入成功！新增: ${d.added || 0}, 更新: ${d.updated || 0}`;
+                const msg = `导入成功！新增: ${d.added || 0}, 更新: ${d.updated || 0}, 跳过: ${d.skipped || 0}`;
                 showToast(msg, "success");
               } else {
                 showToast(
@@ -4405,6 +4893,81 @@
         },
         closeRefreshRecordModal = () => {
           $("refreshRecordModal").classList.add("hidden");
+        },
+        renderReadmeMarkdown = (markdownText) => {
+          const rawText = String(markdownText || "");
+          if (!rawText) {
+            return `<div class="text-muted-foreground">文档内容为空</div>`;
+          }
+
+          if (!window.marked || typeof window.marked.parse !== "function") {
+            return `<pre class="rounded-md border border-border p-3 bg-muted/30 text-xs whitespace-pre-wrap break-words">${escapeHtml(rawText)}</pre>`;
+          }
+
+          window.marked.setOptions({
+            gfm: true,
+            breaks: true,
+          });
+
+          let html = window.marked.parse(rawText);
+          if (window.DOMPurify && typeof window.DOMPurify.sanitize === "function") {
+            html = window.DOMPurify.sanitize(html);
+          }
+          return `<article class="readme-markdown">${html}</article>`;
+        },
+        renderReadmeDoc = (doc) => {
+          const path = String(doc.path || "README.md");
+          const updatedAt = doc.updated_at
+            ? new Date(doc.updated_at).toLocaleString("zh-CN")
+            : "-";
+          $("readmeDocMeta").textContent = `来源: ${path} | 更新: ${updatedAt}`;
+          $("readmeDocContent").innerHTML = renderReadmeMarkdown(doc.markdown || "");
+          $("readmeDocContent")
+            .querySelectorAll("a")
+            .forEach((linkEl) => {
+              linkEl.setAttribute("target", "_blank");
+              linkEl.setAttribute("rel", "noopener noreferrer");
+            });
+        },
+        loadReadmeDoc = async (forceReload = false) => {
+          if (!forceReload && readmeDocCache) {
+            renderReadmeDoc(readmeDocCache);
+            return;
+          }
+
+          $("readmeDocMeta").textContent = "加载中...";
+          $("readmeDocContent").innerHTML =
+            '<div class="text-muted-foreground">正在加载 README 文档...</div>';
+
+          const r = await apiRequest("/api/docs/readme");
+          if (!r) return;
+
+          let payload = {};
+          try {
+            payload = await r.json();
+          } catch (e) {
+            throw new Error("README 响应解析失败");
+          }
+
+          if (!r.ok || !payload.success) {
+            throw new Error(payload.detail || payload.message || "README 加载失败");
+          }
+
+          readmeDocCache = payload;
+          renderReadmeDoc(payload);
+        },
+        openReadmeModal = async () => {
+          $("readmeModal").classList.remove("hidden");
+          try {
+            await loadReadmeDoc(false);
+          } catch (e) {
+            $("readmeDocMeta").textContent = "加载失败";
+            $("readmeDocContent").innerHTML = `<div class="text-red-600 text-sm">README 加载失败：${escapeHtml(e.message || "未知错误")}</div>`;
+            showToast("README 加载失败: " + (e.message || "未知错误"), "error");
+          }
+        },
+        closeReadmeModal = () => {
+          $("readmeModal").classList.add("hidden");
         },
         showLogDetail = (logId) => {
           renderLogDetail(logId);

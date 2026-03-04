@@ -90,6 +90,42 @@ class Config:
             self._config["flow"] = {}
         self._config["flow"]["reauth_cookie_invalid_auto_login_enabled"] = bool(enabled)
 
+    def update_flow_switches(
+        self,
+        *,
+        reauth_cookie_invalid_auto_login_enabled: Optional[bool] = None,
+        enable_reauth_refresh: Optional[bool] = None,
+    ):
+        """Persist mutable flow switches into setting.toml and reload memory config."""
+        if (
+            reauth_cookie_invalid_auto_login_enabled is None
+            and enable_reauth_refresh is None
+        ):
+            return
+
+        content = self._config_path.read_text(encoding="utf-8")
+
+        if reauth_cookie_invalid_auto_login_enabled is not None:
+            content = self._upsert_toml_key_in_section(
+                content=content,
+                section="flow",
+                key="reauth_cookie_invalid_auto_login_enabled",
+                value_literal=(
+                    "true" if bool(reauth_cookie_invalid_auto_login_enabled) else "false"
+                ),
+            )
+
+        if enable_reauth_refresh is not None:
+            content = self._upsert_toml_key_in_section(
+                content=content,
+                section="flow",
+                key="enable_reauth_refresh",
+                value_literal=("true" if bool(enable_reauth_refresh) else "false"),
+            )
+
+        self._config_path.write_text(content, encoding="utf-8")
+        self.reload_config()
+
     @property
     def poll_interval(self) -> float:
         return self._config["flow"]["poll_interval"]
