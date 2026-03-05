@@ -8,6 +8,10 @@ New-NetFirewallRule -DisplayName "Flow2API-6050" -Direction Inbound -Action Allo
 http://23.159.248.139:8000/manage
 jHrrRDxVD5twXN2t
 
+newapi.apishop.cc
+https://newapi.apishop.cc/
+
+
 
 https://docs.cqtai.com/nano%E7%94%9F%E6%88%90/
 

@@ -299,6 +299,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
     let apPage = 1;
     let apTotal = 0;
     let apSearch = '';
+    const apStatusMetaBySafeKey = Object.create(null);
 
     function getAuthToken() {
       const token = localStorage.getItem('gcli2api_auth_token') || localStorage.getItem('adminToken') || '';
@@ -1020,6 +1021,16 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
           const lastValidateAt = formatTs(item.last_validate_at);
           const accountKeyRaw = String(item.account_key || '');
           const safeKey = accountKeyRaw.replace(/[^a-zA-Z0-9_-]/g, '_');
+          apStatusMetaBySafeKey[safeKey] = {
+            accountKey: accountKeyRaw,
+            displayName: String(item.display_name || ''),
+            platform: String(item.platform || ''),
+            lastStatusText: String(persisted.text || ''),
+            lastValidateAt: Number(item.last_validate_at) || null,
+            lastError: String(item.last_validate_error || '').trim(),
+            lastJobId: String(item.last_validate_job_id || '').trim(),
+            lastMessage: String(item.last_validate_msg || '').trim(),
+          };
 
           return `
             <tr class="hover:bg-gray-50/50 transition-colors" data-account-key="${escapeHtml(accountKeyRaw)}" data-safe-key="${escapeHtml(safeKey)}">
@@ -1041,6 +1052,14 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
                   <span class="w-2 h-2 rounded-full ${escapeHtml(persisted.dot)}"></span>
                   <span class="text-sm font-medium">${escapeHtml(persisted.text)}</span>
                 </span>
+                <button
+                  id="apStatusDetailBtn_${escapeHtml(safeKey)}"
+                  class="hidden mt-1 inline-flex items-center gap-1 text-xs text-slate-500 hover:text-blue-600 transition-colors underline underline-offset-2"
+                  type="button"
+                  onclick="openAccountStatusDetailPanel('${escapeHtml(safeKey)}')">
+                  <span class="iconify text-sm" data-icon="material-symbols:info-outline"></span>
+                  <span>详细信息</span>
+                </button>
               </td>
               <td id="apLastValidate_${escapeHtml(safeKey)}" class="px-4 sm:px-6 lg:px-8 py-5 text-sm text-gray-500">${escapeHtml(lastValidateAt)}</td>
               <td class="px-4 sm:px-6 lg:px-8 py-5">
@@ -1071,6 +1090,11 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
             </tr>
           `;
         }).join('');
+        items.forEach((item) => {
+          const accountKeyRaw = String(item.account_key || '');
+          const safeKey = accountKeyRaw.replace(/[^a-zA-Z0-9_-]/g, '_');
+          updateAccountStatusDetailButton(safeKey);
+        });
       } catch (e) {
         tbody.innerHTML = `<tr><td class="px-4 sm:px-6 lg:px-8 py-6 text-sm text-red-500" colspan="5">网络错误: ${escapeHtml(e.message)}</td></tr>`;
         apTotal = 0;
@@ -1193,8 +1217,14 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
     }
 
     function setAccountStatus(safeKey, text, color) {
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      meta.lastStatusText = String(text || '').trim();
+      apStatusMetaBySafeKey[safeKey] = meta;
       const el = document.getElementById(`apStatus_${safeKey}`);
-      if (!el) return;
+      if (!el) {
+        updateAccountStatusDetailButton(safeKey);
+        return;
+      }
       const dot = el.querySelector('span.w-2');
       const label = el.querySelector('span.text-sm');
       if (label) label.innerText = text;
@@ -1209,18 +1239,136 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
             ? 'text-blue-600'
             : 'text-gray-400';
       el.className = 'flex items-center space-x-1.5 ' + cls;
+      updateAccountStatusDetailButton(safeKey);
     }
 
     function setAccountLastValidate(safeKey, ts) {
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      meta.lastValidateAt = Number(ts) || null;
+      apStatusMetaBySafeKey[safeKey] = meta;
       const el = document.getElementById(`apLastValidate_${safeKey}`);
       if (!el) return;
       el.innerText = formatTs(ts);
+    }
+
+    function updateAccountStatusDetailButton(safeKey) {
+      const btn = document.getElementById(`apStatusDetailBtn_${safeKey}`);
+      if (!btn) return;
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      const statusText = String(meta.lastStatusText || getAccountStatusText(safeKey) || '').trim();
+      const hasError = !!String(meta.lastError || '').trim();
+      const shouldShow = statusText.includes('失败') || hasError;
+      btn.classList.toggle('hidden', !shouldShow);
+      btn.disabled = false;
+      if (hasError) {
+        btn.classList.remove('text-slate-400');
+        btn.classList.add('text-slate-500');
+      } else {
+        btn.classList.remove('text-slate-500');
+        btn.classList.add('text-slate-400');
+      }
+    }
+
+    function setAccountValidateError(safeKey, errorText, extra) {
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      meta.lastError = String(errorText || '').trim();
+      if (extra && typeof extra === 'object') {
+        if (typeof extra.jobId !== 'undefined') meta.lastJobId = String(extra.jobId || '').trim();
+        if (typeof extra.message !== 'undefined') meta.lastMessage = String(extra.message || '').trim();
+      }
+      apStatusMetaBySafeKey[safeKey] = meta;
+      updateAccountStatusDetailButton(safeKey);
+    }
+
+    function clearAccountValidateError(safeKey) {
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      meta.lastError = '';
+      apStatusMetaBySafeKey[safeKey] = meta;
+      updateAccountStatusDetailButton(safeKey);
+    }
+
+    function closeAccountStatusDetailPanel() {
+      const panel = document.getElementById('apStatusDetailPanel');
+      if (panel) panel.remove();
+    }
+
+    function openAccountStatusDetailPanel(safeKey) {
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      const statusText = String(meta.lastStatusText || getAccountStatusText(safeKey) || '-').trim() || '-';
+      const title = meta.displayName || meta.accountKey || safeKey;
+      const detail = String(meta.lastError || '').trim() || '暂无详细失败信息（可能是任务刚失败，或后端未返回 error 字段）。';
+      const platform = meta.platform || '-';
+      const accountKey = meta.accountKey || '-';
+      const atText = formatTs(meta.lastValidateAt);
+      const jobId = String(meta.lastJobId || '').trim() || '-';
+      const msg = String(meta.lastMessage || '').trim() || '-';
+
+      closeAccountStatusDetailPanel();
+      const overlay = document.createElement('div');
+      overlay.id = 'apStatusDetailPanel';
+      overlay.className = 'fixed inset-0 z-[210] bg-black/40';
+      overlay.innerHTML = `
+        <div class="absolute inset-y-0 right-0 w-full max-w-xl bg-white shadow-2xl animate-slide-in flex flex-col">
+          <div class="px-6 py-4 border-b border-gray-100 flex items-start justify-between">
+            <div>
+              <h3 class="text-lg font-bold text-slate-800">验证失败详情</h3>
+              <p class="text-xs text-gray-400 mt-1">${escapeHtml(title)}</p>
+            </div>
+            <button class="p-2 hover:bg-gray-100 rounded-lg transition-colors" onclick="closeAccountStatusDetailPanel()">
+              <span class="iconify text-2xl text-gray-400" data-icon="material-symbols:close"></span>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-6 space-y-4">
+            <div class="grid grid-cols-2 gap-3 text-sm">
+              <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <div class="text-xs text-slate-400">状态</div>
+                <div class="mt-1 font-medium text-slate-700">${escapeHtml(statusText)}</div>
+              </div>
+              <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <div class="text-xs text-slate-400">最后验证时间</div>
+                <div class="mt-1 font-medium text-slate-700">${escapeHtml(atText)}</div>
+              </div>
+              <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <div class="text-xs text-slate-400">平台</div>
+                <div class="mt-1 font-medium text-slate-700">${escapeHtml(platform)}</div>
+              </div>
+              <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <div class="text-xs text-slate-400">任务ID</div>
+                <div class="mt-1 font-mono text-xs text-slate-700 break-all">${escapeHtml(jobId)}</div>
+              </div>
+            </div>
+            <div class="rounded-xl border border-red-100 bg-red-50 p-4">
+              <div class="text-xs font-semibold text-red-700 mb-2">失败原因</div>
+              <pre class="text-xs text-red-700 whitespace-pre-wrap break-words leading-5">${escapeHtml(detail)}</pre>
+            </div>
+            <div class="rounded-xl border border-slate-100 bg-slate-50 p-4">
+              <div class="text-xs font-semibold text-slate-500 mb-2">账号标识</div>
+              <div class="text-xs font-mono text-slate-700 break-all">${escapeHtml(accountKey)}</div>
+            </div>
+            <div class="rounded-xl border border-slate-100 bg-slate-50 p-4">
+              <div class="text-xs font-semibold text-slate-500 mb-2">附加消息</div>
+              <div class="text-xs text-slate-700 whitespace-pre-wrap break-words">${escapeHtml(msg)}</div>
+            </div>
+          </div>
+          <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end">
+            <button class="px-4 py-2 rounded-lg border border-gray-200 text-sm text-slate-700 hover:bg-white" onclick="closeAccountStatusDetailPanel()">关闭</button>
+          </div>
+        </div>
+      `;
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeAccountStatusDetailPanel();
+      });
+      document.body.appendChild(overlay);
     }
 
     async function pollValidateJob(jobId, safeKey) {
       const token = getAuthToken();
       if (!token) return;
       const started = Date.now();
+      const meta = apStatusMetaBySafeKey[safeKey] || {};
+      meta.lastJobId = String(jobId || '').trim();
+      apStatusMetaBySafeKey[safeKey] = meta;
 
       while (Date.now() - started < 15 * 60 * 1000) {
         try {
@@ -1230,24 +1378,34 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
           const data = await resp.json();
           if (!resp.ok || !data || !data.success) {
             setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+            setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+            setAccountValidateError(safeKey, data.detail || data.error || '查询任务状态失败', { jobId });
             return;
           }
           const job = data.job || {};
           const st = job.status;
           if (st === 'queued' || st === 'running') {
             setAccountStatus(safeKey, '验证中', 'bg-blue-500');
+            const m = apStatusMetaBySafeKey[safeKey] || {};
+            m.lastMessage = String(job.message || '').trim();
+            apStatusMetaBySafeKey[safeKey] = m;
           } else if (st === 'success') {
             setAccountStatus(safeKey, '验证成功', 'bg-emerald-500');
             setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+            clearAccountValidateError(safeKey);
             return;
           } else {
             setAccountStatus(safeKey, '验证失败', 'bg-red-500');
             setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+            const errMsg = String(job.error || (job.result && job.result.error) || '').trim() || '任务失败（未返回详细错误）';
+            setAccountValidateError(safeKey, errMsg, { jobId, message: job.message || '' });
             if (job.error) showToast(`验证失败: ${job.error}`, 'material-symbols:error');
             return;
           }
         } catch (e) {
           setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+          setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+          setAccountValidateError(safeKey, `网络错误: ${e.message}`, { jobId });
           showToast(`网络错误: ${e.message}`, 'material-symbols:error');
           return;
         }
@@ -1256,6 +1414,8 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       }
 
       setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+      setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+      setAccountValidateError(safeKey, '验证超时：可能卡在验证码/2FA/授权页', { jobId });
       showToast('验证超时：可能卡在验证码/2FA/授权页', 'material-symbols:warning');
     }
 
@@ -1275,6 +1435,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       }
 
       setAccountStatus(safeKey, '验证中', 'bg-blue-500');
+      clearAccountValidateError(safeKey);
       showToast('已提交验证任务（浏览器自动化可能需要一些时间）...', 'material-symbols:shield-sync');
 
       try {
@@ -1285,6 +1446,8 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         const data = await resp.json();
         if (!resp.ok || !data || !data.success || !data.job_id) {
           setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+          setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+          setAccountValidateError(safeKey, data.detail || data.error || '提交验证任务失败');
           showToast(`提交失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
           return;
         }
@@ -1294,6 +1457,8 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         await loadAccountPoolAccounts();
       } catch (e) {
         setAccountStatus(safeKey, '验证失败', 'bg-red-500');
+        setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+        setAccountValidateError(safeKey, `网络错误: ${e.message}`);
         showToast(`网络错误: ${e.message}`, 'material-symbols:error');
       }
     }

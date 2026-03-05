@@ -20,3 +20,7 @@ git checkout main
 git pull --ff-only origin main
 git merge upstream/main
 
+
+待办：多账号同时自动化登录时可能有问题，
+需要考虑多账号同时登录时，如何处理账号切换的问题，比如如何判断当前登录的账号，如何切换账号等。
+

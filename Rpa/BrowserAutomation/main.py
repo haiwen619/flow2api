@@ -1343,6 +1343,80 @@ class AccountInvalidError(RuntimeError):
     """账号在登录阶段被判定为不可用（验证码/手机号验证/风控挑战等）。"""
 
 
+async def _detect_google_password_changed_reason(page) -> Optional[str]:
+    """检测密码页中的“密码已修改”提示。"""
+    markers = [
+        "your password was changed",
+        "password was changed",
+        "password changed",
+        "密码已更改",
+        "密码已被更改",
+        "您的密码已更改",
+    ]
+    selectors = [
+        "div[role='alert']",
+        "span[role='alert']",
+        "div[aria-live='assertive']",
+        "div[aria-live='polite']",
+        "div.o6cuMc",
+        "div.dEOOab",
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            cnt = await loc.count()
+            if cnt <= 0:
+                continue
+            scan_cnt = min(cnt, 5)
+            for i in range(scan_cnt):
+                text = ""
+                try:
+                    text = await loc.nth(i).inner_text(timeout=450)
+                except Exception:
+                    text = await loc.nth(i).text_content(timeout=450)
+                norm = str(text or "").strip().lower()
+                if not norm:
+                    continue
+                if any(m in norm for m in markers):
+                    return str(text or "").strip() or "password was changed"
+        except Exception:
+            continue
+
+    try:
+        body = (await page.locator("body").inner_text(timeout=1000) or "").lower()
+        for m in markers:
+            if m in body:
+                return m
+    except Exception:
+        pass
+    return None
+
+
+async def _raise_if_google_password_changed(
+    page, *, stage: str = "", timeout_ms: int = 4500
+) -> None:
+    """在密码提交后快速检测“密码已修改”提示，命中则直接结束本次任务。"""
+    deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
+    while time.time() < deadline:
+        reason = await _detect_google_password_changed_reason(page)
+        if reason:
+            stage_msg = f"（阶段: {stage}）" if stage else ""
+            raise AccountInvalidError(
+                f"检测到密码已修改，当前密码已失效，终止本次任务：{reason}{stage_msg}"
+            )
+        try:
+            # 已离开 Google 登录域名时，不再继续做该项检测。
+            if "accounts.google.com" not in str(page.url or "").lower():
+                return
+        except Exception:
+            pass
+        try:
+            await page.wait_for_timeout(220)
+        except Exception:
+            pass
+
+
 async def _detect_google_challenge_reason(page) -> Optional[str]:
     """快速检测 Google 登录/授权过程中是否出现挑战页。
 
@@ -1548,6 +1622,9 @@ async def _best_effort_google_login(
                     await page.locator(pwd_sel).first.press("Enter")
                 except Exception:
                     pass
+            await _raise_if_google_password_changed(
+                page, stage="after_click_password_next", timeout_ms=5000
+            )
             await _raise_if_google_challenge(
                 page, stage="after_click_password_next", allow_2fa=True
             )
@@ -1716,6 +1793,73 @@ async def _find_2fa_code_input_selector(
     return None
 
 
+def _seconds_until_next_totp_window(
+    *, window_sec: int = 30, guard_sec: float = 1.0, max_wait_sec: float = 32.0
+) -> float:
+    """计算等待到下一个 TOTP 时间窗的秒数（带保护时间）。"""
+    win = max(5, int(window_sec))
+    remain = float(win) - (time.time() % float(win))
+    wait_s = remain + max(0.0, float(guard_sec))
+    return max(1.0, min(float(max_wait_sec), wait_s))
+
+
+async def _detect_google_2fa_code_error(page) -> Optional[str]:
+    """检测 2FA 提交后的错误提示（如 Wrong code / expired）。"""
+    selectors = [
+        "div[aria-live='assertive']",
+        "div[aria-live='polite']",
+        "div[role='alert']",
+        "span[role='alert']",
+        "div.o6cuMc",
+        "div.dEOOab",
+        "div[jsname='B34EJ']",
+    ]
+    markers = [
+        "wrong code",
+        "incorrect code",
+        "invalid code",
+        "code expired",
+        "expired",
+        "try again",
+        "验证码错误",
+        "验证码无效",
+        "验证码已过期",
+        "代码错误",
+        "代码无效",
+        "请重试",
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            cnt = await loc.count()
+            if cnt <= 0:
+                continue
+            text = ""
+            try:
+                text = await loc.first.inner_text(timeout=600)
+            except Exception:
+                text = await loc.first.text_content(timeout=600)
+            norm = str(text or "").strip().lower()
+            if not norm:
+                continue
+            for m in markers:
+                if m in norm:
+                    return text.strip()
+        except Exception:
+            continue
+
+    # DOM 提示可能短暂闪烁，最后做一次 body 文案兜底。
+    try:
+        body = (await page.locator("body").inner_text(timeout=1200) or "").lower()
+        for m in markers:
+            if m in body:
+                return m
+    except Exception:
+        pass
+    return None
+
+
 async def _quick_try_click_try_another_way(page) -> bool:
     """快速尝试点击 Try another way，避免 2FA 流程前置阻塞。"""
     selectors = [
@@ -1818,9 +1962,11 @@ async def _try_google_2fa_flow(
         _print_and_log("[RPA] 未检测到 2FA 验证码输入框，跳过自动填码", level="warning")
         return
 
+    max_attempts = 4
     last_error: Optional[str] = None
-    for attempt in range(2):
-        _print_and_log(f"[RPA] 2FA 自动填码尝试 {attempt + 1}/2")
+    last_submitted_code: Optional[str] = None
+    for attempt in range(max_attempts):
+        _print_and_log(f"[RPA] 2FA 自动填码尝试 {attempt + 1}/{max_attempts}")
         try:
             code = await asyncio.to_thread(
                 _fetch_2fa_code_from_cn, secret, timeout_sec=15
@@ -1834,6 +1980,24 @@ async def _try_google_2fa_flow(
             _print_and_log(f"[RPA] 2FA 获取 code 失败：{last_error}", level="warning")
             await asyncio.sleep(1.0)
             continue
+        if last_submitted_code and code == last_submitted_code:
+            wait_s = _seconds_until_next_totp_window()
+            _print_and_log(
+                f"[RPA] 本次获取到的 2FA code 与上次相同，等待下个时间窗后重取（{wait_s:.1f}s）"
+            )
+            await asyncio.sleep(wait_s)
+            try:
+                code = await asyncio.to_thread(
+                    _fetch_2fa_code_from_cn, secret, timeout_sec=15
+                )
+            except Exception as e:
+                code = None
+                last_error = str(e)
+            if not code:
+                last_error = last_error or "2fa.cn 未返回有效 code"
+                _print_and_log(f"[RPA] 2FA 获取 code 失败：{last_error}", level="warning")
+                await asyncio.sleep(1.0)
+                continue
 
         ok = await _set_input_value_robust(
             page,
@@ -1881,7 +2045,21 @@ async def _try_google_2fa_flow(
         if not next_code_input:
             _print_and_log("[RPA] 2FA 验证码已提交")
             return
-        last_error = "验证码可能已过期或校验失败"
+        last_submitted_code = code
+        error_hint = await _detect_google_2fa_code_error(page)
+        if error_hint:
+            last_error = f"验证码校验失败：{error_hint}"
+            _print_and_log(
+                f"[RPA] 检测到 2FA 错误提示，准备重试：{error_hint}", level="warning"
+            )
+            wait_s = _seconds_until_next_totp_window()
+            if attempt < (max_attempts - 1):
+                _print_and_log(f"[RPA] 等待下个 2FA 时间窗后重试（{wait_s:.1f}s）")
+                await asyncio.sleep(wait_s)
+        else:
+            last_error = "验证码可能已过期或校验失败"
+            if attempt < (max_attempts - 1):
+                await asyncio.sleep(1.0)
 
     raise RuntimeError(f"2FA 自动验证失败: {last_error or 'unknown error'}")
 
