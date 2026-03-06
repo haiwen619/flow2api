@@ -841,16 +841,30 @@
                   onchange="applyServerModePreset()"
                   class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 >
-                  <option value="server">服务器模式（0.0.0.0）</option>
+                  <option value="server">服务器模式（默认服务器公网IP）</option>
                   <option value="local">本地模式（127.0.0.1）</option>
                 </select>
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">默认服务器公网IP</label>
+                <input
+                  id="cfgServerDefaultPublicIp"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="23.159.248.139"
+                />
+                <p
+                  id="cfgServerDetectedIpHint"
+                  class="text-xs text-muted-foreground mt-1"
+                >
+                  启动时会检测本机公网IP，命中该值时自动按服务器模式运行
+                </p>
               </div>
               <div>
                 <label class="text-sm font-medium mb-2 block">监听地址</label>
                 <input
                   id="cfgServerHost"
                   class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                  placeholder="0.0.0.0 或 127.0.0.1"
+                  placeholder="默认服务器公网IP 或 127.0.0.1"
                 />
               </div>
               <div>
@@ -3736,6 +3750,8 @@
             email: t.email,
             access_token: t.token,
             session_token: t.st || null,
+            cookie: t.cookie || null,
+            cookie_file: t.cookieFile || t.cookie_file || null,
             is_active: t.is_active,
             image_enabled: t.image_enabled !== false,
             video_enabled: t.video_enabled !== false,
@@ -4312,7 +4328,8 @@
           if (mode === "local") {
             $("cfgServerHost").value = "127.0.0.1";
           } else {
-            $("cfgServerHost").value = "0.0.0.0";
+            const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim();
+            $("cfgServerHost").value = defaultPublicIp || "0.0.0.0";
           }
         },
         loadServerConfig = async () => {
@@ -4325,6 +4342,15 @@
             $("cfgServerMode").value = mode === "local" ? "local" : "server";
             $("cfgServerHost").value = d.config.host || "";
             $("cfgServerPort").value = d.config.port || 8000;
+            $("cfgServerDefaultPublicIp").value =
+              d.config.default_public_ip || "23.159.248.139";
+            const detectedIp = String(d.config.detected_public_ip || "").trim();
+            const autoDetected = Boolean(d.config.server_auto_detected);
+            $("cfgServerDetectedIpHint").textContent = detectedIp
+              ? autoDetected
+                ? `当前检测公网IP: ${detectedIp}，已命中默认服务器公网IP并按服务器模式运行`
+                : `当前检测公网IP: ${detectedIp}，未命中默认服务器公网IP`
+              : "启动时会检测本机公网IP，命中该值时自动按服务器模式运行";
             $("cfgRpaBitbrowserIdLocal").value =
               d.config.rpa_test_bitbrowser_id_local ||
               "f1ef6f8ccb6146988c67a63b92a78971";
@@ -4338,6 +4364,7 @@
           const mode = ($("cfgServerMode").value || "server").toLowerCase();
           const host = $("cfgServerHost").value.trim();
           const port = parseInt($("cfgServerPort").value, 10) || 8000;
+          const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim();
           const localBitId = $("cfgRpaBitbrowserIdLocal").value.trim();
           const serverBitId = $("cfgRpaBitbrowserIdServer").value.trim();
 
@@ -4352,6 +4379,7 @@
                 mode: mode,
                 host: host,
                 port: port,
+                default_public_ip: defaultPublicIp || null,
                 rpa_test_bitbrowser_id_local: localBitId || null,
                 rpa_test_bitbrowser_id_server: serverBitId || null,
               }),

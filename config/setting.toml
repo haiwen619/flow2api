@@ -14,6 +14,7 @@ reauth_cookie_invalid_auto_login_enabled = true
 [server]
 host = "127.0.0.1"
 port = 8000
+default_public_ip = "23.159.248.139"
 
 [debug]
 enabled = false

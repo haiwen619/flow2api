@@ -279,6 +279,7 @@ class ServerConfigRequest(BaseModel):
     mode: str  # local | server
     host: Optional[str] = None
     port: Optional[int] = None
+    default_public_ip: Optional[str] = None
     rpa_test_bitbrowser_id_local: Optional[str] = None
     rpa_test_bitbrowser_id_server: Optional[str] = None
 
@@ -1009,7 +1010,11 @@ async def get_server_config(token: str = Depends(verify_admin_token)):
         "config": {
             "mode": config.get_server_mode(),
             "host": config.server_host,
+            "configured_host": config.configured_server_host,
             "port": config.server_port,
+            "default_public_ip": config.default_server_public_ip,
+            "detected_public_ip": config.detected_public_ip,
+            "server_auto_detected": config.server_auto_detected,
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
             "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
@@ -1032,8 +1037,9 @@ async def update_server_config(
         raise HTTPException(status_code=400, detail="mode 必须是 local 或 server")
 
     host = str(request.host or "").strip()
+    default_public_ip = str(request.default_public_ip or "").strip()
     if not host:
-        host = "127.0.0.1" if mode == "local" else "0.0.0.0"
+        host = "127.0.0.1" if mode == "local" else (default_public_ip or config.default_server_public_ip or "0.0.0.0")
     port = request.port if request.port is not None else int(config.server_port)
     local_bit_id = (
         str(request.rpa_test_bitbrowser_id_local).strip()
@@ -1047,7 +1053,11 @@ async def update_server_config(
     )
 
     try:
-        config.update_server_config(host=host, port=port)
+        config.update_server_config(
+            host=host,
+            port=port,
+            default_public_ip=default_public_ip,
+        )
         config.update_rpa_test_bitbrowser_ids(
             local_id=local_bit_id,
             server_id=server_bit_id,
@@ -1063,7 +1073,11 @@ async def update_server_config(
         "config": {
             "mode": config.get_server_mode(),
             "host": config.server_host,
+            "configured_host": config.configured_server_host,
             "port": config.server_port,
+            "default_public_ip": config.default_server_public_ip,
+            "detected_public_ip": config.detected_public_ip,
+            "server_auto_detected": config.server_auto_detected,
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
             "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),

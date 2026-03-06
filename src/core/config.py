@@ -1,6 +1,8 @@
 """Configuration management for Flow2API"""
+import ipaddress
 import tomli
 import re
+from urllib import request as urllib_request
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -12,6 +14,10 @@ class Config:
         self._config = self._load_config()
         self._admin_username: Optional[str] = None
         self._admin_password: Optional[str] = None
+        self._runtime_server_host_override: Optional[str] = None
+        self._runtime_server_mode_override: Optional[str] = None
+        self._detected_public_ip: Optional[str] = None
+        self._server_auto_detected: bool = False
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from setting.toml"""
@@ -136,11 +142,29 @@ class Config:
 
     @property
     def server_host(self) -> str:
+        if self._runtime_server_host_override is not None:
+            return self._runtime_server_host_override
         return self._config["server"]["host"]
 
     @property
     def server_port(self) -> int:
         return self._config["server"]["port"]
+
+    @property
+    def configured_server_host(self) -> str:
+        return str(self._config.get("server", {}).get("host", "") or "").strip()
+
+    @property
+    def default_server_public_ip(self) -> str:
+        return str(self._config.get("server", {}).get("default_public_ip", "") or "").strip()
+
+    @property
+    def detected_public_ip(self) -> str:
+        return str(self._detected_public_ip or "").strip()
+
+    @property
+    def server_auto_detected(self) -> bool:
+        return bool(self._server_auto_detected)
 
     @property
     def debug_enabled(self) -> bool:
@@ -406,8 +430,75 @@ class Config:
 
     def get_server_mode(self) -> str:
         """Infer runtime mode by host value in [server]."""
+        if self._runtime_server_mode_override in {"local", "server"}:
+            return self._runtime_server_mode_override
         host = str(self._config.get("server", {}).get("host", "") or "").strip().lower()
         return "local" if host in {"127.0.0.1", "localhost"} else "server"
+
+    @staticmethod
+    def _normalize_ip_text(value: Optional[str]) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return str(ipaddress.ip_address(text))
+        except Exception:
+            return ""
+
+    def detect_public_ip(self, timeout_seconds: float = 3.0) -> str:
+        providers = [
+            "https://api.ipify.org",
+            "https://api64.ipify.org",
+            "https://ifconfig.me/ip",
+            "https://icanhazip.com",
+        ]
+        headers = {"User-Agent": "Flow2API/1.0"}
+
+        for url in providers:
+            try:
+                req = urllib_request.Request(url, headers=headers, method="GET")
+                with urllib_request.urlopen(req, timeout=timeout_seconds) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace").strip()
+                normalized = self._normalize_ip_text(raw)
+                if normalized:
+                    self._detected_public_ip = normalized
+                    return normalized
+            except Exception:
+                continue
+
+        self._detected_public_ip = ""
+        return ""
+
+    def bootstrap_runtime_server_mode(self) -> Dict[str, Any]:
+        configured_host = self.configured_server_host
+        default_public_ip = self.default_server_public_ip
+        detected_public_ip = self.detect_public_ip()
+
+        self._runtime_server_host_override = None
+        self._runtime_server_mode_override = None
+        self._server_auto_detected = False
+
+        normalized_default = self._normalize_ip_text(default_public_ip)
+        normalized_detected = self._normalize_ip_text(detected_public_ip)
+        matched_server = bool(
+            normalized_default
+            and normalized_detected
+            and normalized_default == normalized_detected
+        )
+
+        if matched_server:
+            self._runtime_server_host_override = normalized_default
+            self._runtime_server_mode_override = "server"
+            self._server_auto_detected = True
+
+        return {
+            "matched_server": matched_server,
+            "configured_host": configured_host,
+            "effective_host": self.server_host,
+            "effective_mode": self.get_server_mode(),
+            "default_public_ip": default_public_ip,
+            "detected_public_ip": detected_public_ip,
+        }
 
     def get_rpa_test_bitbrowser_id_local(self) -> str:
         return str(self._config.get("rpa", {}).get("test_bitbrowser_id_local", "") or "").strip()
@@ -421,8 +512,8 @@ class Config:
             return self.get_rpa_test_bitbrowser_id_local()
         return self.get_rpa_test_bitbrowser_id_server()
 
-    def update_server_config(self, host: str, port: int):
-        """Persist [server].host/port into setting.toml, then reload memory config."""
+    def update_server_config(self, host: str, port: int, default_public_ip: Optional[str] = None):
+        """Persist [server].host/port/default_public_ip into setting.toml, then reload memory config."""
         host_value = str(host or "").strip()
         if not host_value:
             raise ValueError("server host 不能为空")
@@ -434,6 +525,12 @@ class Config:
 
         if port_value < 1 or port_value > 65535:
             raise ValueError("server port 必须在 1-65535 之间")
+
+        default_public_ip_value = str(
+            self.default_server_public_ip if default_public_ip is None else default_public_ip
+        ).strip()
+        if default_public_ip_value and not self._normalize_ip_text(default_public_ip_value):
+            raise ValueError("默认服务器公网IP格式无效")
 
         content = self._config_path.read_text(encoding="utf-8")
         content = self._upsert_toml_key_in_section(
@@ -447,6 +544,12 @@ class Config:
             section="server",
             key="port",
             value_literal=str(port_value),
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="server",
+            key="default_public_ip",
+            value_literal=f"\"{default_public_ip_value}\"",
         )
         self._config_path.write_text(content, encoding="utf-8")
         self.reload_config()
