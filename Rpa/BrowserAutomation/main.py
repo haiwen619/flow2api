@@ -1040,6 +1040,7 @@ async def validate_antigravity_account(
 
             # 进入目标页面后，随机等待一小段时间再继续，避免过快关闭窗口
             try:
+                await _best_effort_google_labs_onboarding_modal(page, timeout_ms=7_000)
                 delay_s = random.uniform(2.0, 6.0)
                 _print_and_log(f"[RPA] 进入目标页后停留 {delay_s:.1f}s 再继续...")
                 await asyncio.sleep(delay_s)
@@ -1652,6 +1653,11 @@ async def _best_effort_google_login(
                     await page.locator(pwd_sel).first.press("Enter")
                 except Exception:
                     pass
+            await _best_effort_google_new_account_notice(
+                page,
+                options=options,
+                timeout_ms=18_000,
+            )
             await _raise_if_google_password_changed(
                 page, stage="after_click_password_next", timeout_ms=5000
             )
@@ -1672,6 +1678,11 @@ async def _best_effort_google_login(
                     twofa_password=(str(twofa_password or "").strip() or ""),
                     options=options,
                 )
+            await _best_effort_google_new_account_notice(
+                page,
+                options=options,
+                timeout_ms=6_000,
+            )
             await _human_delay(options, reason="after_click_password_next")
     except AccountInvalidError:
         raise
@@ -1693,6 +1704,12 @@ async def _best_effort_google_login(
         except Exception:
             # 尾阶段兜底不阻断主流程，但保留日志方便排查。
             _print_and_log_exception("[RPA] 登录尾阶段 2FA 兜底处理失败")
+
+    await _best_effort_google_new_account_notice(
+        page,
+        options=options,
+        timeout_ms=5_000,
+    )
 
     # 登录流程结束前再检查一次（有些风控会在点击 Next 后延迟出现）
     await _raise_if_google_challenge(
@@ -1724,6 +1741,366 @@ async def _wait_for_google_password_step(page, *, timeout_ms: int = 12000) -> bo
             await page.wait_for_timeout(250)
         except Exception:
             pass
+    return False
+
+
+async def _detect_google_new_account_notice(page) -> Optional[dict]:
+    """检测首次登录后的 Google 新账号说明页，并返回命中详情。"""
+    try:
+        raw_url = str(page.url or "").strip()
+    except Exception:
+        raw_url = ""
+    url = raw_url.lower()
+
+    if "accounts.google.com" not in url:
+        return None
+
+    strong_url_markers = [
+        "/speedbump/gaplustos",
+        "/speedbump/gaplustos/",
+    ]
+    for marker in strong_url_markers:
+        if marker in url:
+            return {
+                "reason": "url_marker",
+                "marker": marker,
+                "url": raw_url,
+                "snippet": "",
+            }
+
+    if "/speedbump/" not in url:
+        return None
+
+    selectors = [
+        "h1",
+        "div[role='heading']",
+        "main",
+        "body",
+    ]
+    text_markers = [
+        "welcome to your new account",
+        "google workspace",
+        "other google services",
+        "google cloud privacy notice",
+        "google privacy policy",
+        "welcome to your new google account",
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() <= 0:
+                continue
+            text = ""
+            try:
+                text = await loc.inner_text(timeout=600)
+            except Exception:
+                text = await loc.text_content(timeout=600)
+            norm = str(text or "").strip().lower()
+            if not norm:
+                continue
+            for marker in text_markers:
+                if marker in norm:
+                    snippet = str(text or "").strip().replace("\r", " ").replace("\n", " ")
+                    return {
+                        "reason": f"text_marker:{sel}",
+                        "marker": marker,
+                        "url": raw_url,
+                        "snippet": snippet[:220],
+                    }
+        except Exception:
+            continue
+    return None
+
+
+async def _is_google_new_account_notice_page(page) -> bool:
+    """判断是否处于首次登录后的 Google 新账号说明页。"""
+    return bool(await _detect_google_new_account_notice(page))
+
+
+async def _best_effort_google_new_account_notice(
+    page, *, options: ValidateOptions, timeout_ms: int = 12_000
+) -> bool:
+    """尽力处理首次登录后的新账号说明页，自动点击 `I understand`。"""
+    deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
+    button_selectors = [
+        "button:has-text('I understand')",
+        "button:has-text('Got it')",
+        "button:has-text('Continue')",
+        "button:has-text('知道了')",
+        "button:has-text('我已了解')",
+        "button:has-text('继续')",
+        "input[type='submit'][value='I understand']",
+        "input[type='button'][value='I understand']",
+        "div[role='button']:has-text('I understand')",
+    ]
+    button_markers = [
+        "i understand",
+        "got it",
+        "continue",
+        "知道了",
+        "我已了解",
+        "继续",
+    ]
+    detected_info = None
+    logged_detection = False
+
+    async def _collect_button_labels(limit: int = 8) -> list[str]:
+        labels: list[str] = []
+        try:
+            buttons = page.locator(
+                "button, input[type='submit'], input[type='button'], div[role='button']"
+            )
+            cnt = await buttons.count()
+            for idx in range(min(cnt, limit)):
+                btn = buttons.nth(idx)
+                label = ""
+                try:
+                    label = await btn.inner_text(timeout=180)
+                except Exception:
+                    try:
+                        label = await btn.text_content(timeout=180)
+                    except Exception:
+                        try:
+                            label = await btn.get_attribute("value", timeout=180)
+                        except Exception:
+                            label = ""
+                label = str(label or "").strip().replace("\r", " ").replace("\n", " ")
+                if label:
+                    labels.append(label[:80])
+        except Exception:
+            pass
+        return labels
+
+    while time.time() < deadline:
+        try:
+            detected_info = await _detect_google_new_account_notice(page)
+            if not detected_info:
+                if "accounts.google.com" not in str(page.url or "").lower():
+                    return False
+                await page.wait_for_timeout(220)
+                continue
+            if not logged_detection:
+                _print_and_log(
+                    "[RPA] 检测到首次登录说明页"
+                    f" reason={detected_info.get('reason')} marker={detected_info.get('marker')!r}"
+                    f" url={detected_info.get('url')}"
+                    f" snippet={detected_info.get('snippet')!r}"
+                )
+                logged_detection = True
+        except Exception:
+            pass
+
+        clicked = await _click_first_visible(page, button_selectors, timeout_ms=900)
+        clicked_label = "selector_match" if clicked else ""
+        if not clicked:
+            try:
+                buttons = page.locator("button, input[type='submit'], input[type='button'], div[role='button']")
+                cnt = await buttons.count()
+                for idx in range(min(cnt, 10)):
+                    btn = buttons.nth(idx)
+                    label = ""
+                    try:
+                        label = await btn.inner_text(timeout=250)
+                    except Exception:
+                        try:
+                            label = await btn.text_content(timeout=250)
+                        except Exception:
+                            try:
+                                label = await btn.get_attribute("value", timeout=250)
+                            except Exception:
+                                label = ""
+                    label_norm = str(label or "").strip().lower()
+                    if not label_norm:
+                        continue
+                    if not any(marker in label_norm for marker in button_markers):
+                        continue
+                    try:
+                        await btn.wait_for(state="visible", timeout=500)
+                        await btn.click(timeout=1200)
+                        clicked = True
+                        clicked_label = str(label or "").strip()
+                        break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        if clicked:
+            _print_and_log(
+                "[RPA] 首次登录说明页已处理"
+                f" clicked={clicked_label!r}"
+                f" reason={((detected_info or {}).get('reason'))!r}"
+                f" url={((detected_info or {}).get('url'))!r}"
+            )
+            try:
+                await page.wait_for_timeout(600)
+            except Exception:
+                pass
+            return True
+
+        try:
+            await page.wait_for_timeout(250)
+        except Exception:
+            pass
+
+    button_preview = await _collect_button_labels()
+    _print_and_log(
+        "[RPA] 首次登录说明页处理超时"
+        f" reason={((detected_info or {}).get('reason'))!r}"
+        f" marker={((detected_info or {}).get('marker'))!r}"
+        f" url={((detected_info or {}).get('url'))!r}"
+        f" snippet={((detected_info or {}).get('snippet'))!r}"
+        f" buttons={button_preview!r}",
+        level="warning",
+    )
+    return False
+
+
+async def _detect_google_labs_onboarding_modal(page) -> Optional[dict]:
+    """检测 labs.google/fx 目标页上的引导/营销弹框。"""
+    try:
+        raw_url = str(page.url or "").strip()
+    except Exception:
+        raw_url = ""
+    url = raw_url.lower()
+    if "labs.google/fx/tools/flow" not in url:
+        return None
+
+    container_selectors = [
+        "[role='dialog']",
+        "div[aria-modal='true']",
+        "main",
+        "body",
+    ]
+    text_markers = [
+        "experience and shape ai tools for creativity",
+        "i'd like to receive marketing emails",
+        "i'd like to receive research invitations",
+    ]
+
+    for sel in container_selectors:
+        try:
+            loc = page.locator(sel)
+            cnt = await loc.count()
+            if cnt <= 0:
+                continue
+            for idx in range(min(cnt, 3)):
+                item = loc.nth(idx)
+                try:
+                    if sel in {"[role='dialog']", "div[aria-modal='true']"}:
+                        await item.wait_for(state="visible", timeout=400)
+                except Exception:
+                    continue
+                text = ""
+                try:
+                    text = await item.inner_text(timeout=500)
+                except Exception:
+                    try:
+                        text = await item.text_content(timeout=500)
+                    except Exception:
+                        text = ""
+                norm = str(text or "").strip().lower()
+                if not norm:
+                    continue
+                matched = [marker for marker in text_markers if marker in norm]
+                if not matched:
+                    continue
+                snippet = str(text or "").strip().replace("\r", " ").replace("\n", " ")
+                return {
+                    "reason": f"text_marker:{sel}",
+                    "marker": matched[0],
+                    "url": raw_url,
+                    "snippet": snippet[:220],
+                }
+        except Exception:
+            continue
+    return None
+
+
+async def _best_effort_google_labs_onboarding_modal(
+    page, *, timeout_ms: int = 6_000
+) -> bool:
+    """尽力处理进入 labs.google/fx 后出现的引导/营销弹框。"""
+    deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
+    detected_info = None
+    logged_detection = False
+    next_selectors = [
+        "[role='dialog'] button:has-text('Next')",
+        "div[aria-modal='true'] button:has-text('Next')",
+        "button:has-text('Next')",
+        "div[role='button']:has-text('Next')",
+    ]
+
+    async def _collect_button_labels(limit: int = 8) -> list[str]:
+        labels: list[str] = []
+        try:
+            buttons = page.locator("button, div[role='button']")
+            cnt = await buttons.count()
+            for idx in range(min(cnt, limit)):
+                label = ""
+                btn = buttons.nth(idx)
+                try:
+                    label = await btn.inner_text(timeout=180)
+                except Exception:
+                    try:
+                        label = await btn.text_content(timeout=180)
+                    except Exception:
+                        label = ""
+                label = str(label or "").strip().replace("\r", " ").replace("\n", " ")
+                if label:
+                    labels.append(label[:80])
+        except Exception:
+            pass
+        return labels
+
+    while time.time() < deadline:
+        try:
+            detected_info = await _detect_google_labs_onboarding_modal(page)
+            if not detected_info:
+                await page.wait_for_timeout(220)
+                continue
+            if not logged_detection:
+                _print_and_log(
+                    "[RPA] 检测到目标页引导弹框"
+                    f" reason={detected_info.get('reason')}"
+                    f" marker={detected_info.get('marker')!r}"
+                    f" url={detected_info.get('url')}"
+                    f" snippet={detected_info.get('snippet')!r}"
+                )
+                logged_detection = True
+        except Exception:
+            pass
+
+        clicked = await _click_first_visible(page, next_selectors, timeout_ms=900)
+        if clicked:
+            _print_and_log(
+                "[RPA] 目标页引导弹框已处理 clicked='Next'"
+                f" reason={((detected_info or {}).get('reason'))!r}"
+                f" url={((detected_info or {}).get('url'))!r}"
+            )
+            try:
+                await page.wait_for_timeout(500)
+            except Exception:
+                pass
+            return True
+
+        try:
+            await page.wait_for_timeout(220)
+        except Exception:
+            pass
+
+    if detected_info:
+        button_preview = await _collect_button_labels()
+        _print_and_log(
+            "[RPA] 目标页引导弹框处理超时"
+            f" reason={((detected_info or {}).get('reason'))!r}"
+            f" marker={((detected_info or {}).get('marker'))!r}"
+            f" url={((detected_info or {}).get('url'))!r}"
+            f" snippet={((detected_info or {}).get('snippet'))!r}"
+            f" buttons={button_preview!r}",
+            level="warning",
+        )
     return False
 
 
