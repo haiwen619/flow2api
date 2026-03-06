@@ -1,5 +1,6 @@
 """Admin API routes"""
 from datetime import datetime
+import json
 import io
 from pathlib import Path
 import secrets
@@ -1364,6 +1365,36 @@ async def get_readme_document(token: str = Depends(verify_admin_token)):
         }
 
     raise HTTPException(status_code=404, detail="README.md not found")
+
+
+@router.get("/api/version")
+async def get_project_version(token: str = Depends(verify_admin_token)):
+    """Get project version info from config/version.json."""
+    project_root = Path(__file__).resolve().parents[2]
+    version_path = project_root / "config" / "version.json"
+
+    if not version_path.exists():
+        raise HTTPException(status_code=404, detail="version.json not found")
+
+    try:
+        payload = json.loads(version_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"version.json 解析失败: {str(e)}")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="version.json 格式无效")
+
+    return {
+        "success": True,
+        "version": {
+            "version": str(payload.get("version") or "").strip(),
+            "build": str(payload.get("build") or "").strip(),
+            "release_date": str(payload.get("release_date") or "").strip(),
+            "channel": str(payload.get("channel") or "").strip(),
+            "notes": str(payload.get("notes") or "").strip(),
+            "path": str(version_path.relative_to(project_root)).replace("\\", "/"),
+        },
+    }
 
 
 @router.delete("/api/logs")

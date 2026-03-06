@@ -232,6 +232,14 @@
         </div>
         <div class="flex flex-1 items-center justify-end gap-3">
           <button
+            id="projectVersionBadge"
+            class="inline-flex items-center justify-center rounded-md border border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+            title="项目版本信息"
+            type="button"
+          >
+            版本 --
+          </button>
+          <button
             onclick="openReadmeModal()"
             class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1"
             title="查看 README 说明文档"
@@ -2470,6 +2478,7 @@
       let refreshRecordMap = {};
       let autoLoginRecoveryWatchers = {};
       let readmeDocCache = null;
+      let projectVersionCache = null;
       const $ = (id) => document.getElementById(id),
         checkAuth = () => {
           const t = localStorage.getItem("adminToken");
@@ -2512,6 +2521,52 @@
               (d.today_errors || 0) + "/" + (d.total_errors || 0);
           } catch (e) {
             console.error("加载统计失败:", e);
+          }
+        },
+        renderProjectVersionBadge = (payload) => {
+          const badge = $("projectVersionBadge");
+          if (!badge) return;
+          const versionInfo =
+            payload && typeof payload === "object" ? payload.version || payload : {};
+          const versionText = String(versionInfo.version || "").trim() || "--";
+          const buildText = String(versionInfo.build || "").trim();
+          const releaseDate = String(versionInfo.release_date || "").trim();
+          const channel = String(versionInfo.channel || "").trim();
+          const notes = String(versionInfo.notes || "").trim();
+          const path = String(versionInfo.path || "").trim();
+          badge.textContent = `版本 ${versionText}`;
+          const titleParts = [
+            `版本: ${versionText}`,
+            buildText ? `构建: ${buildText}` : "",
+            releaseDate ? `发布日期: ${releaseDate}` : "",
+            channel ? `通道: ${channel}` : "",
+            path ? `文件: ${path}` : "",
+            notes ? `说明: ${notes}` : "",
+          ].filter(Boolean);
+          badge.title = titleParts.join("\n") || "项目版本信息";
+        },
+        loadProjectVersion = async (forceReload = false) => {
+          if (!forceReload && projectVersionCache) {
+            renderProjectVersionBadge(projectVersionCache);
+            return;
+          }
+          try {
+            const r = await apiRequest("/api/version");
+            if (!r) return;
+            const d = await r.json();
+            if (!r.ok || !d.success || !d.version) {
+              throw new Error(d.detail || d.message || "版本信息加载失败");
+            }
+            projectVersionCache = d;
+            renderProjectVersionBadge(d);
+          } catch (e) {
+            console.error("加载版本信息失败:", e);
+            renderProjectVersionBadge({
+              version: {
+                version: "--",
+                notes: `版本信息加载失败: ${String(e.message || "未知错误")}`,
+              },
+            });
           }
         },
         loadTokens = async () => {
@@ -5247,6 +5302,7 @@
         checkAuth();
         initBatchImportDropZone();
         refreshTokens();
+        loadProjectVersion();
         loadATAutoRefreshConfig();
       });
 
