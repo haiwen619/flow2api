@@ -328,7 +328,8 @@ class TokenManager:
         image_enabled: bool = True,
         video_enabled: bool = True,
         image_concurrency: int = -1,
-        video_concurrency: int = -1
+        video_concurrency: int = -1,
+        captcha_proxy_url: Optional[str] = None
     ) -> Token:
         """Add a new token
 
@@ -343,6 +344,7 @@ class TokenManager:
             video_enabled: 是否启用视频生成
             image_concurrency: 图片并发限制
             video_concurrency: 视频并发限制
+            captcha_proxy_url: token级浏览器打码代理（可选，优先于全局）
 
         Returns:
             Token object
@@ -416,7 +418,8 @@ class TokenManager:
             image_enabled=image_enabled,
             video_enabled=video_enabled,
             image_concurrency=image_concurrency,
-            video_concurrency=video_concurrency
+            video_concurrency=video_concurrency,
+            captcha_proxy_url=captcha_proxy_url
         )
 
         # Step 6: 保存到数据库
@@ -449,7 +452,8 @@ class TokenManager:
         image_enabled: Optional[bool] = None,
         video_enabled: Optional[bool] = None,
         image_concurrency: Optional[int] = None,
-        video_concurrency: Optional[int] = None
+        video_concurrency: Optional[int] = None,
+        captcha_proxy_url: Optional[str] = None
     ):
         """Update token (支持修改project_id和project_name)
 
@@ -481,6 +485,8 @@ class TokenManager:
             update_fields["image_concurrency"] = image_concurrency
         if video_concurrency is not None:
             update_fields["video_concurrency"] = video_concurrency
+        if captcha_proxy_url is not None:
+            update_fields["captcha_proxy_url"] = captcha_proxy_url
 
         # 检查token是否因429被禁用，如果是且未过期，则清空429状态
         token = await self.db.get_token(token_id)
@@ -506,30 +512,18 @@ class TokenManager:
 
     # ========== AT自动刷新逻辑 (核心) ==========
 
-    async def is_at_valid(self, token_id: int) -> bool:
-        """检查AT是否有效,如果无效或即将过期则自动刷新
-
-        Returns:
-            True if AT is valid or refreshed successfully
-            False if AT cannot be refreshed
-        """
-        token = await self.db.get_token(token_id)
-        if not token:
-            return False
-
-        # 如果AT不存在,需要刷新
+    def _should_refresh_at(self, token: Token) -> bool:
+        """根据当前 token 快照判断是否需要刷新 AT。"""
         if not token.at:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT不存在,需要刷新")
             return await self._refresh_at(token_id, refresh_source="AUTO_MISSING_AT")
 
-        # 如果没有过期时间,假设需要刷新
         if not token.at_expires:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT过期时间未知,尝试刷新")
             return await self._refresh_at(token_id, refresh_source="AUTO_NO_EXPIRY")
 
         # 检查是否即将过期（提前窗口随机 2-4 小时）
         now = datetime.now(timezone.utc)
-        # 确保at_expires也是timezone-aware
         if token.at_expires.tzinfo is None:
             at_expires_aware = token.at_expires.replace(tzinfo=timezone.utc)
         else:
@@ -581,8 +575,8 @@ class TokenManager:
                 refresh_source="AUTO_NEAR_EXPIRY",
             )
 
-        # AT有效
-        return True
+        valid_token = await self.ensure_valid_token(token_obj)
+        return valid_token is not None
 
 
     async def _refresh_at(
@@ -1418,11 +1412,9 @@ class TokenManager:
             return 0
 
         # 确保AT有效
-        if not await self.is_at_valid(token_id):
+        token = await self.ensure_valid_token(token)
+        if not token:
             return 0
-
-        # 重新获取token (AT可能已刷新)
-        token = await self.db.get_token(token_id)
 
         try:
             result = await self.flow_client.get_credits(token.at)

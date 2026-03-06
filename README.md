@@ -330,6 +330,8 @@ curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
 
 - 由于Flow增加了额外的验证码，你可以自行选择使用浏览器打码或第三发打码：
 注册[YesCaptcha](https://yescaptcha.com/i/13Xd8K)并获取api key，将其填入系统配置页面```YesCaptcha API密钥```区域
+- 默认 `docker-compose.yml` 建议搭配第三方打码（yescaptcha/capmonster/ezcaptcha/capsolver）。
+如需 Docker 内有头打码（browser/personal），请使用下方 `docker-compose.headed.yml`。
 
 - 自动更新st浏览器拓展：[Flow2API-Token-Updater](https://github.com/TheSmallHanCat/Flow2API-Token-Updater)
 
@@ -358,6 +360,23 @@ docker-compose -f docker-compose.warp.yml up -d
 # 查看日志
 docker-compose -f docker-compose.warp.yml logs -f
 ```
+
+#### Docker 有头打码模式（browser / personal）
+
+> 适用于你有虚拟化桌面需求、希望在容器里启用有头浏览器打码的场景。  
+> 该模式默认启动 `Xvfb + Fluxbox` 实现容器内部可视化，并设置 `ALLOW_DOCKER_HEADED_CAPTCHA=true`。  
+> 仅开放应用端口，不提供任何远程桌面连接端口。
+
+```bash
+# 启动有头模式（首次建议带 --build）
+docker compose -f docker-compose.headed.yml up -d --build
+
+# 查看日志
+docker compose -f docker-compose.headed.yml logs -f
+```
+
+- API 端口：`8000`
+- 进入管理后台后，将验证码方式设为 `browser` 或 `personal`
 
 ### 方式二：本地部署
 
@@ -474,6 +493,15 @@ python main.py
 
 #### 多图生成 (R2V - Reference Images to Video)
 🖼️ **支持多张图片**
+
+> **2026-03-06 更新**
+>
+> - 已同步上游新版 `R2V` 视频请求体
+> - `textInput` 已切换为 `structuredPrompt.parts`
+> - 顶层新增 `mediaGenerationContext.batchId`
+> - 顶层新增 `useV2ModelConfig: true`
+> - 横屏 / 竖屏 `R2V` 模型共用同一套新版请求体
+> - 根据当前上游协议，`referenceImages` 建议最多传 **3 张**
 
 | 模型名称 | 说明| 尺寸 |
 |---------|---------|--------|
@@ -616,6 +644,50 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
             "type": "image_url",
             "image_url": {
               "url": "data:image/jpeg;base64,<尾帧base64>"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true
+  }'
+```
+
+### 多图生成视频
+
+> `R2V` 会由服务端自动组装新版视频请求体，调用方仍然使用 OpenAI 兼容输入即可。
+> 当前建议最多传 **3 张参考图**。
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer han1234" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo_3_1_r2v_fast_portrait",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "以三张参考图的人物和场景为基础，生成一段镜头平滑推进的竖屏视频"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/jpeg;base64/<参考图1base64>"
+            }
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/jpeg;base64/<参考图2base64>"
+            }
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/jpeg;base64/<参考图3base64>"
             }
           }
         ]

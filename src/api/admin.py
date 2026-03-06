@@ -8,6 +8,9 @@ from typing import Optional, List
 import zipfile
 
 import asyncio
+import json
+import urllib.error
+import urllib.request
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -15,12 +18,14 @@ from typing import Optional, List, Dict, Any
 import secrets
 import time
 import re
+from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 from ..core.auth import AuthManager
 from ..core.database import Database
 from ..core.config import config
 from ..services.token_manager import TokenManager
 from ..services.proxy_manager import ProxyManager
+from ..services.concurrency_manager import ConcurrencyManager
 
 router = APIRouter()
 
@@ -28,6 +33,7 @@ router = APIRouter()
 token_manager: TokenManager = None
 proxy_manager: ProxyManager = None
 db: Database = None
+concurrency_manager: Optional[ConcurrencyManager] = None
 
 # Store active admin session tokens (in production, use Redis or database)
 active_admin_tokens = set()
@@ -102,6 +108,70 @@ def _build_proxy_map(proxy_url: str) -> Optional[Dict[str, str]]:
     if not normalized:
         return None
     return {"http": normalized, "https": normalized}
+
+
+def _normalize_http_base_url(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("远程打码服务地址未配置")
+
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("远程打码服务地址格式错误，必须是 http(s)://host[:port]")
+
+    return normalized
+
+
+def _get_remote_browser_client_config() -> tuple[str, str, int]:
+    base_url = _normalize_http_base_url(config.remote_browser_base_url)
+    api_key = (config.remote_browser_api_key or "").strip()
+    if not api_key:
+        raise RuntimeError("远程打码服务 API Key 未配置")
+    timeout = max(5, int(config.remote_browser_timeout or 60))
+    return base_url, api_key, timeout
+
+
+def _sync_json_http_request(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    payload: Optional[Dict[str, Any]],
+    timeout: int,
+) -> tuple[int, Optional[Any], str]:
+    req_headers = dict(headers or {})
+    req_headers.setdefault("Accept", "application/json")
+
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req_headers["Content-Type"] = "application/json; charset=utf-8"
+
+    request = urllib.request.Request(
+        url=url,
+        data=data,
+        headers=req_headers,
+        method=(method or "GET").upper(),
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status_code = int(response.getcode() or 0)
+            raw_body = response.read()
+    except urllib.error.HTTPError as e:
+        status_code = int(getattr(e, "code", 500))
+        raw_body = e.read() if hasattr(e, "read") else b""
+    except Exception as e:
+        raise RuntimeError(f"远程打码服务请求失败: {e}") from e
+
+    text = raw_body.decode("utf-8", errors="replace") if raw_body else ""
+    parsed: Optional[Any] = None
+    if text:
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+
+    return status_code, parsed, text
 
 
 async def _resolve_score_test_verify_proxy(
@@ -214,12 +284,53 @@ async def _solve_recaptcha_with_api_service(
     raise RuntimeError(f"{method} 获取 token 超时")
 
 
-def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database):
+async def _score_test_with_remote_browser_service(
+    website_url: str,
+    website_key: str,
+    verify_url: str,
+    action: str,
+    enterprise: bool = False,
+) -> Dict[str, Any]:
+    """调用远程有头打码服务执行页面内打码+分数校验。"""
+    base_url, api_key, timeout = _get_remote_browser_client_config()
+    endpoint = f"{base_url}/api/v1/custom-score"
+    request_payload = {
+        "website_url": website_url,
+        "website_key": website_key,
+        "verify_url": verify_url,
+        "action": action,
+        "enterprise": enterprise,
+    }
+
+    status_code, response_payload, response_text = await asyncio.to_thread(
+        _sync_json_http_request,
+        "POST",
+        endpoint,
+        {"Authorization": f"Bearer {api_key}"},
+        request_payload,
+        timeout,
+    )
+
+    if status_code >= 400:
+        detail = ""
+        if isinstance(response_payload, dict):
+            detail = response_payload.get("detail") or response_payload.get("message") or str(response_payload)
+        if not detail:
+            detail = (response_text or "").strip()
+        raise RuntimeError(f"远程打码服务请求失败 (HTTP {status_code}): {detail or '未知错误'}")
+
+    if not isinstance(response_payload, dict):
+        raise RuntimeError("远程打码服务返回格式错误")
+    return response_payload
+
+
+def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database, cm: Optional[ConcurrencyManager] = None):
     """Set service instances"""
-    global token_manager, proxy_manager, db
+    global token_manager, proxy_manager, db, concurrency_manager
     token_manager = tm
     proxy_manager = pm
     db = database
+    concurrency_manager = cm
 
 
 # ========== Request Models ==========
@@ -236,6 +347,7 @@ class AddTokenRequest(BaseModel):
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
+    captcha_proxy_url: Optional[str] = None
     image_enabled: bool = True
     video_enabled: bool = True
     image_concurrency: int = -1
@@ -249,6 +361,7 @@ class UpdateTokenRequest(BaseModel):
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
+    captcha_proxy_url: Optional[str] = None
     image_enabled: Optional[bool] = None
     video_enabled: Optional[bool] = None
     image_concurrency: Optional[int] = None
@@ -321,6 +434,7 @@ class ImportTokenItem(BaseModel):
     cookie: Optional[str] = None
     cookie_file: Optional[str] = None
     is_active: bool = True
+    captcha_proxy_url: Optional[str] = None
     image_enabled: bool = True
     video_enabled: bool = True
     image_concurrency: int = -1
@@ -417,8 +531,8 @@ async def change_password(
 @router.get("/api/tokens")
 async def get_tokens(token: str = Depends(verify_admin_token)):
     """Get all tokens with statistics"""
-    tokens = await token_manager.get_all_tokens()
-    result = []
+    token_rows = await db.get_all_tokens_with_stats()
+    to_iso = lambda value: value.isoformat() if hasattr(value, "isoformat") else value
 
     for t in tokens:
         pending_status = str(getattr(t, "last_refresh_status", "") or "").strip().upper()
@@ -637,11 +751,20 @@ async def add_token(
             project_id=request.project_id,  # 🆕 支持用户指定project_id
             project_name=request.project_name,
             remark=request.remark,
+            captcha_proxy_url=request.captcha_proxy_url.strip() if request.captcha_proxy_url is not None else None,
             image_enabled=request.image_enabled,
             video_enabled=request.video_enabled,
             image_concurrency=request.image_concurrency,
             video_concurrency=request.video_concurrency
         )
+
+        # 热更新并发限制，避免必须重启服务
+        if concurrency_manager:
+            await concurrency_manager.reset_token(
+                new_token.id,
+                image_concurrency=new_token.image_concurrency,
+                video_concurrency=new_token.video_concurrency
+            )
 
         return {
             "success": True,
@@ -693,11 +816,22 @@ async def update_token(
             project_id=request.project_id,
             project_name=request.project_name,
             remark=request.remark,
+            captcha_proxy_url=request.captcha_proxy_url.strip() if request.captcha_proxy_url is not None else None,
             image_enabled=request.image_enabled,
             video_enabled=request.video_enabled,
             image_concurrency=request.image_concurrency,
             video_concurrency=request.video_concurrency
         )
+
+        # 热更新并发限制，确保管理台修改立即生效
+        if concurrency_manager:
+            updated_token = await token_manager.get_token(token_id)
+            if updated_token:
+                await concurrency_manager.reset_token(
+                    token_id,
+                    image_concurrency=updated_token.image_concurrency,
+                    video_concurrency=updated_token.video_concurrency
+                )
 
         return {"success": True, "message": "Token更新成功"}
     except Exception as e:
@@ -885,7 +1019,11 @@ async def import_tokens(
     updated = 0
     skipped = 0
     errors = []
+    # 保持与历史逻辑一致：按 created_at DESC 的结果中，优先命中同邮箱“最新一条”
     existing_by_email = {}
+    for existing_token in await token_manager.get_all_tokens():
+        if existing_token.email and existing_token.email not in existing_by_email:
+            existing_by_email[existing_token.email] = existing_token
 
     existing_tokens = await token_manager.get_all_tokens()
     for token_item in existing_tokens:
@@ -930,7 +1068,7 @@ async def import_tokens(
                         pass
 
                 # 使用邮箱检查是否已存在
-                existing = existing_by_email.get(email_key)
+                existing = existing_by_email.get(email)
 
                 if existing:
                     if not request.confirm_replace_by_email:
@@ -945,6 +1083,7 @@ async def import_tokens(
                         cookie_file=item.cookie_file,
                         at=at,
                         at_expires=at_expires,
+                        captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
                         image_enabled=item.image_enabled,
                         video_enabled=item.video_enabled,
                         image_concurrency=item.image_concurrency,
@@ -962,11 +1101,21 @@ async def import_tokens(
                     # 如果过期则禁用
                     if is_expired:
                         await token_manager.disable_token(existing.id)
+                        existing.is_active = False
+                    existing.st = st
+                    existing.at = at
+                    existing.at_expires = at_expires
+                    existing.captcha_proxy_url = item.captcha_proxy_url
+                    existing.image_enabled = item.image_enabled
+                    existing.video_enabled = item.video_enabled
+                    existing.image_concurrency = item.image_concurrency
+                    existing.video_concurrency = item.video_concurrency
                     updated += 1
                 else:
                     # 添加新Token
                     new_token = await token_manager.add_token(
                         st=st,
+                        captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
                         cookie=item.cookie,
                         cookie_file=item.cookie_file,
                         image_enabled=item.image_enabled,
@@ -979,6 +1128,8 @@ async def import_tokens(
                     # 如果过期则禁用
                     if is_expired:
                         await token_manager.disable_token(new_token.id)
+                        new_token.is_active = False
+                    existing_by_email[email] = new_token
                     added += 1
                     existing_by_email[email_key] = new_token
 
@@ -1250,17 +1401,14 @@ async def update_generation_config(
 @router.get("/api/system/info")
 async def get_system_info(token: str = Depends(verify_admin_token)):
     """Get system information"""
-    tokens = await token_manager.get_all_tokens()
-    active_tokens = [t for t in tokens if t.is_active]
-
-    total_credits = sum(t.credits for t in active_tokens)
+    stats = await db.get_system_info_stats()
 
     return {
         "success": True,
         "info": {
-            "total_tokens": len(tokens),
-            "active_tokens": len(active_tokens),
-            "total_credits": total_credits,
+            "total_tokens": stats["total_tokens"],
+            "active_tokens": stats["active_tokens"],
+            "total_credits": stats["total_credits"],
             "version": "1.0.0"
         }
     }
@@ -1283,37 +1431,7 @@ async def logout(token: str = Depends(verify_admin_token)):
 @router.get("/api/stats")
 async def get_stats(token: str = Depends(verify_admin_token)):
     """Get statistics for dashboard"""
-    tokens = await token_manager.get_all_tokens()
-    active_tokens = [t for t in tokens if t.is_active]
-
-    # Calculate totals
-    total_images = 0
-    total_videos = 0
-    total_errors = 0
-    today_images = 0
-    today_videos = 0
-    today_errors = 0
-
-    for t in tokens:
-        stats = await db.get_token_stats(t.id)
-        if stats:
-            total_images += stats.image_count
-            total_videos += stats.video_count
-            total_errors += stats.error_count  # Historical total errors
-            today_images += stats.today_image_count
-            today_videos += stats.today_video_count
-            today_errors += stats.today_error_count
-
-    return {
-        "total_tokens": len(tokens),
-        "active_tokens": len(active_tokens),
-        "total_images": total_images,
-        "total_videos": total_videos,
-        "total_errors": total_errors,
-        "today_images": today_images,
-        "today_videos": today_videos,
-        "today_errors": today_errors
-    }
+    return await db.get_dashboard_stats()
 
 
 @router.get("/api/logs")
@@ -1321,8 +1439,9 @@ async def get_logs(
     limit: int = 100,
     token: str = Depends(verify_admin_token)
 ):
-    """Get request logs with token email"""
-    logs = await db.get_logs(limit=limit)
+    """Get lightweight request logs for list view"""
+    limit = max(1, min(limit, 100))
+    logs = await db.get_logs(limit=limit, include_payload=False)
 
     return [{
         "id": log.get("id"),
@@ -1333,10 +1452,32 @@ async def get_logs(
         "proxy_source": log.get("proxy_source"),
         "status_code": log.get("status_code"),
         "duration": log.get("duration"),
+        "created_at": log.get("created_at")
+    } for log in logs]
+
+
+@router.get("/api/logs/{log_id}")
+async def get_log_detail(
+    log_id: int,
+    token: str = Depends(verify_admin_token)
+):
+    """Get single request log detail (payload loaded on demand)"""
+    log = await db.get_log_detail(log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail="日志不存在")
+
+    return {
+        "id": log.get("id"),
+        "token_id": log.get("token_id"),
+        "token_email": log.get("token_email"),
+        "token_username": log.get("token_username"),
+        "operation": log.get("operation"),
+        "status_code": log.get("status_code"),
+        "duration": log.get("duration"),
         "created_at": log.get("created_at"),
         "request_body": log.get("request_body"),
         "response_body": log.get("response_body")
-    } for log in logs]
+    }
 
 
 @router.get("/api/docs/readme")
@@ -1648,6 +1789,9 @@ async def update_captcha_config(
     ezcaptcha_base_url = request.get("ezcaptcha_base_url")
     capsolver_api_key = request.get("capsolver_api_key")
     capsolver_base_url = request.get("capsolver_base_url")
+    remote_browser_base_url = request.get("remote_browser_base_url")
+    remote_browser_api_key = request.get("remote_browser_api_key")
+    remote_browser_timeout = request.get("remote_browser_timeout", 60)
     browser_proxy_enabled = request.get("browser_proxy_enabled", False)
     browser_proxy_url = request.get("browser_proxy_url", "")
     browser_count = request.get("browser_count", 1)
@@ -1657,6 +1801,23 @@ async def update_captcha_config(
         is_valid, error_msg = validate_browser_proxy_url(browser_proxy_url)
         if not is_valid:
             return {"success": False, "message": error_msg}
+
+    if remote_browser_base_url:
+        try:
+            remote_browser_base_url = _normalize_http_base_url(remote_browser_base_url)
+        except RuntimeError as e:
+            return {"success": False, "message": str(e)}
+
+    try:
+        remote_browser_timeout = max(5, int(remote_browser_timeout or 60))
+    except Exception:
+        return {"success": False, "message": "远程打码超时时间必须是整数秒"}
+
+    if captcha_method == "remote_browser":
+        if not (remote_browser_base_url or "").strip():
+            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务地址"}
+        if not (remote_browser_api_key or "").strip():
+            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务 API Key"}
 
     await db.update_captcha_config(
         captcha_method=captcha_method,
@@ -1668,6 +1829,9 @@ async def update_captcha_config(
         ezcaptcha_base_url=ezcaptcha_base_url,
         capsolver_api_key=capsolver_api_key,
         capsolver_base_url=capsolver_base_url,
+        remote_browser_base_url=remote_browser_base_url,
+        remote_browser_api_key=remote_browser_api_key,
+        remote_browser_timeout=remote_browser_timeout,
         browser_proxy_enabled=browser_proxy_enabled,
         browser_proxy_url=browser_proxy_url if browser_proxy_enabled else None,
         browser_count=max(1, int(browser_count)) if browser_count else 1
@@ -1702,6 +1866,9 @@ async def get_captcha_config(token: str = Depends(verify_admin_token)):
         "ezcaptcha_base_url": captcha_config.ezcaptcha_base_url,
         "capsolver_api_key": captcha_config.capsolver_api_key,
         "capsolver_base_url": captcha_config.capsolver_base_url,
+        "remote_browser_base_url": captcha_config.remote_browser_base_url,
+        "remote_browser_api_key": captcha_config.remote_browser_api_key,
+        "remote_browser_timeout": captcha_config.remote_browser_timeout,
         "browser_proxy_enabled": captcha_config.browser_proxy_enabled,
         "browser_proxy_url": captcha_config.browser_proxy_url or "",
         "browser_count": captcha_config.browser_count
@@ -1738,7 +1905,7 @@ async def test_captcha_score(
     verify_proxy_source = "none"
     verify_proxy_url = ""
     verify_impersonate = "chrome120"
-    page_verify_only = captcha_method in {"browser", "personal"}
+    page_verify_only = captcha_method in {"browser", "personal", "remote_browser"}
     verify_mode = "browser_page" if page_verify_only else "server_post"
 
     try:
@@ -1791,6 +1958,26 @@ async def test_captcha_score(
                 verify_proxy_used = bool(browser_proxy_enabled and browser_proxy_url)
                 verify_proxy_source = "captcha_browser_proxy" if verify_proxy_used else "browser_direct"
                 verify_proxy_url = browser_proxy_url if verify_proxy_used else ""
+        elif captcha_method == "remote_browser":
+            score_payload = await _score_test_with_remote_browser_service(
+                website_url=website_url,
+                website_key=website_key,
+                verify_url=verify_url,
+                action=action,
+                enterprise=enterprise,
+            )
+            if isinstance(score_payload, dict):
+                if score_payload.get("success") is False:
+                    raise RuntimeError(score_payload.get("message") or "远程打码分数测试失败")
+                token_value = score_payload.get("token")
+                verify_elapsed_ms = int(score_payload.get("verify_elapsed_ms") or 0)
+                verify_http_status = score_payload.get("verify_http_status")
+                verify_result = score_payload.get("verify_result") if isinstance(score_payload.get("verify_result"), dict) else {}
+                verify_mode = score_payload.get("verify_mode") or "remote_browser_page"
+                score_token_elapsed = score_payload.get("token_elapsed_ms")
+                if isinstance(score_token_elapsed, (int, float)):
+                    token_elapsed_ms = int(score_token_elapsed)
+                fingerprint = score_payload.get("fingerprint") if isinstance(score_payload.get("fingerprint"), dict) else None
         elif captcha_method in SUPPORTED_API_CAPTCHA_METHODS:
             token_value = await _solve_recaptcha_with_api_service(
                 method=captcha_method,
@@ -1814,6 +2001,12 @@ async def test_captcha_score(
             }
         if token_elapsed_ms <= 0:
             token_elapsed_ms = int((time.time() - token_start) * 1000)
+
+        # 远程有头打码的 custom-score 可能由页面内直接完成校验，
+        # 在部分实现里不会显式回传 token，本地按 verify_result 兜底判定。
+        if captcha_method == "remote_browser" and not token_value and isinstance(verify_result, dict):
+            if verify_result.get("success") is True:
+                token_value = verify_result.get("token") or verify_result.get("gRecaptchaResponse") or "__verified_by_remote__"
 
         if not token_value:
             return {
