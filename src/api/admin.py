@@ -1040,7 +1040,12 @@ async def update_server_config(
     host = str(request.host or "").strip()
     default_public_ip = str(request.default_public_ip or "").strip()
     if not host:
-        host = "127.0.0.1" if mode == "local" else (default_public_ip or config.default_server_public_ip or "0.0.0.0")
+        host = "127.0.0.1" if mode == "local" else "0.0.0.0"
+    host = config.normalize_server_host_for_mode(
+        mode=mode,
+        host=host,
+        default_public_ip=default_public_ip,
+    )
     port = request.port if request.port is not None else int(config.server_port)
     local_bit_id = (
         str(request.rpa_test_bitbrowser_id_local).strip()

@@ -435,6 +435,39 @@ class Config:
         host = str(self._config.get("server", {}).get("host", "") or "").strip().lower()
         return "local" if host in {"127.0.0.1", "localhost"} else "server"
 
+    def normalize_server_host_for_mode(
+        self,
+        *,
+        mode: str,
+        host: Optional[str],
+        default_public_ip: Optional[str] = None,
+    ) -> str:
+        mode_value = str(mode or "").strip().lower()
+        host_value = str(host or "").strip()
+        if mode_value == "local":
+            return host_value or "127.0.0.1"
+
+        if mode_value != "server":
+            return host_value
+
+        if not host_value:
+            return "0.0.0.0"
+
+        host_lower = host_value.lower()
+        if host_lower in {"0.0.0.0", "::", "[::]"}:
+            return "0.0.0.0"
+
+        normalized_host = self._normalize_ip_text(host_value)
+        normalized_default = self._normalize_ip_text(
+            default_public_ip if default_public_ip is not None else self.default_server_public_ip
+        )
+        normalized_detected = self._normalize_ip_text(self.detected_public_ip)
+
+        if normalized_host and normalized_host in {normalized_default, normalized_detected}:
+            return "0.0.0.0"
+
+        return host_value
+
     @staticmethod
     def _normalize_ip_text(value: Optional[str]) -> str:
         text = str(value or "").strip()

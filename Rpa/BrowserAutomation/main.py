@@ -92,8 +92,10 @@ def _get_test_default_bitbrowser_id() -> Optional[str]:
 
     优先级：
     1) 环境变量 RPA_TEST_BITBROWSER_ID
-    2) setting.toml 的 [rpa] test_bitbrowser_id_{local/server}（按 [server].host 判断模式）
-    3) 文件内常量 TEST_DEFAULT_BITBROWSER_ID
+    2) src.core.config 的 active rpa test bitbrowser id（统一按运行模式判定）
+    3) setting.toml 的 [rpa] test_bitbrowser_id_{local/server}（按 [server].host 判断模式）
+       其中 host=0.0.0.0 视为服务器模式
+    4) 文件内常量 TEST_DEFAULT_BITBROWSER_ID
 
     兼容：如果你把该常量整行注释/删除（导致变量不存在），这里也不会报错。
     """
@@ -102,7 +104,17 @@ def _get_test_default_bitbrowser_id() -> Optional[str]:
     if env_val:
         return env_val
 
-    # 2) setting.toml
+    # 2) 优先复用全局配置中的当前生效值，避免本模块自行猜测 local/server 模式
+    try:
+        from src.core.config import config as app_config
+
+        cfg_val = str(app_config.get_active_rpa_test_bitbrowser_id() or "").strip()
+        if cfg_val:
+            return cfg_val
+    except Exception:
+        pass
+
+    # 3) setting.toml
     try:
         import tomli
 
@@ -815,10 +827,12 @@ async def validate_antigravity_account(
             try:
                 res = openBrowser(bitbrowser_id)
             except BitBrowserAPIError as e:
-                if reused_default_bitbrowser_id and e.is_window_missing():
+                if reused_default_bitbrowser_id and (
+                    e.is_window_missing() or e.is_permission_denied()
+                ):
                     stale_bitbrowser_id = bitbrowser_id
                     _print_and_log(
-                        f"[RPA] 复用 BitBrowser 窗口失败，旧窗口不存在，准备自动创建新窗口，ID: {stale_bitbrowser_id}"
+                        f"[RPA] 复用 BitBrowser 窗口失败，窗口不可用或无权限，准备自动创建新窗口，ID: {stale_bitbrowser_id}"
                     )
                     bitbrowser_id = createBrowser()
                     reused_default_bitbrowser_id = False

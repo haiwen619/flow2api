@@ -46,6 +46,17 @@ class BitBrowserAPIError(RuntimeError):
             or "no corresponding data" in text
         )
 
+    def is_permission_denied(self) -> bool:
+        text = str(self.msg or "").strip().lower()
+        if not text:
+            return False
+        return (
+            "权限不足" in text
+            or "permission denied" in text
+            or "forbidden" in text
+            or "unauthorized" in text
+        )
+
 
 def _post_json(path: str, payload: dict, *, timeout: int = 30) -> dict:
     """POST JSON helper.
