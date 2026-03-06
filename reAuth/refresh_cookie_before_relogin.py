@@ -113,7 +113,7 @@ def _clip_long_text(value: Optional[str], max_len: int = 220) -> str:
 
 
 def _has_interaction_required(*values: Optional[str]) -> bool:
-    """Detect OAuth interaction_required callback which indicates stale/invalid login state."""
+    """Detect relogin-required redirects that indicate stale/invalid login state."""
     for raw in values:
         text = unescape(str(raw or "")).strip().lower()
         if not text:
@@ -122,6 +122,15 @@ def _has_interaction_required(*values: Optional[str]) -> bool:
             return True
         if "error_subtype=access_denied" in text and "error=interaction_required" in text:
             return True
+        try:
+            parsed = urlparse(text)
+        except Exception:
+            parsed = None
+        if parsed:
+            host = str(parsed.netloc or "").strip().lower()
+            path = str(parsed.path or "").strip().lower()
+            if host == "accounts.google.com" and "/signin/identifier" in path:
+                return True
     return False
 
 

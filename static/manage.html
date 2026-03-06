@@ -2451,6 +2451,8 @@
       let internalExportMeta = {};
       let internalExportSelectedNames = new Set();
       let cookieRefreshTicker = null;
+      let tokenAutoRefreshTicker = null;
+      let tokenAutoRefreshInFlight = false;
       let refreshRecordMap = {};
       let autoLoginRecoveryWatchers = {};
       let readmeDocCache = null;
@@ -2669,6 +2671,48 @@
           if (cookieRefreshTicker) return;
           cookieRefreshTicker = setInterval(updateCookieRefreshCountdowns, 1000);
         },
+        hasPendingAutoLoginRefresh = (list = allTokens) =>
+          Array.isArray(list) &&
+          list.some((t) => {
+            const status = String(t.last_refresh_status || "").toUpperCase();
+            return (
+              status === "PENDING" ||
+              status === "RUNNING" ||
+              status === "IN_PROGRESS"
+            );
+          }),
+        stopTokenAutoRefreshWatcher = () => {
+          if (!tokenAutoRefreshTicker) return;
+          clearInterval(tokenAutoRefreshTicker);
+          tokenAutoRefreshTicker = null;
+        },
+        pollTokenAutoRefresh = async () => {
+          if (tokenAutoRefreshInFlight) return;
+          if (document.hidden) return;
+          if (!hasPendingAutoLoginRefresh()) {
+            stopTokenAutoRefreshWatcher();
+            return;
+          }
+          tokenAutoRefreshInFlight = true;
+          try {
+            await refreshTokens();
+            if (!hasPendingAutoLoginRefresh()) {
+              stopTokenAutoRefreshWatcher();
+            }
+          } catch (err) {
+            console.error("自动刷新Token列表失败:", err);
+          } finally {
+            tokenAutoRefreshInFlight = false;
+          }
+        },
+        ensureTokenAutoRefreshWatcher = () => {
+          if (!hasPendingAutoLoginRefresh()) {
+            stopTokenAutoRefreshWatcher();
+            return;
+          }
+          if (tokenAutoRefreshTicker) return;
+          tokenAutoRefreshTicker = setInterval(pollTokenAutoRefresh, 4000);
+        },
         formatRefreshTime = (ts) => {
           if (!ts) return "-";
           const d = new Date(ts);
@@ -2840,6 +2884,7 @@
             .join("");
           updateCookieRefreshCountdowns();
           ensureCookieRefreshTicker();
+          ensureTokenAutoRefreshWatcher();
         },
         refreshTokenCredits = async (id) => {
           try {
@@ -5175,6 +5220,12 @@
         initBatchImportDropZone();
         refreshTokens();
         loadATAutoRefreshConfig();
+      });
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) return;
+        if (!hasPendingAutoLoginRefresh()) return;
+        pollTokenAutoRefresh();
       });
     </script>
   </body>

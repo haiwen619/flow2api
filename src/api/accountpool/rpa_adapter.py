@@ -122,6 +122,12 @@ async def validate_account_via_rpa(
             bitbrowser_auto_delete=bool(
                 params.get("bitbrowser_auto_delete", DEFAULT_PANEL_VALIDATE_OPTIONS.bitbrowser_auto_delete)
             ),
+            reuse_test_bitbrowser_id=bool(
+                params.get(
+                    "reuse_test_bitbrowser_id",
+                    DEFAULT_PANEL_VALIDATE_OPTIONS.reuse_test_bitbrowser_id,
+                )
+            ),
         )
 
         validate_kwargs = {

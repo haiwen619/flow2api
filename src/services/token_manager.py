@@ -1,6 +1,8 @@
 """Token manager for Flow2API with AT auto-refresh"""
 import asyncio
 import base64
+import os
+import re
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Any, Dict
@@ -59,6 +61,20 @@ class TokenManager:
         """判断是否已成功触发账号池自动登录任务。"""
         text = str(message or "").strip()
         return text.startswith("已触发账号池自动登录(")
+
+    def _extract_auto_login_job_id(self, detail: str) -> str:
+        text = str(detail or "").strip()
+        if not text:
+            return ""
+        match = re.search(r"job_id=([0-9a-fA-F]{16,64})", text)
+        return str(match.group(1) if match else "").strip()
+
+    def _pending_auto_login_ttl_seconds(self) -> int:
+        try:
+            value = int(os.getenv("ACCOUNTPOOL_AUTO_LOGIN_PENDING_TTL_SEC", "900") or "900")
+        except Exception:
+            value = 900
+        return max(300, value)
 
     def _get_auto_refresh_advance_seconds(
         self,
@@ -150,6 +166,9 @@ class TokenManager:
                     "manual": False,
                     "timeout_sec": 300,
                     "auto_enable_token_on_sync": True,
+                    "bitbrowser": True,
+                    "bitbrowser_auto_delete": True,
+                    "reuse_test_bitbrowser_id": False,
                 },
             )
             debug_logger.log_info(
@@ -177,6 +196,90 @@ class TokenManager:
             )
         except Exception as log_err:
             debug_logger.log_warning(f"[AT_REFRESH] Token {token_id}: 写入刷新记录失败 - {log_err}")
+
+    async def reconcile_pending_auto_login_status(self, token_id: int):
+        """收敛长时间未完成的账号池自动登录 pending 状态，避免界面永久显示执行中。"""
+        token = await self.db.get_token(token_id)
+        if not token:
+            return None
+
+        status = str(getattr(token, "last_refresh_status", "") or "").strip().upper()
+        detail = str(getattr(token, "last_refresh_detail", "") or "").strip()
+        method = str(getattr(token, "last_refresh_method", "") or "").strip() or "ACCOUNTPOOL_AUTO_LOGIN"
+        if status not in {"PENDING", "RUNNING", "IN_PROGRESS"}:
+            return token
+        if "账号池自动登录" not in detail and "AUTO_LOGIN" not in method.upper():
+            return token
+
+        last_refresh_at = getattr(token, "last_refresh_at", None)
+        if last_refresh_at is None:
+            return token
+
+        now = datetime.now(timezone.utc)
+        refresh_at_aware = (
+            last_refresh_at
+            if getattr(last_refresh_at, "tzinfo", None)
+            else last_refresh_at.replace(tzinfo=timezone.utc)
+        )
+        age_seconds = max(0, int((now - refresh_at_aware).total_seconds()))
+        ttl_seconds = self._pending_auto_login_ttl_seconds()
+        if age_seconds < ttl_seconds:
+            return token
+
+        job_id = self._extract_auto_login_job_id(detail)
+        failed_detail = (
+            f"账号池自动登录已超过 {ttl_seconds} 秒仍未完成，判定为超时；"
+            "请检查RPA执行日志或重新触发自动登录"
+        )
+
+        try:
+            from .. import main as main_app
+            accountpool_service = getattr(main_app, "accountpool_service", None)
+        except Exception:
+            accountpool_service = None
+
+        if accountpool_service is not None and job_id:
+            try:
+                job = accountpool_service.get_job_safe(job_id=job_id)
+                job_status = str(job.get("status") or "").strip().lower()
+                job_error = str(job.get("error") or "").strip()
+                if job_status in {"queued", "running"}:
+                    failed_detail = (
+                        f"账号池自动登录任务超时未完成(status={job_status}, age={age_seconds}s)；"
+                        "请检查RPA是否卡住或浏览器是否未正常退出"
+                    )
+                elif job_status == "failed":
+                    failed_detail = (
+                        f"账号池自动登录任务已失败(status=failed)"
+                        f"{'：' + job_error if job_error else ''}"
+                    )
+                elif job_status == "cancelled":
+                    failed_detail = "账号池自动登录任务已取消，未恢复Token活跃状态"
+                elif job_status == "success":
+                    failed_detail = "账号池自动登录任务已完成，但未同步恢复Token活跃状态"
+                else:
+                    failed_detail = (
+                        f"账号池自动登录任务状态未知(status={job_status or 'unknown'})，"
+                        "未恢复Token活跃状态"
+                    )
+            except KeyError:
+                failed_detail = (
+                    f"服务重启丢任务：账号池自动登录任务记录不存在(job_id={job_id})，"
+                    "可能服务已重启或内存中的任务记录被清理；未恢复Token活跃状态"
+                )
+            except Exception as job_err:
+                failed_detail = (
+                    f"账号池自动登录状态检查失败：{job_err}；"
+                    "未恢复Token活跃状态"
+                )
+
+        await self._record_refresh_event(
+            token_id,
+            method,
+            "FAILED",
+            failed_detail,
+        )
+        return await self.db.get_token(token_id)
 
     # ========== Token CRUD ==========
 
@@ -971,9 +1074,15 @@ class TokenManager:
                                 f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} reAuth同链路 AT 验证成功（余额: {verify_direct.get('credits', 0)}）"
                             )
                             return True, ""
-                        debug_logger.log_warning(
-                            f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} reAuth同链路 AT 验证失败: {verify_direct.get('error')}"
+                        verify_direct_error = str(verify_direct.get("error") or "").strip()
+                        failure_detail = (
+                            "reAuth已恢复出候选AT，但同链路验活失败，判定当前记录的cookie已失效或已跳转到Google登录页，"
+                            "需要重新自动登录"
                         )
+                        debug_logger.log_warning(
+                            f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} {failure_detail} detail={verify_direct_error}"
+                        )
+                        return False, failure_detail
                     else:
                         debug_logger.log_warning(
                             f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} reAuth同链路 ST->AT 失败: {st_to_at_direct.get('error')}"

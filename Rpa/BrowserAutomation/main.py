@@ -67,7 +67,7 @@ from urllib import request as urllib_request
 # BitBrowser：仅本地测试用默认窗口 ID。
 # - 不传 --bitbrowser-id 时，将默认使用该 ID 连接现有窗口。
 # - 若你想恢复默认行为（不指定 id，走 createBrowser()）：把下面这一行注释掉，或改为 ""/None。
-TEST_DEFAULT_BITBROWSER_ID = "f1ef6f8ccb6146988c67a63b92a78971"
+TEST_DEFAULT_BITBROWSER_ID = "8775a712ab0c4db59e0811ad115bc565"
 
 
 # playwright-stealth 的 API 在不同版本中不一致：
@@ -269,6 +269,7 @@ class ValidateOptions:
     bitbrowser: bool = True
     bitbrowser_id: Optional[str] = None
     bitbrowser_auto_delete: bool = False
+    reuse_test_bitbrowser_id: bool = True
 
 
 # ValidateOptions 说明（中文，便于理解）
@@ -783,7 +784,7 @@ async def validate_antigravity_account(
             # - options.bitbrowser=True：会自动 createBrowser()
             # - options.bitbrowser_id ：指定现有窗口 id（不会 create）
             bitbrowser_id = getattr(options, "bitbrowser_id", None)
-            if not bitbrowser_id:
+            if not bitbrowser_id and bool(getattr(options, "reuse_test_bitbrowser_id", True)):
                 # 无论从 CLI 还是 web.py 调用：只要 TEST_DEFAULT_BITBROWSER_ID 没被注释/置空，就优先使用它
                 test_default_id = _get_test_default_bitbrowser_id()
                 if test_default_id:

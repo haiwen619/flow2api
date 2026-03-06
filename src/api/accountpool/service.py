@@ -153,6 +153,226 @@ class AccountPoolService:
             return False
         return default
 
+    def _job_timeout_seconds(self, params: Optional[Dict[str, Any]]) -> int:
+        try:
+            base_timeout = int((params or {}).get("timeout_sec", 300) or 300)
+        except Exception:
+            base_timeout = 300
+        try:
+            grace = int(os.getenv("ACCOUNTPOOL_VALIDATE_TIMEOUT_GRACE_SEC", "60") or "60")
+        except Exception:
+            grace = 60
+        return max(60, base_timeout + max(15, grace))
+
+    @staticmethod
+    def _clip_error_text(value: Any, max_len: int = 220) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_len:
+            return text
+        keep = max(40, max_len // 2)
+        return f"{text[:keep]} ... {text[-keep:]}"
+
+    def _classify_rpa_failure_detail(self, error: Any, message: Any = None) -> str:
+        raw_error = str(error or "").strip()
+        raw_message = str(message or "").strip()
+        combined = f"{raw_message}\n{raw_error}".lower()
+
+        if (
+            "password was changed" in combined
+            or "密码已修改" in combined
+            or "当前密码已失效" in combined
+        ):
+            return (
+                "RPA失败：检测到账号密码已变更，账号池保存的密码已失效。"
+                f" 请更新账号密码后重试。原始错误：{self._clip_error_text(raw_error or raw_message)}"
+            )
+
+        if (
+            ("page.goto" in combined and "timeout" in combined)
+            or "timeout 30000ms exceeded" in combined
+            or "navigating to \"https://labs.google/fx/tools/flow\"" in combined
+        ):
+            return (
+                "RPA超时：打开 Flow 页面时超时，通常是网络/代理/浏览器环境异常，"
+                f" 或目标页面加载过慢。原始错误：{self._clip_error_text(raw_error or raw_message)}"
+            )
+
+        if "err_socks_connection_failed" in combined or "socks_connection_failed" in combined:
+            return (
+                "RPA失败：浏览器使用的 SOCKS 代理连接失败。通常是复用窗口残留了失效代理，"
+                "或当前代理服务不可用。系统已改为自动登录默认新建干净 BitBrowser 窗口；"
+                f" 若仍出现，请检查代理服务本身。原始错误：{self._clip_error_text(raw_error or raw_message)}"
+            )
+
+        if "accountpool auto login timed out after" in combined:
+            return (
+                "RPA总任务超时：账号池自动登录在限定时间内未完成，"
+                f" 请检查浏览器是否卡住。原始错误：{self._clip_error_text(raw_error or raw_message)}"
+            )
+
+        if "bitbrowser" in combined and "close" in combined and "failed" in combined:
+            return (
+                "RPA失败：BitBrowser 关闭或清理浏览器环境时出错。"
+                f" 原始错误：{self._clip_error_text(raw_error or raw_message)}"
+            )
+
+        if raw_error or raw_message:
+            return f"RPA失败：{self._clip_error_text(raw_error or raw_message)}"
+        return "RPA失败：未知错误"
+
+    def _classify_token_sync_failure_detail(
+        self,
+        *,
+        sync_result: Optional[Dict[str, Any]],
+        auto_enable_result: Optional[Dict[str, Any]],
+        cookie_mode: bool,
+    ) -> str:
+        sync_result = sync_result if isinstance(sync_result, dict) else {}
+        auto_enable_result = auto_enable_result if isinstance(auto_enable_result, dict) else {}
+        sync_reason = str(sync_result.get("reason") or "").strip()
+        sync_error = str(sync_result.get("error") or "").strip()
+        enable_reason = str(auto_enable_result.get("reason") or "").strip()
+        enable_error = str(auto_enable_result.get("error") or "").strip()
+        noun = "Cookie" if cookie_mode else "Token"
+
+        if sync_reason in {"st_to_at_failed", "st_to_at_failed_transient_network_fallback"}:
+            return (
+                f"同步{noun}失败：ST 换 AT 失败，可能是网络/代理异常。"
+                f" 原始错误：{self._clip_error_text(sync_error or sync_reason)}"
+            )
+        if sync_reason in {"update_token_failed", "add_token_failed"}:
+            return (
+                f"同步{noun}失败：写入 token 表失败。"
+                f" 原始错误：{self._clip_error_text(sync_error or sync_reason)}"
+            )
+        if sync_reason == "token_not_found":
+            return f"同步{noun}失败：没有找到可回写的 token 记录。"
+        if sync_reason == "email_not_found":
+            return f"同步{noun}失败：无法从返回结果解析邮箱，找不到对应 token。"
+        if sync_reason == "empty_access_token":
+            return f"同步{noun}失败：拿到了 session token，但没有换出 AT。"
+        if sync_reason == "empty_session_token":
+            return f"同步{noun}失败：RPA 没有返回可用的 session token。"
+        if sync_reason == "token_manager_not_ready":
+            return f"同步{noun}失败：token_manager 未初始化。"
+        if sync_reason == "admin_import_failed":
+            return (
+                f"同步{noun}失败：导入 admin/token_manager 失败。"
+                f" 原始错误：{self._clip_error_text(sync_error or sync_reason)}"
+            )
+
+        if enable_reason == "enable_failed":
+            return (
+                f"同步{noun}成功，但恢复 Token 活跃状态失败。"
+                f" 原始错误：{self._clip_error_text(enable_error or enable_reason)}"
+            )
+        if enable_reason == "token_manager_not_ready":
+            return f"同步{noun}失败：token_manager 未就绪，无法恢复 Token 活跃状态。"
+        if enable_reason == "sync_not_success":
+            return (
+                f"同步{noun}失败：RPA 已结束，但未成功把新会话写回 token 表。"
+                f"{' 原始错误：' + self._clip_error_text(sync_error) if sync_error else ''}"
+            )
+
+        return (
+            f"同步{noun}失败：账号池自动登录任务已结束，但没有成功恢复 Token 活跃状态。"
+            f"{' 原始错误：' + self._clip_error_text(sync_error or enable_error or sync_reason or enable_reason) if (sync_error or enable_error or sync_reason or enable_reason) else ''}"
+        )
+
+    @staticmethod
+    def _extract_email_hints_for_token(
+        *,
+        account_key: str,
+        username: Optional[str],
+        payload_email: Optional[str],
+    ) -> List[str]:
+        hints: List[str] = []
+        raw_values = [
+            payload_email,
+            username,
+            str(account_key or "").split(":", 1)[-1],
+        ]
+        seen = set()
+        for raw in raw_values:
+            value = str(raw or "").strip().lower()
+            if not value or "@" not in value or value in seen:
+                continue
+            seen.add(value)
+            hints.append(value)
+        return hints
+
+    async def _record_auto_login_refresh_outcome(
+        self,
+        *,
+        account_key: str,
+        username: Optional[str],
+        payload_email: Optional[str],
+        job_id: str,
+        status: str,
+        detail: str,
+        refresh_method: str,
+    ) -> Dict[str, Any]:
+        try:
+            from .. import admin as admin_api
+        except Exception as e:
+            return {"recorded": False, "reason": "admin_import_failed", "error": str(e)}
+
+        tm = getattr(admin_api, "token_manager", None)
+        if tm is None:
+            return {"recorded": False, "reason": "token_manager_not_ready"}
+
+        email_hints = self._extract_email_hints_for_token(
+            account_key=account_key,
+            username=username,
+            payload_email=payload_email,
+        )
+        if not email_hints:
+            return {"recorded": False, "reason": "email_hint_missing"}
+
+        token = None
+        for hint in email_hints:
+            try:
+                token = await tm.db.get_token_by_email(hint)
+            except Exception:
+                token = None
+            if token is not None:
+                break
+
+        if token is None:
+            try:
+                all_tokens = await tm.get_all_tokens()
+                for hint in email_hints:
+                    candidates = [
+                        t for t in all_tokens
+                        if str(getattr(t, "email", "") or "").strip().lower() == hint
+                    ]
+                    if candidates:
+                        candidates.sort(key=lambda t: int(getattr(t, "id", 0) or 0), reverse=True)
+                        token = candidates[0]
+                        break
+            except Exception:
+                token = None
+
+        if token is None:
+            return {"recorded": False, "reason": "token_not_found", "email_hints": email_hints}
+
+        current_detail = str(getattr(token, "last_refresh_detail", "") or "")
+        if job_id and current_detail and job_id not in current_detail:
+            return {
+                "recorded": False,
+                "reason": "job_id_mismatch",
+                "token_id": int(getattr(token, "id", 0) or 0),
+            }
+
+        detail_text = f"{detail}（job_id={job_id}, account_key={account_key}）"
+        await tm._record_refresh_event(
+            int(token.id),
+            refresh_method,
+            status,
+            detail_text,
+        )
+        return {"recorded": True, "token_id": int(token.id), "email": str(getattr(token, "email", "") or "")}
+
     async def _st_to_at_with_retry(self, *, tm: Any, st: str, job_id: str) -> Dict[str, Any]:
         max_attempts = 3
         base_sleep = 1.0
@@ -680,6 +900,8 @@ class AccountPoolService:
             (params or {}).get("auto_enable_token_on_sync"),
             default=False,
         )
+        refresh_method = "ACCOUNTPOOL_AUTO_LOGIN"
+        payload_email = str(username or "").strip()
         job["status"] = "running"
         job["updated_at"] = time.time()
         logger.info(
@@ -699,17 +921,25 @@ class AccountPoolService:
         )
 
         try:
-            result = await validate_account_via_rpa(
-                username=username,
-                password=password,
-                job_id=job_id,
-                params=params,
-            )
+            timeout_seconds = self._job_timeout_seconds(params)
+            try:
+                result = await asyncio.wait_for(
+                    validate_account_via_rpa(
+                        username=username,
+                        password=password,
+                        job_id=job_id,
+                        params=params,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError as e:
+                raise TimeoutError(f"accountpool auto login timed out after {timeout_seconds}s") from e
             ok = bool(result.get("success"))
             session_token = (str(result.get("session_token") or "").strip() if isinstance(result, dict) else "")
             cookie_header = (str(result.get("cookie") or "").strip() if isinstance(result, dict) else "")
             cookie_file_header = (str(result.get("cookie_file") or "").strip() if isinstance(result, dict) else "")
-            payload_email = (str(result.get("payload_email") or "").strip() if isinstance(result, dict) else "")
+            payload_email = (str(result.get("payload_email") or "").strip() if isinstance(result, dict) else "") or payload_email
+            token_refresh_finalized = False
             if ok and session_token:
                 await self.repo.set_session_token(account_key=account_key, session_token=session_token)
                 logger.info(
@@ -737,6 +967,21 @@ class AccountPoolService:
                     )
                     if isinstance(result, dict):
                         result["token_auto_enable"] = auto_enable_res
+                    token_refresh_finalized = bool(auto_enable_res.get("enabled"))
+                    if not token_refresh_finalized:
+                        await self._record_auto_login_refresh_outcome(
+                            account_key=account_key,
+                            username=username,
+                            payload_email=payload_email,
+                            job_id=job_id,
+                            status="FAILED",
+                            detail=self._classify_token_sync_failure_detail(
+                                sync_result=sync_res,
+                                auto_enable_result=auto_enable_res,
+                                cookie_mode=False,
+                            ),
+                            refresh_method=refresh_method,
+                        )
             elif ok:
                 logger.warning(
                     "[AccountPool] validate success but no session token account_key=%s job_id=%s cookie_present=%s cookie_file_present=%s",
@@ -760,10 +1005,38 @@ class AccountPoolService:
                             job_id=job_id,
                             account_key=account_key,
                             refresh_method="ACCOUNTPOOL_AUTO_LOGIN_COOKIE",
-                            detail_prefix="账号池自动登录完成，Cookie已同步并恢复Token活跃状态",
+                        detail_prefix="账号池自动登录完成，Cookie已同步并恢复Token活跃状态",
+                    )
+                    if isinstance(result, dict):
+                        result["token_auto_enable"] = auto_enable_res
+                    token_refresh_finalized = bool(auto_enable_res.get("enabled"))
+                    if token_refresh_finalized:
+                        refresh_method = "ACCOUNTPOOL_AUTO_LOGIN_COOKIE"
+                    else:
+                        await self._record_auto_login_refresh_outcome(
+                            account_key=account_key,
+                            username=username,
+                            payload_email=payload_email,
+                            job_id=job_id,
+                            status="FAILED",
+                            detail=self._classify_token_sync_failure_detail(
+                                sync_result=cookie_sync_res,
+                                auto_enable_result=auto_enable_res,
+                                cookie_mode=True,
+                            ),
+                            refresh_method="ACCOUNTPOOL_AUTO_LOGIN_COOKIE",
                         )
-                        if isinstance(result, dict):
-                            result["token_auto_enable"] = auto_enable_res
+                elif auto_enable_token_on_sync:
+                    await self._record_auto_login_refresh_outcome(
+                        account_key=account_key,
+                        username=username,
+                        payload_email=payload_email,
+                        job_id=job_id,
+                        status="FAILED",
+                        detail="同步 Token 失败：RPA 返回成功，但没有拿到可回写的 session_token 或 Cookie。",
+                        refresh_method=refresh_method,
+                    )
+                    token_refresh_finalized = True
             duration_ms = int((time.time() - started) * 1000)
             job["result"] = result
             job["status"] = "success" if ok else "failed"
@@ -788,6 +1061,19 @@ class AccountPoolService:
                 message=(result.get("message") if isinstance(result, dict) else None),
                 set_validate_at=True,
             )
+            if auto_enable_token_on_sync and (not ok):
+                await self._record_auto_login_refresh_outcome(
+                    account_key=account_key,
+                    username=username,
+                    payload_email=payload_email,
+                    job_id=job_id,
+                    status="FAILED",
+                    detail=self._classify_rpa_failure_detail(
+                        (result.get("error") if isinstance(result, dict) else None),
+                        (result.get("message") if isinstance(result, dict) else None),
+                    ),
+                    refresh_method=refresh_method,
+                )
             self._mark_batch_progress(batch_task_id=batch_task_id, ok=ok)
         except Exception as e:
             duration_ms = int((time.time() - started) * 1000)
@@ -810,6 +1096,16 @@ class AccountPoolService:
                 message=None,
                 set_validate_at=True,
             )
+            if auto_enable_token_on_sync:
+                await self._record_auto_login_refresh_outcome(
+                    account_key=account_key,
+                    username=username,
+                    payload_email=payload_email,
+                    job_id=job_id,
+                    status="FAILED",
+                    detail=self._classify_rpa_failure_detail(str(e)),
+                    refresh_method=refresh_method,
+                )
             self._mark_batch_progress(batch_task_id=batch_task_id, ok=False)
 
     def get_job_safe(self, *, job_id: str) -> Dict[str, Any]:

@@ -419,6 +419,14 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
     result = []
 
     for t in tokens:
+        pending_status = str(getattr(t, "last_refresh_status", "") or "").strip().upper()
+        if pending_status in {"PENDING", "RUNNING", "IN_PROGRESS"}:
+            try:
+                reconciled = await token_manager.reconcile_pending_auto_login_status(int(t.id))
+                if reconciled is not None:
+                    t = reconciled
+            except Exception:
+                pass
         stats = await db.get_token_stats(t.id)
 
         result.append({
