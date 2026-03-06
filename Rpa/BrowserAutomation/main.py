@@ -766,6 +766,7 @@ async def validate_antigravity_account(
         browser = None
         page = None
         bitbrowser_id = None
+        reused_default_bitbrowser_id = False
         final_url = ""
         token_payload_file_path: Optional[str] = None
         token_payload_cookie: Optional[str] = None
@@ -789,6 +790,7 @@ async def validate_antigravity_account(
                 test_default_id = _get_test_default_bitbrowser_id()
                 if test_default_id:
                     bitbrowser_id = test_default_id
+                    reused_default_bitbrowser_id = True
                     _print_and_log(
                         f"[RPA] 将使用 TEST_DEFAULT_BITBROWSER_ID 复用窗口，ID: {bitbrowser_id}"
                     )
@@ -800,17 +802,30 @@ async def validate_antigravity_account(
             if options.headless:
                 raise RuntimeError("BitBrowser 模式不支持 headless，请关闭 --headless")
             try:
-                from Rpa.Login.bit_api import createBrowser, openBrowser, closeBrowser
+                from Rpa.Login.bit_api import BitBrowserAPIError, createBrowser, openBrowser, closeBrowser
             except Exception:
                 # 兼容在 Rpa/BrowserAutomation 目录直接运行时的导入路径
-                from ..Login.bit_api import createBrowser, openBrowser, closeBrowser  # type: ignore
+                from ..Login.bit_api import BitBrowserAPIError, createBrowser, openBrowser, closeBrowser  # type: ignore
 
             if not bitbrowser_id:
                 _print_and_log("[RPA] 将通过 BitBrowser 创建新的浏览器窗口...")
                 bitbrowser_id = createBrowser()
                 _print_and_log(f"[RPA] 已通过 BitBrowser 创建窗口，ID: {bitbrowser_id}")
 
-            res = openBrowser(bitbrowser_id)
+            try:
+                res = openBrowser(bitbrowser_id)
+            except BitBrowserAPIError as e:
+                if reused_default_bitbrowser_id and e.is_window_missing():
+                    stale_bitbrowser_id = bitbrowser_id
+                    _print_and_log(
+                        f"[RPA] 复用 BitBrowser 窗口失败，旧窗口不存在，准备自动创建新窗口，ID: {stale_bitbrowser_id}"
+                    )
+                    bitbrowser_id = createBrowser()
+                    reused_default_bitbrowser_id = False
+                    _print_and_log(f"[RPA] 已通过 BitBrowser 创建替代窗口，ID: {bitbrowser_id}")
+                    res = openBrowser(bitbrowser_id)
+                else:
+                    raise
             _print_and_log(f"[RPA] 已通过 BitBrowser 打开窗口，ID: {bitbrowser_id}")
             ws = (res or {}).get("data", {}).get("ws")
             if not ws:

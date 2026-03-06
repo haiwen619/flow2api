@@ -16,6 +16,37 @@ url = "http://127.0.0.1:54345"
 headers = {'Content-Type': 'application/json'}
 
 
+class BitBrowserAPIError(RuntimeError):
+    """BitBrowser 本地服务调用失败。"""
+
+    def __init__(self, *, action: str, res, reason: str):
+        self.action = action
+        self.raw_response = res
+        if isinstance(res, dict):
+            self.code = res.get("code")
+            self.success = res.get("success")
+            self.msg = res.get("msg") or res.get("message") or res.get("error")
+        else:
+            self.code = None
+            self.success = None
+            self.msg = None
+        message = (
+            f"BitBrowser {action} 返回异常响应，{reason}。"
+            f" code={self.code!r} success={self.success!r} msg={self.msg!r} raw={res!r}"
+        )
+        super().__init__(message)
+
+    def is_window_missing(self) -> bool:
+        text = str(self.msg or "").strip().lower()
+        if not text:
+            return False
+        return (
+            "没有找到相应数据" in text
+            or "not found" in text
+            or "no corresponding data" in text
+        )
+
+
 def _post_json(path: str, payload: dict, *, timeout: int = 30) -> dict:
     """POST JSON helper.
 
@@ -43,7 +74,7 @@ def _extract_data(res: dict, *, action: str) -> dict:
     避免上层因为缺少 'data' 直接 KeyError，改为给出可读错误。
     """
     if not isinstance(res, dict):
-        raise RuntimeError(f"BitBrowser {action} 返回非 JSON 对象: {res!r}")
+        raise BitBrowserAPIError(action=action, res=res, reason="返回非 JSON 对象")
     data = res.get("data")
     # 常见情况：data 为 dict（包含详细 payload）
     if isinstance(data, dict):
@@ -56,13 +87,7 @@ def _extract_data(res: dict, *, action: str) -> dict:
         return {"_raw": data}
 
     # BitBrowser 出错时常见字段：msg/message/success/code
-    msg = res.get("msg") or res.get("message") or res.get("error")
-    code = res.get("code")
-    success = res.get("success")
-    raise RuntimeError(
-        f"BitBrowser {action} 返回异常响应，缺少 data。"
-        f" code={code!r} success={success!r} msg={msg!r} raw={res!r}"
-    )
+    raise BitBrowserAPIError(action=action, res=res, reason="缺少 data")
 
 
 def createBrowser():  # 创建或者更新窗口，指纹参数 browserFingerPrint 如没有特定需求，只需要指定下内核即可，如果需要更详细的参数，请参考文档
@@ -122,7 +147,7 @@ def openBrowser(id):  # 直接指定ID打开窗口，也可以使用 createBrows
         try:
             _extract_data(res, action="openBrowser(/browser/open)")
             return res
-        except RuntimeError as e:
+        except BitBrowserAPIError:
             # 仅对“正在打开中”做重试，其他错误直接抛出
             msg = (res.get("msg") or res.get("message") or "") if isinstance(res, dict) else ""
             if isinstance(msg, str) and ("正在打开" in msg or "opening" in msg.lower()):

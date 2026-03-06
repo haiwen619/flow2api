@@ -44,5 +44,5 @@ yescaptcha_api_key = ""  # YesCaptcha API密钥
 yescaptcha_base_url = "https://api.yescaptcha.com"
 
 [rpa]
-test_bitbrowser_id_local = "f1ef6f8ccb6146988c67a63b92a78971"
+test_bitbrowser_id_local = "8775a712ab0c4db59e0811ad115bc565"
 test_bitbrowser_id_server = "b053c6d206644055aee44da3326ee24d"
