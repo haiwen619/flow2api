@@ -109,6 +109,7 @@ curl -X GET "http://127.0.0.1:8000/v1/models" \
 - `messages`（OpenAI 风格）
 - `contents`（Gemini 风格）
 - `stream: true`（SSE 输出，结尾包含 `data: [DONE]`）
+- `stream: false`（等待生成完成后一次性返回 JSON）
 
 ### 图片生成示例（gemini-3.1-flash-image）
 
@@ -126,6 +127,24 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
       "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
     },
     "stream": true
+  }'
+```
+
+### 非流式示例（兼容未接入 SSE 的上游）
+
+```bash
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-landscape",
+    "messages": [
+      {
+        "role": "user",
+        "content": "一只可爱的猫咪在花园里玩耍"
+      }
+    ],
+    "stream": false
   }'
 ```
 
@@ -220,4 +239,3 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 - 后台可正常登录（`/login`）
 - `/v1/models` 可返回模型列表
 - 随机抽一条 Token 执行一次 `刷新AT` 与 `刷Cookie` 验证链路
-

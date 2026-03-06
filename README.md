@@ -247,7 +247,36 @@ curl.exe -X POST "http://127.0.0.1:3000/v1/chat/completions" `
 
 
 
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-landscape",
+    "messages": [
+      {
+        "role": "user",
+        "content": "一只可爱的猫咪在花园里玩耍"
+      }
+    ],
+    "stream": false
+  }'
 
+
+
+
+curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-landscape",
+    "messages": [
+      {
+        "role": "user",
+        "content": "一只可爱的猫咪在花园里玩耍"
+      }
+    ],
+    "stream": false
+  }'
 
 
 
@@ -493,6 +522,24 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
       }
     ],
     "stream": true
+  }'
+```
+
+非流式兼容调用：
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer han1234" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-landscape",
+    "messages": [
+      {
+        "role": "user",
+        "content": "一只可爱的猫咪在花园里玩耍"
+      }
+    ],
+    "stream": false
   }'
 ```
 

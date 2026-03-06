@@ -731,25 +731,7 @@ class GenerationHandler:
         generation_type = model_config["type"]
         debug_logger.log_info(f"[GENERATION] 开始生成 - 模型: {model}, 类型: {generation_type}, Prompt: {prompt[:50]}...")
 
-        # 非流式模式: 只检查可用性
-        if not stream:
-            is_image = (generation_type == "image")
-            is_video = (generation_type == "video")
-            available = await self.check_token_availability(is_image, is_video)
-
-            if available:
-                if is_image:
-                    message = "所有Token可用于图片生成。请启用流式模式使用生成功能。"
-                else:
-                    message = "所有Token可用于视频生成。请启用流式模式使用生成功能。"
-            else:
-                if is_image:
-                    message = "没有可用的Token进行图片生成"
-                else:
-                    message = "没有可用的Token进行视频生成"
-
-            yield self._create_completion_response(message, is_availability_check=True)
-            return
+        # 非流式模式：与流式模式共用真实生成链路，仅不输出中间进度。
 
         # 向用户展示开始信息
         if stream:
