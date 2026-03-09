@@ -33,6 +33,25 @@ class Config:
         return self._config
 
     @property
+    def db_backend(self) -> str:
+        value = str(self._config.get("database", {}).get("backend", "sqlite") or "").strip().lower()
+        return value if value in {"sqlite", "mysql"} else "sqlite"
+
+    @property
+    def database_url(self) -> str:
+        return str(self._config.get("database", {}).get("database_url", "") or "").strip()
+
+    @property
+    def sqlite_path(self) -> str:
+        value = str(self._config.get("database", {}).get("sqlite_path", "data/flow.db") or "").strip()
+        return value or "data/flow.db"
+
+    @property
+    def accountpool_sqlite_path(self) -> str:
+        value = str(self._config.get("database", {}).get("accountpool_sqlite_path", "data/accountpool.db") or "").strip()
+        return value or "data/accountpool.db"
+
+    @property
     def admin_username(self) -> str:
         # If admin_username is set from database, use it; otherwise fall back to config file
         if self._admin_username is not None:

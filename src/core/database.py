@@ -1,26 +1,40 @@
 """Database storage layer for Flow2API"""
-import aiosqlite
 import json
+import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from .db_compat import dbapi as aiosqlite, is_mysql_target
+from .config import config
 from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig
 
 
 class Database:
-    """SQLite database manager"""
+    """Database manager with SQLite/MySQL dual backend support"""
 
     def __init__(self, db_path: str = None):
         if db_path is None:
-            # Store database in data directory
-            data_dir = Path(__file__).parent.parent.parent / "data"
-            data_dir.mkdir(exist_ok=True)
-            db_path = str(data_dir / "flow.db")
+            backend = str(os.getenv("DB_BACKEND", config.db_backend) or "sqlite").strip().lower()
+            if backend == "mysql":
+                db_path = str(os.getenv("DATABASE_URL", config.database_url) or "").strip()
+                if not db_path:
+                    raise RuntimeError("MySQL 模式已启用，但 DATABASE_URL / [database].database_url 未配置")
+            else:
+                configured_path = str(os.getenv("SQLITE_PATH", config.sqlite_path) or "").strip() or "data/flow.db"
+                resolved_path = Path(configured_path)
+                if not resolved_path.is_absolute():
+                    resolved_path = Path(__file__).parent.parent.parent / configured_path
+                resolved_path.parent.mkdir(exist_ok=True, parents=True)
+                db_path = str(resolved_path)
         self.db_path = db_path
+        self.backend = "mysql" if is_mysql_target(self.db_path) else "sqlite"
 
-    def db_exists(self) -> bool:
-        """Check if database file exists"""
-        return Path(self.db_path).exists()
+    async def db_exists(self) -> bool:
+        """Check if current database target already has core tables"""
+        if self.backend == "sqlite":
+            return Path(self.db_path).exists()
+        async with aiosqlite.connect(self.db_path) as db:
+            return await self._table_exists(db, "tokens")
 
     async def _table_exists(self, db, table_name: str) -> bool:
         """Check if a table exists in the database"""
@@ -422,6 +436,19 @@ class Database:
 
     async def init_db(self):
         """Initialize database tables"""
+        if self.backend == "mysql":
+            schema_path = Path(__file__).parent.parent.parent / "sql" / "mysql_init.sql"
+            statements = [
+                stmt.strip()
+                for stmt in schema_path.read_text(encoding="utf-8").split(";")
+                if stmt.strip()
+            ]
+            async with aiosqlite.connect(self.db_path) as db:
+                for stmt in statements:
+                    await db.execute(stmt)
+                await db.commit()
+            return
+
         async with aiosqlite.connect(self.db_path) as db:
             # Tokens table (Flow2API版本)
             await db.execute("""
@@ -743,7 +770,13 @@ class Database:
         """Get token by ST"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM tokens WHERE st = ?", (st,))
+            if self.backend == "mysql":
+                cursor = await db.execute(
+                    "SELECT * FROM tokens WHERE st_sha256 = SHA2(?, 256) AND st = ?",
+                    (st, st),
+                )
+            else:
+                cursor = await db.execute("SELECT * FROM tokens WHERE st = ?", (st,))
             row = await cursor.fetchone()
             if row:
                 return Token(**dict(row))

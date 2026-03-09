@@ -97,14 +97,14 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
     print("=" * 60)
-    print("Flow2API Starting...")
+    print("Flow2API 正在启动...")
     print("=" * 60)
 
     # Get config from setting.toml
     config_dict = config.get_raw_config()
 
     # Check if database exists (determine if first startup)
-    is_first_startup = not db.db_exists()
+    is_first_startup = not await db.db_exists()
 
     # Initialize database tables structure
     await db.init_db()
@@ -113,13 +113,13 @@ async def lifespan(app: FastAPI):
 
     # Handle database initialization based on startup type
     if is_first_startup:
-        print("🎉 First startup detected. Initializing database and configuration from setting.toml...")
+        print("[启动] 检测到首次启动，正在根据 setting.toml 初始化数据库和配置...")
         await db.init_config_from_toml(config_dict, is_first_startup=True)
-        print("✓ Database and configuration initialized successfully.")
+        print("[启动] 数据库和配置初始化完成。")
     else:
-        print("🔄 Existing database detected. Checking for missing tables and columns...")
+        print("[启动] 检测到已有数据库，正在检查缺失的表和字段...")
         await db.check_and_migrate_db(config_dict)
-        print("✓ Database migration check completed.")
+        print("[启动] 数据库迁移检查完成。")
 
     # Load admin config from database
     admin_config = await db.get_admin_config()
@@ -164,7 +164,7 @@ async def lifespan(app: FastAPI):
     if captcha_config.captcha_method == "personal":
         from .services.browser_captcha_personal import BrowserCaptchaService
         browser_service = await BrowserCaptchaService.get_instance(db)
-        print("✓ Browser captcha service initialized (nodriver mode)")
+        print("[启动] 浏览器打码服务已初始化（nodriver 模式）")
         
         # 启动常驻模式：从第一个可用token获取project_id
         tokens = await token_manager.get_all_tokens()
@@ -177,16 +177,16 @@ async def lifespan(app: FastAPI):
         if resident_project_id:
             # 直接启动常驻模式（会自动导航到项目页面，cookie已持久化）
             await browser_service.start_resident_mode(resident_project_id)
-            print(f"✓ Browser captcha resident mode started (project: {resident_project_id[:8]}...)")
+            print(f"[启动] 浏览器打码常驻模式已启动（项目: {resident_project_id[:8]}...）")
         else:
             # 没有可用的project_id时，打开登录窗口供用户手动操作
             await browser_service.open_login_window()
-            print("⚠ No active token with project_id found, opened login window for manual setup")
+            print("[启动] 未找到带 project_id 的活跃 Token，已打开登录窗口供手动配置")
     elif captcha_config.captcha_method == "browser":
         from .services.browser_captcha import BrowserCaptchaService
         browser_service = await BrowserCaptchaService.get_instance(db)
         await browser_service.warmup_browser_slots()
-        print("? Browser captcha service initialized (headed mode)")
+        print("[启动] 浏览器打码服务已初始化（有头模式）")
 
     # Initialize concurrency manager
     tokens = await token_manager.get_all_tokens()
@@ -205,7 +205,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(3600)  # 每小时执行一次
                 await token_manager.auto_unban_429_tokens()
             except Exception as e:
-                print(f"❌ Auto-unban task error: {e}")
+                print(f"[启动] 429 自动解禁任务异常: {e}")
 
     async def auto_refresh_at_task():
         """定时任务：每分钟巡检活跃Token并触发AT自动刷新"""
@@ -215,30 +215,30 @@ async def lifespan(app: FastAPI):
                 checked, attempted, failed = await token_manager.auto_refresh_active_tokens()
                 if attempted > 0 or failed > 0:
                     print(
-                        f"✓ AT auto-refresh scan: checked={checked}, "
-                        f"attempted={attempted}, failed={failed}"
+                        f"[启动] AT 自动刷新巡检: 已检查={checked}, "
+                        f"尝试刷新={attempted}, 失败={failed}"
                     )
             except Exception as e:
-                print(f"❌ Auto-refresh task error: {e}")
+                print(f"[启动] AT 自动刷新任务异常: {e}")
 
     auto_unban_task_handle = asyncio.create_task(auto_unban_task())
     auto_refresh_task_handle = asyncio.create_task(auto_refresh_at_task())
 
-    print(f"✓ Database initialized")
-    print("✓ AccountPool initialized")
-    print("✓ ProxyPool initialized")
-    print(f"✓ Total tokens: {len(tokens)}")
-    print(f"✓ Cache: {'Enabled' if config.cache_enabled else 'Disabled'} (timeout: {config.cache_timeout}s)")
-    print(f"✓ File cache cleanup task started")
-    print(f"✓ 429 auto-unban task started (runs every hour)")
-    print(f"✓ AT auto-refresh task started (runs every minute)")
-    print(f"✓ Server running on http://{config.server_host}:{config.server_port}")
+    print("[启动] 数据库已初始化")
+    print("[启动] 账号池已初始化")
+    print("[启动] 代理池已初始化")
+    print(f"[启动] Token 总数: {len(tokens)}")
+    print(f"[启动] 缓存状态: {'启用' if config.cache_enabled else '禁用'}（超时: {config.cache_timeout}s）")
+    print("[启动] 文件缓存清理任务已启动")
+    print("[启动] 429 自动解禁任务已启动（每小时执行一次）")
+    print("[启动] AT 自动刷新任务已启动（每分钟执行一次）")
+    print(f"[启动] 服务监听地址: http://{config.server_host}:{config.server_port}")
     print("=" * 60)
 
     yield
 
     # Shutdown
-    print("Flow2API Shutting down...")
+    print("Flow2API 正在关闭...")
     # Stop file cache cleanup task
     await generation_handler.file_cache.stop_cleanup_task()
     # Stop auto-unban task
@@ -256,10 +256,10 @@ async def lifespan(app: FastAPI):
     # Close browser if initialized
     if browser_service:
         await browser_service.close()
-        print("✓ Browser captcha service closed")
-    print("✓ File cache cleanup task stopped")
-    print("✓ 429 auto-unban task stopped")
-    print("✓ AT auto-refresh task stopped")
+        print("[关闭] 浏览器打码服务已关闭")
+    print("[关闭] 文件缓存清理任务已停止")
+    print("[关闭] 429 自动解禁任务已停止")
+    print("[关闭] AT 自动刷新任务已停止")
 
 
 # Initialize components

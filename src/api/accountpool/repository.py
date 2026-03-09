@@ -2,24 +2,77 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import aiosqlite
+from ...core.config import config
+from ...core.db_compat import dbapi as aiosqlite, is_mysql_target
 
 
 class AccountPoolRepository:
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or os.getenv("ACCOUNTPOOL_DB_PATH", "./data/accountpool.db")
+        if db_path is not None:
+            self._db_path = db_path
+        else:
+            backend = str(os.getenv("DB_BACKEND", config.db_backend) or "sqlite").strip().lower()
+            if backend == "mysql":
+                self._db_path = str(os.getenv("DATABASE_URL", config.database_url) or "").strip()
+                if not self._db_path:
+                    raise RuntimeError("MySQL 模式已启用，但 DATABASE_URL / [database].database_url 未配置")
+            else:
+                configured_path = str(
+                    os.getenv("ACCOUNTPOOL_DB_PATH", config.accountpool_sqlite_path) or ""
+                ).strip() or "data/accountpool.db"
+                resolved_path = Path(configured_path)
+                if not resolved_path.is_absolute():
+                    resolved_path = Path(__file__).resolve().parents[3] / configured_path
+                self._db_path = str(resolved_path)
+        self._backend = "mysql" if is_mysql_target(self._db_path) else "sqlite"
 
     @staticmethod
     def _normalize_account_key(platform: str, display_name: str) -> str:
         return f"{(platform or '').strip()}:{(display_name or '').strip()}".lower()
 
     async def initialize(self) -> None:
-        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        if self._backend == "sqlite":
+            os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA foreign_keys=ON")
+            if self._backend == "mysql":
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS account_pool_accounts (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        account_key VARCHAR(255) UNIQUE NOT NULL,
+                        platform VARCHAR(64) NOT NULL,
+                        display_name VARCHAR(255) NOT NULL,
+                        uid VARCHAR(255),
+                        password VARCHAR(255) NOT NULL,
+                        session_token LONGTEXT,
+                        session_token_updated_at BIGINT,
+                        is_2fa_enabled TINYINT(1) DEFAULT 0,
+                        twofa_password VARCHAR(255),
+                        tags LONGTEXT,
+                        last_validate_at BIGINT,
+                        last_validate_ok TINYINT(1),
+                        last_validate_status VARCHAR(255),
+                        last_validate_error TEXT,
+                        last_validate_job_id VARCHAR(255),
+                        last_validate_msg TEXT,
+                        created_at BIGINT,
+                        updated_at BIGINT
+                    )
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_account_pool_platform ON account_pool_accounts(platform)"
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_account_pool_updated_at ON account_pool_accounts(updated_at)"
+                )
+                await db.commit()
+                return
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS account_pool_accounts (

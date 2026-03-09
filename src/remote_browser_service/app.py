@@ -1,3 +1,18 @@
+"""远程有头打码服务入口。
+
+该服务为 Flow2API 的 `remote_browser` 模式提供 HTTP 接口，主要负责：
+- 通过 Playwright 浏览器会话获取验证码 token
+- 在调用方回调 `finish` / `error` 前维护临时打码会话
+- 从主库和代理池读取代理策略，并应用到远程浏览器链路
+- 提供轻量运行面板和 Swagger 文档，便于查看运行状态
+
+主要接口：
+- `POST /api/v1/solve`
+- `POST /api/v1/sessions/{session_id}/finish`
+- `POST /api/v1/sessions/{session_id}/error`
+- `POST /api/v1/custom-score`
+- `GET /ui/api/overview`
+"""
 from __future__ import annotations
 
 import asyncio

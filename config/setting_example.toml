@@ -3,6 +3,12 @@ api_key = "han1234"
 admin_username = "admin"
 admin_password = "admin"
 
+[database]
+backend = "sqlite"  # sqlite / mysql
+sqlite_path = "data/flow.db"
+accountpool_sqlite_path = "data/accountpool.db"
+database_url = ""  # 例如: mysql+asyncmy://user:password@127.0.0.1:3306/flow2api?charset=utf8mb4
+
 [flow]
 labs_base_url = "https://labs.google/fx/api"
 api_base_url = "https://aisandbox-pa.googleapis.com/v1"
