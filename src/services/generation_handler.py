@@ -440,7 +440,7 @@ MODEL_CONFIG = {
     },
 
     # ========== 多图生成 (R2V - Reference Images to Video) ==========
-    # 支持多张图片,不限制数量
+    # 当前上游协议最多支持 3 张参考图
 
     # veo_3_1_r2v_fast (横竖屏)
     "veo_3_1_r2v_fast_portrait": {
@@ -450,16 +450,16 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None  # 不限制
+        "max_images": 3
     },
     "veo_3_1_r2v_fast": {
         "type": "video",
         "video_type": "r2v",
-        "model_key": "veo_3_1_r2v_fast",
+        "model_key": "veo_3_1_r2v_fast_landscape",
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None  # 不限制
+        "max_images": 3
     },
 
     # veo_3_1_r2v_fast_ultra (横竖屏)
@@ -470,16 +470,16 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None  # 不限制
+        "max_images": 3
     },
     "veo_3_1_r2v_fast_ultra": {
         "type": "video",
         "video_type": "r2v",
-        "model_key": "veo_3_1_r2v_fast_ultra",
+        "model_key": "veo_3_1_r2v_fast_landscape_ultra",
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None  # 不限制
+        "max_images": 3
     },
 
     # veo_3_1_r2v_fast_ultra_relaxed (横竖屏)
@@ -490,16 +490,16 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None  # 不限制
+        "max_images": 3
     },
     "veo_3_1_r2v_fast_ultra_relaxed": {
         "type": "video",
         "video_type": "r2v",
-        "model_key": "veo_3_1_r2v_fast_ultra_relaxed",
+        "model_key": "veo_3_1_r2v_fast_landscape_ultra_relaxed",
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None  # 不限制
+        "max_images": 3
     },
 
     # ========== 视频放大 (Video Upsampler) ==========
@@ -625,17 +625,17 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None,
+        "max_images": 3,
         "upsample": {"resolution": "VIDEO_RESOLUTION_4K", "model_key": "veo_3_1_upsampler_4k"}
     },
     "veo_3_1_r2v_fast_ultra_4k": {
         "type": "video",
         "video_type": "r2v",
-        "model_key": "veo_3_1_r2v_fast_ultra",
+        "model_key": "veo_3_1_r2v_fast_landscape_ultra",
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None,
+        "max_images": 3,
         "upsample": {"resolution": "VIDEO_RESOLUTION_4K", "model_key": "veo_3_1_upsampler_4k"}
     },
 
@@ -647,17 +647,17 @@ MODEL_CONFIG = {
         "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None,
+        "max_images": 3,
         "upsample": {"resolution": "VIDEO_RESOLUTION_1080P", "model_key": "veo_3_1_upsampler_1080p"}
     },
     "veo_3_1_r2v_fast_ultra_1080p": {
         "type": "video",
         "video_type": "r2v",
-        "model_key": "veo_3_1_r2v_fast_ultra",
+        "model_key": "veo_3_1_r2v_fast_landscape_ultra",
         "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
         "supports_images": True,
         "min_images": 0,
-        "max_images": None,
+        "max_images": 3,
         "upsample": {"resolution": "VIDEO_RESOLUTION_1080P", "model_key": "veo_3_1_upsampler_1080p"}
     }
 }
@@ -714,7 +714,6 @@ class GenerationHandler:
         start_time = time.time()
         token = None
         generation_type = None
-        token_slot_reserved = False
         pending_token_state = {"active": False}
         request_id = f"gen-{int(start_time * 1000)}-{id(asyncio.current_task())}"
         perf_trace: Dict[str, Any] = {
@@ -779,7 +778,6 @@ class GenerationHandler:
             yield self._create_error_response(error_msg)
             return
 
-        token_slot_reserved = False
         debug_logger.log_info(f"[GENERATION] 已选择Token: {token.id} ({token.email})")
 
         try:
@@ -811,22 +809,16 @@ class GenerationHandler:
             generation_pipeline_started_at = time.time()
             if generation_type == "image":
                 debug_logger.log_info(f"[GENERATION] 开始图片生成流程...")
-                slot_reserved_for_handler = token_slot_reserved
-                token_slot_reserved = False
                 async for chunk in self._handle_image_generation(
                     token, project_id, model_config, prompt, images, stream,
-                    slot_reserved=slot_reserved_for_handler,
                     perf_trace=perf_trace,
                     pending_token_state=pending_token_state
                 ):
                     yield chunk
             else:  # video
                 debug_logger.log_info(f"[GENERATION] 开始视频生成流程...")
-                slot_reserved_for_handler = token_slot_reserved
-                token_slot_reserved = False
                 async for chunk in self._handle_video_generation(
                     token, project_id, model_config, prompt, images, stream,
-                    slot_reserved=slot_reserved_for_handler,
                     perf_trace=perf_trace,
                     pending_token_state=pending_token_state
                 ):
@@ -922,11 +914,6 @@ class GenerationHandler:
                 )
                 pending_token_state["active"] = False
 
-            if token_slot_reserved and token and self.concurrency_manager:
-                if generation_type == "image":
-                    await self.concurrency_manager.release_image(token.id)
-                elif generation_type == "video":
-                    await self.concurrency_manager.release_video(token.id)
 
     def _get_no_token_error_message(self, generation_type: str) -> str:
         """获取无可用Token时的详细错误信息"""
@@ -943,30 +930,19 @@ class GenerationHandler:
         prompt: str,
         images: Optional[List[bytes]],
         stream: bool,
-        slot_reserved: bool = False,
         perf_trace: Optional[Dict[str, Any]] = None,
         pending_token_state: Optional[Dict[str, bool]] = None
     ) -> AsyncGenerator:
         """处理图片生成 (同步返回)"""
 
-        slot_acquired = False
         image_trace: Optional[Dict[str, Any]] = None
         if isinstance(perf_trace, dict):
             image_trace = perf_trace.setdefault("image_generation", {})
             image_trace["input_image_count"] = len(images) if images else 0
 
-        # 获取并发槽位
-        if self.concurrency_manager and not slot_reserved:
-            slot_ok, slot_wait_ms = await self.concurrency_manager.wait_acquire_image(
-                token.id,
-                timeout_seconds=config.flow_image_slot_wait_timeout
-            )
-            if image_trace is not None:
-                image_trace["slot_wait_ms"] = slot_wait_ms
-            if not slot_ok:
-                yield self._create_error_response("图片并发限制已达上限")
-                return
-            slot_acquired = True
+        # 不在本地等待图片硬并发槽位；请求一到就直接向上游提交。
+        if image_trace is not None:
+            image_trace["slot_wait_ms"] = 0
 
         try:
             # 上传图片 (如果有)
@@ -1184,9 +1160,7 @@ class GenerationHandler:
                 )
 
         finally:
-            # 释放并发槽位
-            if self.concurrency_manager and (slot_reserved or slot_acquired):
-                await self.concurrency_manager.release_image(token.id)
+            pass
 
     async def _handle_video_generation(
         self,
@@ -1196,30 +1170,19 @@ class GenerationHandler:
         prompt: str,
         images: Optional[List[bytes]],
         stream: bool,
-        slot_reserved: bool = False,
         perf_trace: Optional[Dict[str, Any]] = None,
         pending_token_state: Optional[Dict[str, bool]] = None
     ) -> AsyncGenerator:
         """处理视频生成 (异步轮询)"""
 
-        slot_acquired = False
         video_trace: Optional[Dict[str, Any]] = None
         if isinstance(perf_trace, dict):
             video_trace = perf_trace.setdefault("video_generation", {})
             video_trace["input_image_count"] = len(images) if images else 0
 
-        # 获取并发槽位
-        if self.concurrency_manager and not slot_reserved:
-            slot_ok, slot_wait_ms = await self.concurrency_manager.wait_acquire_video(
-                token.id,
-                timeout_seconds=config.flow_video_slot_wait_timeout
-            )
-            if video_trace is not None:
-                video_trace["slot_wait_ms"] = slot_wait_ms
-            if not slot_ok:
-                yield self._create_error_response("视频并发限制已达上限")
-                return
-            slot_acquired = True
+        # 不在本地等待视频硬并发槽位；请求一到就直接向上游提交。
+        if video_trace is not None:
+            video_trace["slot_wait_ms"] = 0
 
         try:
             # 获取模型类型和配置
@@ -1240,7 +1203,7 @@ class GenerationHandler:
                     # veo_3_1_i2v_s_fast_portrait_fl -> veo_3_1_i2v_s_fast_portrait_ultra_fl
                     # veo_3_1_t2v_fast -> veo_3_1_t2v_fast_ultra
                     # veo_3_1_t2v_fast_portrait -> veo_3_1_t2v_fast_portrait_ultra
-                    # veo_3_0_r2v_fast -> veo_3_0_r2v_fast_ultra
+                    # veo_3_1_r2v_fast_landscape -> veo_3_1_r2v_fast_landscape_ultra
                     if "_fl" in model_key:
                         model_key = model_key.replace("_fl", "_ultra_fl")
                     else:
@@ -1257,6 +1220,7 @@ class GenerationHandler:
                 if "ultra" in model_key:
                     # veo_3_1_i2v_s_fast_ultra_fl -> veo_3_1_i2v_s_fast_fl
                     # veo_3_1_t2v_fast_ultra -> veo_3_1_t2v_fast
+                    # veo_3_1_r2v_fast_landscape_ultra -> veo_3_1_r2v_fast_landscape
                     model_key = model_key.replace("_ultra_fl", "_fl").replace("_ultra", "")
                     
                     if stream:
@@ -1290,10 +1254,14 @@ class GenerationHandler:
                     yield self._create_error_response(error_msg)
                     return
 
-            # R2V: 多图生成 - 支持多张图片,不限制数量
+            # R2V: 多图生成 - 当前上游协议最多 3 张参考图
             elif video_type == "r2v":
-                # 不再限制最大图片数量
-                pass
+                if max_images is not None and image_count > max_images:
+                    error_msg = f"❌ 多图视频模型最多支持 {max_images} 张参考图,当前提供了 {image_count} 张"
+                    if stream:
+                        yield self._create_stream_chunk(f"{error_msg}\n")
+                    yield self._create_error_response(error_msg)
+                    return
 
             # ========== 上传图片 ==========
             start_media_id = None
@@ -1328,7 +1296,7 @@ class GenerationHandler:
                 if stream:
                     yield self._create_stream_chunk(f"上传 {image_count} 张参考图片...\n")
 
-                for idx, img in enumerate(images):  # 上传所有图片,不限制数量
+                for img in images:
                     media_id = await self.flow_client.upload_image(
                         token.at, img, model_config["aspect_ratio"], project_id=project_id
                     )
@@ -1440,9 +1408,7 @@ class GenerationHandler:
                 yield chunk
 
         finally:
-            # 释放并发槽位
-            if self.concurrency_manager and (slot_reserved or slot_acquired):
-                await self.concurrency_manager.release_video(token.id)
+            pass
 
     async def _poll_video_result(
         self,
@@ -1738,4 +1704,3 @@ class GenerationHandler:
         except Exception as e:
             # 日志记录失败不影响主流程
             debug_logger.log_error(f"Failed to log request: {e}")
-
