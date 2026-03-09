@@ -1219,8 +1219,6 @@ class Database:
                         rl.token_id,
                         rl.operation,
                         rl.proxy_source,
-                        rl.request_body,
-                        rl.response_body,
                         {payload_columns}
                         rl.status_code,
                         rl.duration,
@@ -1240,8 +1238,6 @@ class Database:
                         rl.token_id,
                         rl.operation,
                         rl.proxy_source,
-                        rl.request_body,
-                        rl.response_body,
                         {payload_columns}
                         rl.status_code,
                         rl.duration,
@@ -1266,6 +1262,7 @@ class Database:
                     rl.id,
                     rl.token_id,
                     rl.operation,
+                    rl.proxy_source,
                     rl.request_body,
                     rl.response_body,
                     rl.status_code,
