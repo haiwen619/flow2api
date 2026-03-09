@@ -428,7 +428,9 @@ class ST2ATRequest(BaseModel):
 class ImportTokenItem(BaseModel):
     """导入Token项"""
     email: Optional[str] = None
+    name: Optional[str] = None
     access_token: Optional[str] = None
+    at_expires: Optional[str] = None
     session_token: Optional[str] = None
     cookie: Optional[str] = None
     cookie_file: Optional[str] = None
@@ -1049,124 +1051,160 @@ async def import_tokens(
     updated = 0
     skipped = 0
     errors = []
-    # 保持与历史逻辑一致：按 created_at DESC 的结果中，优先命中同邮箱“最新一条”
-    existing_by_email = {}
-    for existing_token in await token_manager.get_all_tokens():
-        if existing_token.email and existing_token.email not in existing_by_email:
-            existing_by_email[existing_token.email] = existing_token
+    def _normalize_email(value: Optional[str]) -> str:
+        return str(value or "").strip().lower()
 
-    existing_tokens = await token_manager.get_all_tokens()
-    for token_item in existing_tokens:
-        email_key = str(token_item.email or "").strip().lower()
-        if email_key and email_key not in existing_by_email:
-            existing_by_email[email_key] = token_item
-
-    for idx, item in enumerate(request.tokens):
-        try:
-            st = item.session_token
-
-            if not st:
-                errors.append(f"第{idx+1}项: 缺少 session_token")
-                continue
-
-            # 使用 ST 转 AT 获取用户信息
+    def _parse_expires(value: Optional[str], fallback_token: Optional[str] = None) -> Optional[datetime]:
+        if isinstance(value, str) and value.strip():
             try:
+                return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except Exception:
+                pass
+        if fallback_token:
+            try:
+                return token_manager._parse_jwt_exp(fallback_token)
+            except Exception:
+                return None
+        return None
+
+    def _cache_existing_token(email_value: Optional[str], token_obj: Any):
+        raw_email = str(email_value or "").strip()
+        if raw_email and raw_email not in existing_by_email:
+            existing_by_email[raw_email] = token_obj
+        email_key = _normalize_email(email_value)
+        if email_key:
+            existing_by_email[email_key] = token_obj
+
+    # 保持与历史逻辑一致：按 created_at DESC 的结果中，优先命中同邮箱“最新一条”
+    existing_by_email: Dict[str, Any] = {}
+    existing_tokens = await token_manager.get_all_tokens()
+    for existing_token in existing_tokens:
+        _cache_existing_token(existing_token.email, existing_token)
+
+    semaphore = asyncio.Semaphore(6)
+
+    async def _resolve_import_item(idx: int, item: ImportTokenItem) -> Dict[str, Any]:
+        st = str(item.session_token or "").strip()
+        if not st:
+            return {"error": f"第{idx+1}项: 缺少 session_token"}
+
+        email_hint_raw = str(item.email or "").strip()
+        name_hint = str(item.name or "").strip()
+
+        try:
+            async with semaphore:
                 result = await token_manager.flow_client.st_to_at(st)
-                at = result["access_token"]
-                email = result.get("user", {}).get("email")
-                expires = result.get("expires")
+            access_token_hint = str(result.get("access_token") or "").strip()
+            email_hint_raw = str(result.get("user", {}).get("email") or email_hint_raw or "").strip()
+            email_hint = _normalize_email(email_hint_raw)
+            name_hint = str(result.get("user", {}).get("name") or name_hint or "").strip()
+            at_expires = _parse_expires(result.get("expires"), fallback_token=access_token_hint)
 
-                if not email:
-                    errors.append(f"第{idx+1}项: 无法获取邮箱信息")
-                    continue
+            if not email_hint:
+                return {"error": f"第{idx+1}项: 无法获取邮箱信息"}
 
-                email_key = str(email).strip().lower()
-                if not email_key:
-                    errors.append(f"第{idx+1}项: 邮箱为空")
-                    continue
-
-                # 解析过期时间
-                at_expires = None
-                is_expired = False
-                if expires:
-                    try:
-                        at_expires = datetime.fromisoformat(expires.replace('Z', '+00:00'))
-                        # 判断是否过期
-                        now = datetime.now(timezone.utc)
-                        is_expired = at_expires <= now
-                    except:
-                        pass
-
-                # 使用邮箱检查是否已存在
-                existing = existing_by_email.get(email)
-
-                if existing:
-                    if not request.confirm_replace_by_email:
-                        skipped += 1
-                        continue
-
-                    # 更新现有Token
-                    await token_manager.update_token(
-                        token_id=existing.id,
-                        st=st,
-                        cookie=item.cookie,
-                        cookie_file=item.cookie_file,
-                        at=at,
-                        at_expires=at_expires,
-                        captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
-                        image_enabled=item.image_enabled,
-                        video_enabled=item.video_enabled,
-                        image_concurrency=item.image_concurrency,
-                        video_concurrency=item.video_concurrency
-                    )
-                    if item.is_active:
-                        await token_manager.db.update_token(
-                            existing.id,
-                            is_active=True,
-                            ban_reason=None,
-                            banned_at=None
-                        )
-                    else:
-                        await token_manager.disable_token(existing.id)
-                    # 如果过期则禁用
-                    if is_expired:
-                        await token_manager.disable_token(existing.id)
-                        existing.is_active = False
-                    existing.st = st
-                    existing.at = at
-                    existing.at_expires = at_expires
-                    existing.captcha_proxy_url = item.captcha_proxy_url
-                    existing.image_enabled = item.image_enabled
-                    existing.video_enabled = item.video_enabled
-                    existing.image_concurrency = item.image_concurrency
-                    existing.video_concurrency = item.video_concurrency
-                    updated += 1
-                else:
-                    # 添加新Token
-                    new_token = await token_manager.add_token(
-                        st=st,
-                        captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
-                        cookie=item.cookie,
-                        cookie_file=item.cookie_file,
-                        image_enabled=item.image_enabled,
-                        video_enabled=item.video_enabled,
-                        image_concurrency=item.image_concurrency,
-                        video_concurrency=item.video_concurrency
-                    )
-                    if not item.is_active:
-                        await token_manager.disable_token(new_token.id)
-                    # 如果过期则禁用
-                    if is_expired:
-                        await token_manager.disable_token(new_token.id)
-                        new_token.is_active = False
-                    existing_by_email[email] = new_token
-                    added += 1
-                    existing_by_email[email_key] = new_token
-
-            except Exception as e:
-                errors.append(f"第{idx+1}项: {str(e)}")
-
+            now = datetime.now(timezone.utc)
+            return {
+                "idx": idx,
+                "item": item,
+                "st": st,
+                "email": email_hint,
+                "name": name_hint,
+                "at": access_token_hint or None,
+                "at_expires": at_expires,
+                "is_expired": bool(at_expires and at_expires <= now),
+            }
         except Exception as e:
+            return {"error": f"第{idx+1}项: {str(e)}"}
+
+    resolved_items = await asyncio.gather(
+        *(_resolve_import_item(idx, item) for idx, item in enumerate(request.tokens))
+    )
+
+    for resolved in resolved_items:
+        if resolved.get("error"):
+            errors.append(resolved["error"])
+            continue
+
+        try:
+            item = resolved["item"]
+            st = resolved["st"]
+            email = resolved["email"]
+            at = resolved.get("at")
+            at_expires = resolved.get("at_expires")
+            is_expired = bool(resolved.get("is_expired"))
+
+            existing = existing_by_email.get(email)
+            if existing:
+                if not request.confirm_replace_by_email:
+                    skipped += 1
+                    continue
+
+                await token_manager.update_token(
+                    token_id=existing.id,
+                    st=st,
+                    cookie=item.cookie,
+                    cookie_file=item.cookie_file,
+                    at=at,
+                    at_expires=at_expires,
+                    captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
+                    image_enabled=item.image_enabled,
+                    video_enabled=item.video_enabled,
+                    image_concurrency=item.image_concurrency,
+                    video_concurrency=item.video_concurrency
+                )
+                if item.is_active:
+                    await token_manager.db.update_token(
+                        existing.id,
+                        is_active=True,
+                        ban_reason=None,
+                        banned_at=None
+                    )
+                else:
+                    await token_manager.disable_token(existing.id)
+
+                if is_expired:
+                    await token_manager.disable_token(existing.id)
+                    existing.is_active = False
+
+                existing.st = st
+                if at is not None:
+                    existing.at = at
+                existing.at_expires = at_expires
+                existing.cookie = item.cookie
+                existing.cookie_file = item.cookie_file
+                existing.captcha_proxy_url = item.captcha_proxy_url
+                existing.image_enabled = item.image_enabled
+                existing.video_enabled = item.video_enabled
+                existing.image_concurrency = item.image_concurrency
+                existing.video_concurrency = item.video_concurrency
+                _cache_existing_token(email, existing)
+                updated += 1
+            else:
+                new_token = await token_manager.add_token(
+                    st=st,
+                    captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
+                    cookie=item.cookie,
+                    cookie_file=item.cookie_file,
+                    image_enabled=item.image_enabled,
+                    video_enabled=item.video_enabled,
+                    image_concurrency=item.image_concurrency,
+                    video_concurrency=item.video_concurrency,
+                    resolved_at=at,
+                    resolved_at_expires=at_expires,
+                    resolved_email=email,
+                    resolved_name=resolved.get("name"),
+                )
+                if not item.is_active:
+                    await token_manager.disable_token(new_token.id)
+                if is_expired:
+                    await token_manager.disable_token(new_token.id)
+                    new_token.is_active = False
+
+                _cache_existing_token(email, new_token)
+                added += 1
+        except Exception as e:
+            idx = int(resolved.get("idx", 0))
             errors.append(f"第{idx+1}项: {str(e)}")
 
     return {

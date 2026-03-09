@@ -871,6 +871,7 @@
                 <option value="capsolver">CapSolver打码</option>
                 <option value="browser">有头浏览器打码</option>
                 <option value="personal">内置浏览器打码</option>
+                <option value="remote_browser">远程有头打码</option>
               </select>
               <p class="text-xs text-muted-foreground mt-1">
                 选择验证码获取方式
@@ -1007,6 +1008,36 @@
                 <p class="text-xs text-muted-foreground mt-1">
                   同时启动的浏览器实例数量，每个浏览器只开1个标签页，请求轮询分配
                 </p>
+              </div>
+            </div>
+
+            <!-- 远程有头打码配置选项 -->
+            <div id="remoteBrowserOptions" class="hidden space-y-4">
+              <div class="rounded-md bg-blue-50 dark:bg-blue-900/20 p-3 border border-blue-200 dark:border-blue-800">
+                <p class="text-xs text-blue-800 dark:text-blue-200">
+                  ℹ️ <strong>远程有头打码：</strong>通过 HTTP 调用独立打码服务获取 token，并在请求结束后回调 finish/error
+                </p>
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">远程服务 Base URL</label>
+                <input id="cfgRemoteBrowserBaseUrl" type="text"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="http://127.0.0.1:8060" />
+                <p class="text-xs text-muted-foreground mt-1">
+                  示例：<code class="bg-muted px-1 py-0.5 rounded">http://127.0.0.1:8060</code>
+                </p>
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">远程服务 API Key</label>
+                <input id="cfgRemoteBrowserApiKey" type="text"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="fcs_xxx" />
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">远程请求超时（秒）</label>
+                <input id="cfgRemoteBrowserTimeout" type="number" min="5" max="300"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="60" value="60" />
               </div>
             </div>
           </div>
@@ -1295,6 +1326,17 @@
             placeholder="若不填写则自动生成 (如: Jan 01 - 12:00)" />
         </div>
 
+        <div class="space-y-2">
+          <label class="text-sm font-medium">打码代理 URL
+            <span class="text-muted-foreground text-xs">- 可选</span></label>
+          <input id="addTokenCaptchaProxyUrl"
+            class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+            placeholder="例如 http://user:pass@host:port" />
+          <p class="text-xs text-muted-foreground">
+            为当前 Token 单独指定浏览器打码代理，优先于全局打码代理配置
+          </p>
+        </div>
+
         <!-- 功能开关 -->
         <div class="space-y-3 pt-2 border-t border-border">
           <label class="text-sm font-medium">功能开关</label>
@@ -1421,6 +1463,17 @@
           <input id="editTokenProjectName"
             class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             placeholder="若不填写则保持原有值" />
+        </div>
+
+        <div class="space-y-2">
+          <label class="text-sm font-medium">打码代理 URL
+            <span class="text-muted-foreground text-xs">- 可选</span></label>
+          <input id="editTokenCaptchaProxyUrl"
+            class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+            placeholder="例如 http://user:pass@host:port" />
+          <p class="text-xs text-muted-foreground">
+            为当前 Token 单独指定浏览器打码代理，优先于全局打码代理配置
+          </p>
         </div>
 
         <!-- 功能开关 -->
@@ -2276,6 +2329,7 @@
         $("addTokenRemark").value = "";
         $("addTokenProjectId").value = "";
         $("addTokenProjectName").value = "";
+        $("addTokenCaptchaProxyUrl").value = "";
         $("addTokenImageEnabled").checked = true;
         $("addTokenVideoEnabled").checked = true;
         $("addTokenImageConcurrency").value = "-1";
@@ -2292,6 +2346,7 @@
         $("editTokenRemark").value = token.remark || "";
         $("editTokenProjectId").value = token.current_project_id || "";
         $("editTokenProjectName").value = token.current_project_name || "";
+        $("editTokenCaptchaProxyUrl").value = token.captcha_proxy_url || "";
         $("editTokenImageEnabled").checked = token.image_enabled !== false;
         $("editTokenVideoEnabled").checked = token.video_enabled !== false;
         $("editTokenImageConcurrency").value =
@@ -2309,6 +2364,7 @@
         $("editTokenRemark").value = "";
         $("editTokenProjectId").value = "";
         $("editTokenProjectName").value = "";
+        $("editTokenCaptchaProxyUrl").value = "";
         $("editTokenImageEnabled").checked = true;
         $("editTokenVideoEnabled").checked = true;
         $("editTokenImageConcurrency").value = "";
@@ -2322,6 +2378,7 @@
           remark = $("editTokenRemark").value.trim(),
           projectId = $("editTokenProjectId").value.trim(),
           projectName = $("editTokenProjectName").value.trim(),
+          captchaProxyUrl = $("editTokenCaptchaProxyUrl").value.trim(),
           imageEnabled = $("editTokenImageEnabled").checked,
           videoEnabled = $("editTokenVideoEnabled").checked,
           imageConcurrency = $("editTokenImageConcurrency").value
@@ -2348,6 +2405,7 @@
               remark: remark || null,
               project_id: projectId || null,
               project_name: projectName || null,
+              captcha_proxy_url: captchaProxyUrl || null,
               image_enabled: imageEnabled,
               video_enabled: videoEnabled,
               image_concurrency: imageConcurrency,
@@ -2434,6 +2492,7 @@
           remark = $("addTokenRemark").value.trim(),
           projectId = $("addTokenProjectId").value.trim(),
           projectName = $("addTokenProjectName").value.trim(),
+          captchaProxyUrl = $("addTokenCaptchaProxyUrl").value.trim(),
           imageEnabled = $("addTokenImageEnabled").checked,
           videoEnabled = $("addTokenVideoEnabled").checked,
           imageConcurrency =
@@ -2457,6 +2516,7 @@
               remark: remark || null,
               project_id: projectId || null,
               project_name: projectName || null,
+              captcha_proxy_url: captchaProxyUrl || null,
               image_enabled: imageEnabled,
               video_enabled: videoEnabled,
               image_concurrency: imageConcurrency,
@@ -2788,6 +2848,10 @@
           const cookieForImport = cookie || cookieFile;
           if (!st) return;
           rows.push({
+            email: item.email || null,
+            name: item.name || null,
+            access_token: item.access_token || item.at || null,
+            at_expires: item.at_expires || item.expires || null,
             session_token: st,
             cookie: cookieForImport || null,
             cookie_file: cookieFile || null,
@@ -3229,12 +3293,9 @@
         try {
           const fileContent = await file.text();
           const importData = JSON.parse(fileContent);
-          if (!Array.isArray(importData)) {
-            showToast("JSON格式错误：应为数组", "error");
-            return;
-          }
-          if (importData.length === 0) {
-            showToast("JSON文件为空", "error");
+          const normalizedItems = convertInternalJsonToImportItems(importData);
+          if (!normalizedItems.length) {
+            showToast("JSON中未解析到有效的 Session Token(ST)", "error");
             return;
           }
           const btn = $("importBtn"),
@@ -3247,7 +3308,7 @@
             const r = await apiRequest("/api/tokens/import", {
               method: "POST",
               body: JSON.stringify({
-                tokens: importData,
+                tokens: normalizedItems,
                 confirm_replace_by_email: confirmReplace,
               }),
             });
@@ -3824,6 +3885,10 @@
           "hidden",
           method !== "browser",
         );
+        $("remoteBrowserOptions").classList.toggle(
+          "hidden",
+          method !== "remote_browser",
+        );
       },
       toggleBrowserProxyInput = () => {
         const enabled = $("cfgBrowserProxyEnabled").checked;
@@ -3852,6 +3917,12 @@
           $("cfgCapsolverApiKey").value = d.capsolver_api_key || "";
           $("cfgCapsolverBaseUrl").value =
             d.capsolver_base_url || "https://api.capsolver.com";
+          $("cfgRemoteBrowserBaseUrl").value =
+            d.remote_browser_base_url || "";
+          $("cfgRemoteBrowserApiKey").value =
+            d.remote_browser_api_key || "";
+          $("cfgRemoteBrowserTimeout").value =
+            d.remote_browser_timeout || 60;
           $("cfgBrowserProxyEnabled").checked =
             d.browser_proxy_enabled || false;
           $("cfgBrowserProxyUrl").value = d.browser_proxy_url || "";
@@ -3874,6 +3945,9 @@
           ezBaseUrl = $("cfgEzcaptchaBaseUrl").value.trim(),
           solverApiKey = $("cfgCapsolverApiKey").value.trim(),
           solverBaseUrl = $("cfgCapsolverBaseUrl").value.trim(),
+          remoteBaseUrl = $("cfgRemoteBrowserBaseUrl").value.trim(),
+          remoteApiKey = $("cfgRemoteBrowserApiKey").value.trim(),
+          remoteTimeout = parseInt($("cfgRemoteBrowserTimeout").value) || 60,
           browserProxyEnabled = $("cfgBrowserProxyEnabled").checked,
           browserProxyUrl = $("cfgBrowserProxyUrl").value.trim(),
           browserCount = parseInt($("cfgBrowserCount").value) || 1;
@@ -3887,6 +3961,9 @@
           ezBaseUrl,
           solverApiKey,
           solverBaseUrl,
+          remoteBaseUrl,
+          remoteApiKey,
+          remoteTimeout,
           browserProxyEnabled,
           browserProxyUrl,
           browserCount,
@@ -3904,6 +3981,9 @@
               ezcaptcha_base_url: ezBaseUrl,
               capsolver_api_key: solverApiKey,
               capsolver_base_url: solverBaseUrl,
+              remote_browser_base_url: remoteBaseUrl,
+              remote_browser_api_key: remoteApiKey,
+              remote_browser_timeout: remoteTimeout,
               browser_proxy_enabled: browserProxyEnabled,
               browser_proxy_url: browserProxyUrl,
               browser_count: browserCount,

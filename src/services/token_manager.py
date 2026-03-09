@@ -329,7 +329,11 @@ class TokenManager:
         video_enabled: bool = True,
         image_concurrency: int = -1,
         video_concurrency: int = -1,
-        captcha_proxy_url: Optional[str] = None
+        captcha_proxy_url: Optional[str] = None,
+        resolved_at: Optional[str] = None,
+        resolved_at_expires: Optional[datetime] = None,
+        resolved_email: Optional[str] = None,
+        resolved_name: Optional[str] = None,
     ) -> Token:
         """Add a new token
 
@@ -345,6 +349,10 @@ class TokenManager:
             image_concurrency: 图片并发限制
             video_concurrency: 视频并发限制
             captcha_proxy_url: token级浏览器打码代理（可选，优先于全局）
+            resolved_at: 已预解析的 AT（导入场景复用，避免重复 ST->AT）
+            resolved_at_expires: 已预解析的 AT 过期时间
+            resolved_email: 已预解析的邮箱
+            resolved_name: 已预解析的名称
 
         Returns:
             Token object
@@ -354,30 +362,42 @@ class TokenManager:
         if existing_token:
             raise ValueError(f"Token 已存在（邮箱: {existing_token.email}）")
 
-        # Step 2: 使用ST转换AT
-        debug_logger.log_info(f"[ADD_TOKEN] Converting ST to AT...")
+        # Step 2: 使用ST转换AT，或复用导入阶段已解析出的最新结果。
         try:
-            result = await self.flow_client.st_to_at(st)
-            at = result["access_token"]
-            expires = result.get("expires")
-            user_info = result.get("user", {})
-            email = user_info.get("email", "")
-            name = user_info.get("name", email.split("@")[0] if email else "")
+            email = str(resolved_email or "").strip()
+            at = str(resolved_at or "").strip() or None
+            name = str(resolved_name or "").strip()
+            at_expires = resolved_at_expires
 
-            # 解析过期时间
-            at_expires = self._parse_expiry_datetime(expires, fallback_token=at)
+            if not email:
+                debug_logger.log_info(f"[ADD_TOKEN] Converting ST to AT...")
+                result = await self.flow_client.st_to_at(st)
+                at = result["access_token"]
+                expires = result.get("expires")
+                user_info = result.get("user", {})
+                email = str(user_info.get("email", "") or "").strip()
+                name = str(user_info.get("name", "") or "").strip()
+                at_expires = self._parse_expiry_datetime(expires, fallback_token=at)
+            else:
+                debug_logger.log_info(f"[ADD_TOKEN] Using pre-resolved AT/expires from import pipeline for {email}")
+
+            if not name:
+                name = email.split("@")[0] if email else ""
 
         except Exception as e:
             raise ValueError(f"ST转AT失败: {str(e)}")
 
         # Step 3: 查询余额
-        try:
-            credits_result = await self.flow_client.get_credits(at)
-            credits = credits_result.get("credits", 0)
-            user_paygate_tier = credits_result.get("userPaygateTier")
-        except:
-            credits = 0
-            user_paygate_tier = None
+        credits = 0
+        user_paygate_tier = None
+        if at:
+            try:
+                credits_result = await self.flow_client.get_credits(at)
+                credits = credits_result.get("credits", 0)
+                user_paygate_tier = credits_result.get("userPaygateTier")
+            except Exception:
+                credits = 0
+                user_paygate_tier = None
 
         # Step 4: 处理Project ID和名称
         if project_id:

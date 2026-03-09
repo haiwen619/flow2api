@@ -1,5 +1,9 @@
 # Flow2API
 
+远程打码填入
+https://rt.lmmllm.com
+fcs_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq_9xgbAuFSM
+
 
 放通防火墙端口（如需外网访问）
 New-NetFirewallRule -DisplayName "Flow2API-6050" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 6050
