@@ -514,15 +514,16 @@ class TokenManager:
 
     def _should_refresh_at(self, token: Token) -> bool:
         """根据当前 token 快照判断是否需要刷新 AT。"""
+        token_id = getattr(token, "id", "unknown")
+
         if not token.at:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT不存在,需要刷新")
-            return await self._refresh_at(token_id, refresh_source="AUTO_MISSING_AT")
+            return True
 
         if not token.at_expires:
             debug_logger.log_info(f"[AT_CHECK] Token {token_id}: AT过期时间未知,尝试刷新")
-            return await self._refresh_at(token_id, refresh_source="AUTO_NO_EXPIRY")
+            return True
 
-        # 检查是否即将过期（提前窗口随机 2-4 小时）
         now = datetime.now(timezone.utc)
         if token.at_expires.tzinfo is None:
             at_expires_aware = token.at_expires.replace(tzinfo=timezone.utc)
@@ -531,21 +532,38 @@ class TokenManager:
 
         time_until_expiry = at_expires_aware - now
         advance_seconds = self._get_auto_refresh_advance_seconds(
-            token_id=token_id,
+            token_id=int(token.id),
             at_expires=at_expires_aware,
         )
-
         if time_until_expiry.total_seconds() < advance_seconds:
             debug_logger.log_info(
                 f"[AT_CHECK] Token {token_id}: AT即将过期 "
                 f"(剩余 {time_until_expiry.total_seconds():.0f} 秒, "
                 f"触发阈值 {advance_seconds / 3600:.2f} 小时),需要刷新"
             )
+            return True
 
-            # 优先尝试纯协议 reAuth 刷新会话（更新 Cookie/ST/RT），以延长会话有效期；
-            # 若失败，再回退原有 AT 直刷链路。
+        return False
+
+    async def ensure_valid_token(self, token: Optional[Token]) -> Optional[Token]:
+        """确保 token 的 AT 可用，并在必要时返回刷新后的最新对象。"""
+        if not token:
+            return None
+
+        if not self._should_refresh_at(token):
+            return token
+
+        token_id = token.id
+        refresh_source = "AUTO_NEAR_EXPIRY"
+        if not token.at:
+            refresh_source = "AUTO_MISSING_AT"
+        elif not token.at_expires:
+            refresh_source = "AUTO_NO_EXPIRY"
+
+        reauth_attempted = False
+        if token.at and token.at_expires:
             from ..core.config import config
-            reauth_attempted = False
+
             if config.enable_reauth_refresh:
                 reauth_attempted = True
                 debug_logger.log_info(
@@ -555,25 +573,32 @@ class TokenManager:
                     debug_logger.log_info(
                         f"[AT_CHECK] Token {token_id}: reAuth 纯协议刷新成功"
                     )
-                    return True
+                    return await self.db.get_token(token_id)
 
                 latest = await self.db.get_token(token_id)
                 last_detail = str(getattr(latest, "last_refresh_detail", "") or "")
                 if self._is_cookie_invalid_need_relogin_detail(last_detail):
-                    debug_logger.log_warning(
-                        f"[AT_CHECK] Token {token_id}: {last_detail}"
-                    )
-                    return False
+                    debug_logger.log_warning(f"[AT_CHECK] Token {token_id}: {last_detail}")
+                    return None
 
                 debug_logger.log_warning(
                     f"[AT_CHECK] Token {token_id}: reAuth 纯协议刷新失败，回退 AT 直刷链路"
                 )
 
-            return await self._refresh_at(
-                token_id,
-                skip_reauth_fallback=reauth_attempted,
-                refresh_source="AUTO_NEAR_EXPIRY",
-            )
+        if not await self._refresh_at(
+            token_id,
+            skip_reauth_fallback=reauth_attempted,
+            refresh_source=refresh_source,
+        ):
+            return None
+
+        return await self.db.get_token(token_id)
+
+    async def is_at_valid(self, token_id: int, token: Optional[Token] = None) -> bool:
+        """检查 AT 是否有效，如有必要则自动刷新。"""
+        token_obj = token if token and token.id == token_id else await self.db.get_token(token_id)
+        if not token_obj:
+            return False
 
         valid_token = await self.ensure_valid_token(token_obj)
         return valid_token is not None

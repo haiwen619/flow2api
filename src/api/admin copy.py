@@ -1,30 +1,23 @@
 """Admin API routes"""
 import asyncio
-import io
 import json
-import re
-import secrets
-import time
 import urllib.error
 import urllib.request
-import zipfile
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+import secrets
+import time
+import re
 from urllib.parse import urlparse
-
 from curl_cffi.requests import AsyncSession
-
 from ..core.auth import AuthManager
-from ..core.config import config
 from ..core.database import Database
-from ..services.concurrency_manager import ConcurrencyManager
-from ..services.proxy_manager import ProxyManager
+from ..core.config import config
 from ..services.token_manager import TokenManager
+from ..services.proxy_manager import ProxyManager
+from ..services.concurrency_manager import ConcurrencyManager
 
 router = APIRouter()
 
@@ -341,8 +334,6 @@ class LoginRequest(BaseModel):
 
 class AddTokenRequest(BaseModel):
     st: str
-    cookie: Optional[str] = None
-    cookie_file: Optional[str] = None
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
@@ -355,8 +346,6 @@ class AddTokenRequest(BaseModel):
 
 class UpdateTokenRequest(BaseModel):
     st: str  # Session Token (必填，用于刷新AT)
-    cookie: Optional[str] = None
-    cookie_file: Optional[str] = None
     project_id: Optional[str] = None  # 用户可选输入project_id
     project_name: Optional[str] = None
     remark: Optional[str] = None
@@ -386,15 +375,6 @@ class CaptchaScoreTestRequest(BaseModel):
     action: Optional[str] = "homepage"
     verify_url: Optional[str] = "https://antcpt.com/score_detector/verify.php"
     enterprise: Optional[bool] = False
-
-
-class ServerConfigRequest(BaseModel):
-    mode: str  # local | server
-    host: Optional[str] = None
-    port: Optional[int] = None
-    default_public_ip: Optional[str] = None
-    rpa_test_bitbrowser_id_local: Optional[str] = None
-    rpa_test_bitbrowser_id_server: Optional[str] = None
 
 
 class GenerationConfigRequest(BaseModel):
@@ -430,8 +410,6 @@ class ImportTokenItem(BaseModel):
     email: Optional[str] = None
     access_token: Optional[str] = None
     session_token: Optional[str] = None
-    cookie: Optional[str] = None
-    cookie_file: Optional[str] = None
     is_active: bool = True
     captcha_proxy_url: Optional[str] = None
     image_enabled: bool = True
@@ -443,12 +421,6 @@ class ImportTokenItem(BaseModel):
 class ImportTokensRequest(BaseModel):
     """导入Token请求"""
     tokens: List[ImportTokenItem]
-    confirm_replace_by_email: bool = False
-
-
-class InternalTokenExportRequest(BaseModel):
-    """内部Token导出请求"""
-    files: List[str]
 
 
 # ========== Auth Middleware ==========
@@ -530,241 +502,35 @@ async def change_password(
 @router.get("/api/tokens")
 async def get_tokens(token: str = Depends(verify_admin_token)):
     """Get all tokens with statistics"""
-    _ = token
     token_rows = await db.get_all_tokens_with_stats()
     to_iso = lambda value: value.isoformat() if hasattr(value, "isoformat") else value
 
-    result = []
-    for row in token_rows:
-        token_id = int(row.get("id") or 0)
-        pending_status = str(row.get("last_refresh_status") or "").strip().upper()
-        if pending_status in {"PENDING", "RUNNING", "IN_PROGRESS"}:
-            try:
-                reconciled = await token_manager.reconcile_pending_auto_login_status(token_id)
-                if reconciled is not None:
-                    row.update({
-                        "st": reconciled.st,
-                        "cookie": reconciled.cookie,
-                        "cookie_file": reconciled.cookie_file,
-                        "at": reconciled.at,
-                        "at_expires": reconciled.at_expires,
-                        "last_refresh_at": reconciled.last_refresh_at,
-                        "last_refresh_method": reconciled.last_refresh_method,
-                        "last_refresh_status": reconciled.last_refresh_status,
-                        "last_refresh_detail": reconciled.last_refresh_detail,
-                        "email": reconciled.email,
-                        "name": reconciled.name,
-                        "remark": reconciled.remark,
-                        "is_active": reconciled.is_active,
-                        "ban_reason": reconciled.ban_reason,
-                        "banned_at": reconciled.banned_at,
-                        "created_at": reconciled.created_at,
-                        "last_used_at": reconciled.last_used_at,
-                        "use_count": reconciled.use_count,
-                        "credits": reconciled.credits,
-                        "user_paygate_tier": reconciled.user_paygate_tier,
-                        "current_project_id": reconciled.current_project_id,
-                        "current_project_name": reconciled.current_project_name,
-                        "image_enabled": reconciled.image_enabled,
-                        "video_enabled": reconciled.video_enabled,
-                        "image_concurrency": reconciled.image_concurrency,
-                        "video_concurrency": reconciled.video_concurrency,
-                        "captcha_proxy_url": reconciled.captcha_proxy_url,
-                    })
-            except Exception:
-                pass
-
-        result.append({
-            "id": row.get("id"),
-            "st": row.get("st"),  # Session Token for editing
-            "cookie": row.get("cookie"),  # 完整 Cookie Header（用于 reAuth）
-            "cookieFile": row.get("cookie_file"),  # Google 域名 Cookie Header（用于 reAuth step4）
-            "at": row.get("at"),  # Access Token for editing (从ST转换而来)
-            "at_expires": to_iso(row.get("at_expires")) if row.get("at_expires") else None,
-            "last_refresh_at": to_iso(row.get("last_refresh_at")) if row.get("last_refresh_at") else None,
-            "last_refresh_method": row.get("last_refresh_method"),
-            "last_refresh_status": row.get("last_refresh_status"),
-            "last_refresh_detail": row.get("last_refresh_detail"),
-            "token": row.get("at"),  # 兼容前端 token.token 的访问方式
-            "email": row.get("email"),
-            "name": row.get("name"),
-            "remark": row.get("remark"),
-            "is_active": bool(row.get("is_active")),
-            "ban_reason": row.get("ban_reason"),
-            "banned_at": to_iso(row.get("banned_at")) if row.get("banned_at") else None,
-            "created_at": to_iso(row.get("created_at")) if row.get("created_at") else None,
-            "last_used_at": to_iso(row.get("last_used_at")) if row.get("last_used_at") else None,
-            "use_count": row.get("use_count"),
-            "credits": row.get("credits"),
-            "user_paygate_tier": row.get("user_paygate_tier"),
-            "current_project_id": row.get("current_project_id"),
-            "current_project_name": row.get("current_project_name"),
-            "captcha_proxy_url": row.get("captcha_proxy_url") or "",
-            "image_enabled": bool(row.get("image_enabled")),
-            "video_enabled": bool(row.get("video_enabled")),
-            "image_concurrency": row.get("image_concurrency"),
-            "video_concurrency": row.get("video_concurrency"),
-            "image_count": row.get("image_count", 0),
-            "video_count": row.get("video_count", 0),
-            "error_count": row.get("error_count", 0),
-        })
-
-    return result  # 直接返回数组,兼容前端
-
-
-def _normalize_internal_token_email_from_name(file_name: str) -> str:
-    """从文件名推断邮箱标识：foo_at_bar.com_123456.json -> foo@bar.com"""
-    stem = Path(file_name).stem
-    stem = re.sub(r"_\d{6,}$", "", stem)
-    return stem.replace("_at_", "@")
-
-
-def _scan_internal_token_files(token_dir: Path) -> List[Dict[str, Any]]:
-    """扫描 tmp/Token 下 JSON 文件并标记每个邮箱的最新文件。"""
-    json_files = sorted(token_dir.glob("*.json"))
-    if not json_files:
-        raise HTTPException(status_code=404, detail="tmp/Token 下没有可导出的 JSON 文件")
-
-    file_items: List[Dict[str, Any]] = []
-    latest_by_email: Dict[str, Dict[str, Any]] = {}
-
-    for file_path in json_files:
-        stat = file_path.stat()
-        email = _normalize_internal_token_email_from_name(file_path.name)
-        item = {
-            "name": file_path.name,
-            "email": email,
-            "size": int(stat.st_size),
-            "mtime_ts": float(stat.st_mtime),
-            "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            "is_latest_for_email": False,
-        }
-        file_items.append(item)
-
-        current_latest = latest_by_email.get(email)
-        if (
-            current_latest is None
-            or item["mtime_ts"] > current_latest["mtime_ts"]
-            or (
-                item["mtime_ts"] == current_latest["mtime_ts"]
-                and str(item["name"]) > str(current_latest["name"])
-            )
-        ):
-            latest_by_email[email] = item
-
-    latest_names = {v["name"] for v in latest_by_email.values()}
-    for item in file_items:
-        item["is_latest_for_email"] = item["name"] in latest_names
-        item["default_selected"] = item["is_latest_for_email"]
-
-    # 展示顺序：邮箱升序，邮箱内按修改时间降序
-    file_items.sort(key=lambda x: (str(x["email"]).lower(), -float(x["mtime_ts"]), str(x["name"]).lower()))
-    return file_items
-
-
-def _build_internal_export_zip_response(
-    token_dir: Path,
-    selected_names: List[str],
-    filename_prefix: str = "internal_tokens",
-) -> StreamingResponse:
-    """按指定文件名打包导出 zip。"""
-    available_map = {p.name: p for p in token_dir.glob("*.json")}
-    normalized_selected: List[str] = []
-    seen = set()
-    for name in selected_names:
-        n = str(name or "").strip()
-        if not n or n in seen:
-            continue
-        normalized_selected.append(n)
-        seen.add(n)
-
-    if not normalized_selected:
-        raise HTTPException(status_code=400, detail="未选择任何可导出的 JSON 文件")
-
-    invalid_names = [n for n in normalized_selected if n not in available_map]
-    if invalid_names:
-        raise HTTPException(
-            status_code=400,
-            detail=f"存在无效文件: {', '.join(invalid_names[:5])}",
-        )
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_name in normalized_selected:
-            file_path = available_map[file_name]
-            zf.write(file_path, arcname=file_path.name)
-    zip_buffer.seek(0)
-
-    filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
-
-
-@router.get("/api/tokens/internal/files")
-async def list_internal_token_files(token: str = Depends(verify_admin_token)):
-    """列出 tmp/Token 下可导出的 JSON 文件，并标记每个邮箱最新文件。"""
-    _ = token
-    repo_root = Path(__file__).resolve().parents[2]
-    token_dir = repo_root / "tmp" / "Token"
-    if not token_dir.exists() or not token_dir.is_dir():
-        file_items = []
-    else:
-        try:
-            file_items = _scan_internal_token_files(token_dir)
-        except HTTPException as e:
-            if e.status_code == 404:
-                file_items = []
-            else:
-                raise
-
-    default_selected_names = [f["name"] for f in file_items if f.get("default_selected")]
-    unique_emails = len({str(f.get("email") or "").strip().lower() for f in file_items})
-
-    return {
-        "success": True,
-        "token_dir": "tmp/Token",
-        "total_files": len(file_items),
-        "unique_emails": unique_emails,
-        "default_selected_count": len(default_selected_names),
-        "files": file_items,
-    }
-
-
-@router.get("/api/tokens/internal/export")
-async def export_internal_tokens(token: str = Depends(verify_admin_token)):
-    """导出 tmp/Token 去重后的默认文件（每个邮箱仅最新文件）。"""
-    _ = token
-    repo_root = Path(__file__).resolve().parents[2]
-    token_dir = repo_root / "tmp" / "Token"
-    if not token_dir.exists() or not token_dir.is_dir():
-        raise HTTPException(status_code=404, detail="tmp/Token 目录不存在")
-
-    file_items = _scan_internal_token_files(token_dir)
-    default_selected_names = [f["name"] for f in file_items if f.get("default_selected")]
-    return _build_internal_export_zip_response(
-        token_dir=token_dir,
-        selected_names=default_selected_names,
-        filename_prefix="internal_tokens",
-    )
-
-
-@router.post("/api/tokens/internal/export")
-async def export_internal_tokens_selected(
-    request: InternalTokenExportRequest,
-    token: str = Depends(verify_admin_token),
-):
-    """按勾选文件导出 tmp/Token JSON 压缩包。"""
-    _ = token
-    repo_root = Path(__file__).resolve().parents[2]
-    token_dir = repo_root / "tmp" / "Token"
-    if not token_dir.exists() or not token_dir.is_dir():
-        raise HTTPException(status_code=404, detail="tmp/Token 目录不存在")
-
-    return _build_internal_export_zip_response(
-        token_dir=token_dir,
-        selected_names=request.files or [],
-        filename_prefix="internal_tokens_selected",
-    )
+    return [{
+        "id": row.get("id"),
+        "st": row.get("st"),  # Session Token for editing
+        "at": row.get("at"),  # Access Token for editing (从ST转换而来)
+        "at_expires": to_iso(row.get("at_expires")) if row.get("at_expires") else None,  # 🆕 AT过期时间
+        "token": row.get("at"),  # 兼容前端 token.token 的访问方式
+        "email": row.get("email"),
+        "name": row.get("name"),
+        "remark": row.get("remark"),
+        "is_active": bool(row.get("is_active")),
+        "created_at": to_iso(row.get("created_at")) if row.get("created_at") else None,
+        "last_used_at": to_iso(row.get("last_used_at")) if row.get("last_used_at") else None,
+        "use_count": row.get("use_count"),
+        "credits": row.get("credits"),  # 🆕 余额
+        "user_paygate_tier": row.get("user_paygate_tier"),
+        "current_project_id": row.get("current_project_id"),  # 🆕 项目ID
+        "current_project_name": row.get("current_project_name"),  # 🆕 项目名称
+        "captcha_proxy_url": row.get("captcha_proxy_url") or "",
+        "image_enabled": bool(row.get("image_enabled")),
+        "video_enabled": bool(row.get("video_enabled")),
+        "image_concurrency": row.get("image_concurrency"),
+        "video_concurrency": row.get("video_concurrency"),
+        "image_count": row.get("image_count", 0),
+        "video_count": row.get("video_count", 0),
+        "error_count": row.get("error_count", 0)
+    } for row in token_rows]  # 直接返回数组,兼容前端
 
 
 @router.post("/api/tokens")
@@ -776,8 +542,6 @@ async def add_token(
     try:
         new_token = await token_manager.add_token(
             st=request.st,
-            cookie=request.cookie,
-            cookie_file=request.cookie_file,
             project_id=request.project_id,  # 🆕 支持用户指定project_id
             project_name=request.project_name,
             remark=request.remark,
@@ -839,8 +603,6 @@ async def update_token(
         await token_manager.update_token(
             token_id=token_id,
             st=request.st,
-            cookie=request.cookie,
-            cookie_file=request.cookie_file,
             at=at,
             at_expires=at_expires,  # 🆕 更新AT过期时间
             project_id=request.project_id,
@@ -934,7 +696,7 @@ async def refresh_at(
     
     try:
         # 调用token_manager的内部刷新方法（包含 ST 自动刷新逻辑）
-        success = await token_manager._refresh_at(token_id, refresh_source="MANUAL_AT")
+        success = await token_manager._refresh_at(token_id)
 
         if success:
             # 获取更新后的token信息
@@ -952,11 +714,7 @@ async def refresh_at(
                 "token": {
                     "id": updated_token.id,
                     "email": updated_token.email,
-                    "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None,
-                    "last_refresh_at": updated_token.last_refresh_at.isoformat() if updated_token.last_refresh_at else None,
-                    "last_refresh_method": updated_token.last_refresh_method,
-                    "last_refresh_status": updated_token.last_refresh_status,
-                    "last_refresh_detail": updated_token.last_refresh_detail,
+                    "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None
                 }
             }
         else:
@@ -972,50 +730,6 @@ async def refresh_at(
     except Exception as e:
         debug_logger.log_error(f"[API] 刷新AT异常: {str(e)}")
         raise HTTPException(status_code=500, detail=f"刷新AT失败: {str(e)}")
-
-
-@router.post("/api/tokens/{token_id}/refresh-cookie")
-async def refresh_cookie(
-    token_id: int,
-    token: str = Depends(verify_admin_token)
-):
-    """手动仅通过 reAuth 刷新 Cookie（跳过首次 ST->AT 直刷）"""
-    from ..core.logger import debug_logger
-
-    debug_logger.log_info(f"[API] 手动刷新 Cookie(reAuth-only) 请求: token_id={token_id}")
-
-    try:
-        success = await token_manager.refresh_cookie_via_reauth(token_id, refresh_source="MANUAL_COOKIE")
-        if success:
-            updated_token = await token_manager.get_token(token_id)
-            debug_logger.log_info(f"[API] 刷新 Cookie 成功: token_id={token_id}")
-            return {
-                "success": True,
-                "message": "Cookie刷新成功（reAuth-only）",
-                "token": {
-                    "id": updated_token.id,
-                    "email": updated_token.email,
-                    "at_expires": updated_token.at_expires.isoformat() if updated_token.at_expires else None,
-                    "cookie_present": bool(str(updated_token.cookie or "").strip()),
-                    "last_refresh_at": updated_token.last_refresh_at.isoformat() if updated_token.last_refresh_at else None,
-                    "last_refresh_method": updated_token.last_refresh_method,
-                    "last_refresh_status": updated_token.last_refresh_status,
-                    "last_refresh_detail": updated_token.last_refresh_detail,
-                }
-            }
-
-        updated_token = await token_manager.get_token(token_id)
-        fail_detail = (
-            str(getattr(updated_token, "last_refresh_detail", "") or "").strip()
-            or "Cookie刷新失败（reAuth-only）"
-        )
-        debug_logger.log_error(f"[API] 刷新 Cookie 失败: token_id={token_id}, detail={fail_detail}")
-        raise HTTPException(status_code=500, detail=fail_detail)
-    except HTTPException:
-        raise
-    except Exception as e:
-        debug_logger.log_error(f"[API] 刷新Cookie异常: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"刷新Cookie失败: {str(e)}")
 
 
 @router.post("/api/tokens/st2at")
@@ -1047,19 +761,12 @@ async def import_tokens(
 
     added = 0
     updated = 0
-    skipped = 0
     errors = []
     # 保持与历史逻辑一致：按 created_at DESC 的结果中，优先命中同邮箱“最新一条”
     existing_by_email = {}
     for existing_token in await token_manager.get_all_tokens():
         if existing_token.email and existing_token.email not in existing_by_email:
             existing_by_email[existing_token.email] = existing_token
-
-    existing_tokens = await token_manager.get_all_tokens()
-    for token_item in existing_tokens:
-        email_key = str(token_item.email or "").strip().lower()
-        if email_key and email_key not in existing_by_email:
-            existing_by_email[email_key] = token_item
 
     for idx, item in enumerate(request.tokens):
         try:
@@ -1080,11 +787,6 @@ async def import_tokens(
                     errors.append(f"第{idx+1}项: 无法获取邮箱信息")
                     continue
 
-                email_key = str(email).strip().lower()
-                if not email_key:
-                    errors.append(f"第{idx+1}项: 邮箱为空")
-                    continue
-
                 # 解析过期时间
                 at_expires = None
                 is_expired = False
@@ -1101,16 +803,10 @@ async def import_tokens(
                 existing = existing_by_email.get(email)
 
                 if existing:
-                    if not request.confirm_replace_by_email:
-                        skipped += 1
-                        continue
-
                     # 更新现有Token
                     await token_manager.update_token(
                         token_id=existing.id,
                         st=st,
-                        cookie=item.cookie,
-                        cookie_file=item.cookie_file,
                         at=at,
                         at_expires=at_expires,
                         captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
@@ -1119,15 +815,6 @@ async def import_tokens(
                         image_concurrency=item.image_concurrency,
                         video_concurrency=item.video_concurrency
                     )
-                    if item.is_active:
-                        await token_manager.db.update_token(
-                            existing.id,
-                            is_active=True,
-                            ban_reason=None,
-                            banned_at=None
-                        )
-                    else:
-                        await token_manager.disable_token(existing.id)
                     # 如果过期则禁用
                     if is_expired:
                         await token_manager.disable_token(existing.id)
@@ -1146,22 +833,17 @@ async def import_tokens(
                     new_token = await token_manager.add_token(
                         st=st,
                         captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
-                        cookie=item.cookie,
-                        cookie_file=item.cookie_file,
                         image_enabled=item.image_enabled,
                         video_enabled=item.video_enabled,
                         image_concurrency=item.image_concurrency,
                         video_concurrency=item.video_concurrency
                     )
-                    if not item.is_active:
-                        await token_manager.disable_token(new_token.id)
                     # 如果过期则禁用
                     if is_expired:
                         await token_manager.disable_token(new_token.id)
                         new_token.is_active = False
                     existing_by_email[email] = new_token
                     added += 1
-                    existing_by_email[email_key] = new_token
 
             except Exception as e:
                 errors.append(f"第{idx+1}项: {str(e)}")
@@ -1173,105 +855,12 @@ async def import_tokens(
         "success": True,
         "added": added,
         "updated": updated,
-        "skipped": skipped,
         "errors": errors if errors else None,
-        "message": (
-            f"导入完成: 新增 {added} 个, 更新 {updated} 个, 跳过 {skipped} 个"
-            + (f", {len(errors)} 个失败" if errors else "")
-        )
+        "message": f"导入完成: 新增 {added} 个, 更新 {updated} 个" + (f", {len(errors)} 个失败" if errors else "")
     }
 
 
 # ========== Config Management ==========
-
-@router.get("/api/server/config")
-async def get_server_config(token: str = Depends(verify_admin_token)):
-    """Get server runtime mode and bind config from setting.toml."""
-    return {
-        "success": True,
-        "config": {
-            "mode": config.get_server_mode(),
-            "host": config.server_host,
-            "configured_host": config.configured_server_host,
-            "port": config.server_port,
-            "default_public_ip": config.default_server_public_ip,
-            "detected_public_ip": config.detected_public_ip,
-            "server_auto_detected": config.server_auto_detected,
-            "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
-            "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
-            "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
-            "restart_required": True,
-        },
-    }
-
-
-@router.post("/api/server/config")
-async def update_server_config(
-    request: ServerConfigRequest,
-    token: str = Depends(verify_admin_token),
-):
-    """Update server bind config in setting.toml.
-
-    Note: this only affects next process start; restart is required.
-    """
-    mode = str(request.mode or "").strip().lower()
-    if mode not in {"local", "server"}:
-        raise HTTPException(status_code=400, detail="mode 必须是 local 或 server")
-
-    host = str(request.host or "").strip()
-    default_public_ip = str(request.default_public_ip or "").strip()
-    if not host:
-        host = "127.0.0.1" if mode == "local" else "0.0.0.0"
-    host = config.normalize_server_host_for_mode(
-        mode=mode,
-        host=host,
-        default_public_ip=default_public_ip,
-    )
-    port = request.port if request.port is not None else int(config.server_port)
-    local_bit_id = (
-        str(request.rpa_test_bitbrowser_id_local).strip()
-        if request.rpa_test_bitbrowser_id_local is not None
-        else config.get_rpa_test_bitbrowser_id_local()
-    )
-    server_bit_id = (
-        str(request.rpa_test_bitbrowser_id_server).strip()
-        if request.rpa_test_bitbrowser_id_server is not None
-        else config.get_rpa_test_bitbrowser_id_server()
-    )
-
-    try:
-        config.update_server_config(
-            host=host,
-            port=port,
-            default_public_ip=default_public_ip,
-        )
-        config.update_rpa_test_bitbrowser_ids(
-            local_id=local_bit_id,
-            server_id=server_bit_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"保存服务器配置失败: {str(e)}")
-
-    return {
-        "success": True,
-        "message": "服务器配置已保存，重启服务后生效",
-        "config": {
-            "mode": config.get_server_mode(),
-            "host": config.server_host,
-            "configured_host": config.configured_server_host,
-            "port": config.server_port,
-            "default_public_ip": config.default_server_public_ip,
-            "detected_public_ip": config.detected_public_ip,
-            "server_auto_detected": config.server_auto_detected,
-            "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
-            "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
-            "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
-            "restart_required": True,
-        },
-    }
-
 
 @router.get("/api/config/proxy")
 async def get_proxy_config(token: str = Depends(verify_admin_token)):
@@ -1479,7 +1068,6 @@ async def get_logs(
         "token_email": log.get("token_email"),
         "token_username": log.get("token_username"),
         "operation": log.get("operation"),
-        "proxy_source": log.get("proxy_source"),
         "status_code": log.get("status_code"),
         "duration": log.get("duration"),
         "created_at": log.get("created_at")
@@ -1507,69 +1095,6 @@ async def get_log_detail(
         "created_at": log.get("created_at"),
         "request_body": log.get("request_body"),
         "response_body": log.get("response_body")
-    }
-
-
-@router.get("/api/docs/readme")
-async def get_readme_document(token: str = Depends(verify_admin_token)):
-    """Get README markdown for management panel preview."""
-    _ = token
-    project_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        project_root / "docs" / "README.md",
-        project_root / "README.md",
-    ]
-
-    for file_path in candidates:
-        if not file_path.exists() or not file_path.is_file():
-            continue
-        try:
-            markdown = file_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            markdown = file_path.read_text(encoding="utf-8-sig")
-
-        try:
-            rel_path = str(file_path.relative_to(project_root)).replace("\\", "/")
-        except Exception:
-            rel_path = file_path.name
-
-        return {
-            "success": True,
-            "path": rel_path,
-            "updated_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
-            "markdown": markdown,
-        }
-
-    raise HTTPException(status_code=404, detail="README.md not found")
-
-
-@router.get("/api/version")
-async def get_project_version(token: str = Depends(verify_admin_token)):
-    """Get project version info from config/version.json."""
-    project_root = Path(__file__).resolve().parents[2]
-    version_path = project_root / "config" / "version.json"
-
-    if not version_path.exists():
-        raise HTTPException(status_code=404, detail="version.json not found")
-
-    try:
-        payload = json.loads(version_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"version.json 解析失败: {str(e)}")
-
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=500, detail="version.json 格式无效")
-
-    return {
-        "success": True,
-        "version": {
-            "version": str(payload.get("version") or "").strip(),
-            "build": str(payload.get("build") or "").strip(),
-            "release_date": str(payload.get("release_date") or "").strip(),
-            "channel": str(payload.get("channel") or "").strip(),
-            "notes": str(payload.get("notes") or "").strip(),
-            "path": str(version_path.relative_to(project_root)).replace("\\", "/"),
-        },
     }
 
 
@@ -1639,18 +1164,12 @@ async def update_debug_config(
 ):
     """Update debug configuration"""
     try:
-        # Persist to database so the choice survives service restart.
-        await db.update_debug_config(enabled=request.enabled)
-
-        # Hot reload: sync database value to in-memory config.
-        await db.reload_config_to_memory()
+        # Update in-memory config only (not database)
+        # This ensures debug mode is automatically disabled on restart
+        config.set_debug_enabled(request.enabled)
 
         status = "enabled" if request.enabled else "disabled"
-        return {
-            "success": True,
-            "message": f"Debug mode {status}",
-            "enabled": config.debug_enabled,
-        }
+        return {"success": True, "message": f"Debug mode {status}", "enabled": request.enabled}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update debug config: {str(e)}")
 
@@ -1679,57 +1198,23 @@ async def update_generation_timeout(
 
 @router.get("/api/token-refresh/config")
 async def get_token_refresh_config(token: str = Depends(verify_admin_token)):
-    """Get token refresh configuration switches."""
+    """Get AT auto refresh configuration (默认启用)"""
     return {
         "success": True,
         "config": {
-            "at_auto_refresh_enabled": True,  # Flow2API默认启用AT自动刷新
-            "reauth_cookie_invalid_auto_login_enabled": bool(
-                config.reauth_cookie_invalid_auto_login_enabled
-            ),
+            "at_auto_refresh_enabled": True  # Flow2API默认启用AT自动刷新
         }
     }
 
 
 @router.post("/api/token-refresh/enabled")
 async def update_token_refresh_enabled(
-    request: dict,
     token: str = Depends(verify_admin_token)
 ):
-    """Update token refresh related switches."""
-    # AT 自动刷新为固定开启（仅保留前端开关兼容，不支持关闭）。
-    requested_at_enabled = request.get("at_auto_refresh_enabled")
-    if requested_at_enabled is None and "enabled" in request:
-        requested_at_enabled = request.get("enabled")
-
-    # Cookie失效触发账号池自动登录开关
-    if "reauth_cookie_invalid_auto_login_enabled" in request:
-        requested_reauth_auto_login_enabled = bool(
-            request.get("reauth_cookie_invalid_auto_login_enabled")
-        )
-        try:
-            config.update_flow_switches(
-                reauth_cookie_invalid_auto_login_enabled=requested_reauth_auto_login_enabled
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"保存 Cookie失效自动登录配置失败: {str(e)}",
-            )
-
-    at_msg = "AT自动刷新固定启用"
-    if requested_at_enabled is False:
-        at_msg = "AT自动刷新固定启用，忽略关闭请求"
-
+    """Update AT auto refresh enabled (Flow2API固定启用,此接口仅用于前端兼容)"""
     return {
         "success": True,
-        "message": at_msg,
-        "config": {
-            "at_auto_refresh_enabled": True,
-            "reauth_cookie_invalid_auto_login_enabled": bool(
-                config.reauth_cookie_invalid_auto_login_enabled
-            ),
-        },
+        "message": "Flow2API的AT自动刷新默认启用且无法关闭"
     }
 
 

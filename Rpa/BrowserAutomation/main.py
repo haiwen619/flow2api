@@ -1977,6 +1977,9 @@ async def _detect_google_labs_onboarding_modal(page) -> Optional[dict]:
         "experience and shape ai tools for creativity",
         "i'd like to receive marketing emails",
         "i'd like to receive research invitations",
+        "review our privacy policy",
+        "your data and labs.google/fx",
+        "privacy policy",
     ]
 
     for sel in container_selectors:
@@ -2018,6 +2021,251 @@ async def _detect_google_labs_onboarding_modal(page) -> Optional[dict]:
     return None
 
 
+async def _click_google_labs_dialog_button(
+    page,
+    *,
+    button_markers: list[str],
+    modal_markers: list[str],
+    timeout_ms: int = 4_000,
+    scroll_to_bottom: bool = False,
+) -> tuple[bool, str]:
+    """在当前可见的 labs 弹框内稳健点击目标按钮，并校验弹框状态已变化。"""
+    deadline = time.time() + (max(300, int(timeout_ms)) / 1000.0)
+    normalized_modal_markers = [str(v or "").strip().lower() for v in modal_markers if str(v or "").strip()]
+    normalized_button_markers = [str(v or "").strip().lower() for v in button_markers if str(v or "").strip()]
+    logged_scroll = False
+
+    while time.time() < deadline:
+        before_info = await _detect_google_labs_onboarding_modal(page)
+        before_marker = str((before_info or {}).get("marker") or "").strip().lower()
+        if normalized_modal_markers and before_marker not in normalized_modal_markers:
+            return False, ""
+
+        state = None
+        try:
+            state = await page.evaluate(
+                """(payload) => {
+                    const normalize = (value) => String(value || '').trim().toLowerCase();
+                    const buttonMarkers = Array.isArray(payload?.button_markers)
+                        ? payload.button_markers.map(normalize).filter(Boolean)
+                        : [];
+                    const modalMarkers = Array.isArray(payload?.modal_markers)
+                        ? payload.modal_markers.map(normalize).filter(Boolean)
+                        : [];
+                    const shouldScrollToBottom = !!payload?.scroll_to_bottom;
+
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return !!(
+                            style &&
+                            style.visibility !== 'hidden' &&
+                            style.display !== 'none' &&
+                            rect.width > 0 &&
+                            rect.height > 0
+                        );
+                    };
+
+                    const isDisabled = (el) => {
+                        if (!el) return true;
+                        const cls = normalize(el.className);
+                        const ariaDisabled = normalize(el.getAttribute('aria-disabled'));
+                        const dataDisabled = normalize(el.getAttribute('data-disabled'));
+                        return !!(
+                            el.disabled ||
+                            el.hasAttribute('disabled') ||
+                            ariaDisabled === 'true' ||
+                            dataDisabled === 'true' ||
+                            cls.includes('disabled')
+                        );
+                    };
+
+                    const dialogs = Array.from(document.querySelectorAll("[role='dialog'], div[aria-modal='true']"))
+                        .filter((el) => {
+                            if (!isVisible(el)) return false;
+                            const text = normalize(el.innerText || el.textContent || '');
+                            if (!text) return false;
+                            if (!modalMarkers.length) return true;
+                            return modalMarkers.some((marker) => text.includes(marker));
+                        })
+                        .sort((a, b) => {
+                            const ar = a.getBoundingClientRect();
+                            const br = b.getBoundingClientRect();
+                            return (br.width * br.height) - (ar.width * ar.height);
+                        });
+
+                    const dialog = dialogs[0];
+                    if (!dialog) {
+                        return {
+                            foundDialog: false,
+                            foundButton: false,
+                            buttonEnabled: false,
+                            clicked: false,
+                            scrolled: false,
+                            clickedLabel: '',
+                        };
+                    }
+
+                    let scrolled = false;
+                    if (shouldScrollToBottom) {
+                        const scrollables = [dialog, ...Array.from(dialog.querySelectorAll('*'))]
+                            .filter((el) => {
+                                if (!isVisible(el)) return false;
+                                const style = window.getComputedStyle(el);
+                                const overflowY = normalize(style.overflowY);
+                                return (
+                                    (overflowY.includes('auto') || overflowY.includes('scroll')) &&
+                                    el.scrollHeight > el.clientHeight + 8
+                                );
+                            })
+                            .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+                        const scroller = scrollables[0];
+                        if (scroller) {
+                            const beforeTop = Number(scroller.scrollTop || 0);
+                            try { scroller.scrollTop = scroller.scrollHeight; } catch (e) {}
+                            try { scroller.dispatchEvent(new Event('scroll', { bubbles: true })); } catch (e) {}
+                            try { scroller.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                            const afterTop = Number(scroller.scrollTop || 0);
+                            scrolled = afterTop > beforeTop || afterTop >= (scroller.scrollHeight - scroller.clientHeight - 4);
+                        }
+                    }
+
+                    const buttons = Array.from(dialog.querySelectorAll("button, div[role='button']"))
+                        .filter((el) => isVisible(el));
+                    const target = buttons.find((el) => {
+                        const label = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
+                        return !!label && buttonMarkers.some((marker) => label.includes(marker));
+                    });
+
+                    if (!target) {
+                        return {
+                            foundDialog: true,
+                            foundButton: false,
+                            buttonEnabled: false,
+                            clicked: false,
+                            scrolled,
+                            clickedLabel: '',
+                        };
+                    }
+
+                    const label = String(target.innerText || target.textContent || target.getAttribute('aria-label') || '').trim();
+                    const buttonEnabled = !isDisabled(target);
+                    if (!buttonEnabled) {
+                        return {
+                            foundDialog: true,
+                            foundButton: true,
+                            buttonEnabled: false,
+                            clicked: false,
+                            scrolled,
+                            clickedLabel: label,
+                        };
+                    }
+
+                    try { target.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                    try { target.focus && target.focus(); } catch (e) {}
+
+                    let clicked = false;
+                    const attempts = [
+                        () => target.click(),
+                        () => {
+                            if (typeof PointerEvent === 'function') {
+                                target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                                target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+                            }
+                            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                            target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                        },
+                        () => {
+                            target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+                            target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+                        },
+                        () => {
+                            target.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+                            target.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
+                        },
+                    ];
+
+                    for (const run of attempts) {
+                        try {
+                            run();
+                            clicked = true;
+                            break;
+                        } catch (e) {}
+                    }
+
+                    return {
+                        foundDialog: true,
+                        foundButton: true,
+                        buttonEnabled,
+                        clicked,
+                        scrolled,
+                        clickedLabel: label,
+                    };
+                }""",
+                {
+                    "button_markers": normalized_button_markers,
+                    "modal_markers": normalized_modal_markers,
+                    "scroll_to_bottom": bool(scroll_to_bottom),
+                },
+            )
+        except Exception:
+            state = None
+
+        if isinstance(state, dict) and state.get("scrolled") and not logged_scroll:
+            _print_and_log("[RPA] 目标页隐私弹框已滚动到底，等待按钮可点击...")
+            logged_scroll = True
+
+        if not (isinstance(state, dict) and state.get("clicked")):
+            try:
+                await page.wait_for_timeout(220)
+            except Exception:
+                pass
+            continue
+
+        clicked_label = str(state.get("clickedLabel") or "").strip()
+        verify_deadline = time.time() + 1.8
+        while time.time() < verify_deadline:
+            after_info = await _detect_google_labs_onboarding_modal(page)
+            after_marker = str((after_info or {}).get("marker") or "").strip().lower()
+            if not after_info:
+                return True, clicked_label
+            if normalized_modal_markers and after_marker not in normalized_modal_markers:
+                return True, clicked_label
+            if after_marker and after_marker != before_marker:
+                return True, clicked_label
+            try:
+                await page.wait_for_timeout(180)
+            except Exception:
+                pass
+
+    return False, ""
+
+
+async def _scroll_google_labs_modal_and_click_continue(
+    page, *, timeout_ms: int = 6_000
+) -> bool:
+    """在目标页隐私弹框中滚动到底并点击 Continue。"""
+    clicked, label = await _click_google_labs_dialog_button(
+        page,
+        button_markers=["continue", "继续", "下一步"],
+        modal_markers=[
+            "review our privacy policy",
+            "your data and labs.google/fx",
+            "privacy policy",
+        ],
+        timeout_ms=timeout_ms,
+        scroll_to_bottom=True,
+    )
+    if clicked:
+        _print_and_log(
+            f"[RPA] 目标页隐私弹框已处理 clicked={label!r}"
+        )
+        return True
+    return False
+
+
 async def _best_effort_google_labs_onboarding_modal(
     page, *, timeout_ms: int = 6_000
 ) -> bool:
@@ -2025,13 +2273,7 @@ async def _best_effort_google_labs_onboarding_modal(
     deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
     detected_info = None
     logged_detection = False
-    next_selectors = [
-        "[role='dialog'] button:has-text('Next')",
-        "div[aria-modal='true'] button:has-text('Next')",
-        "button:has-text('Next')",
-        "div[role='button']:has-text('Next')",
-    ]
-
+    handled_any = False
     async def _collect_button_labels(limit: int = 8) -> list[str]:
         labels: list[str] = []
         try:
@@ -2058,6 +2300,8 @@ async def _best_effort_google_labs_onboarding_modal(
         try:
             detected_info = await _detect_google_labs_onboarding_modal(page)
             if not detected_info:
+                if handled_any:
+                    return True
                 await page.wait_for_timeout(220)
                 continue
             if not logged_detection:
@@ -2072,18 +2316,46 @@ async def _best_effort_google_labs_onboarding_modal(
         except Exception:
             pass
 
-        clicked = await _click_first_visible(page, next_selectors, timeout_ms=900)
+        marker_norm = str((detected_info or {}).get("marker") or "").strip().lower()
+        if marker_norm in {
+            "review our privacy policy",
+            "your data and labs.google/fx",
+            "privacy policy",
+        }:
+            continue_clicked = await _scroll_google_labs_modal_and_click_continue(
+                page,
+                timeout_ms=min(4_500, max(1_500, int((deadline - time.time()) * 1000))),
+            )
+            if continue_clicked:
+                handled_any = True
+                try:
+                    await page.wait_for_timeout(350)
+                except Exception:
+                    pass
+                continue
+
+        clicked, clicked_label = await _click_google_labs_dialog_button(
+            page,
+            button_markers=["next", "下一步"],
+            modal_markers=[
+                "experience and shape ai tools for creativity",
+                "i'd like to receive marketing emails",
+                "i'd like to receive research invitations",
+            ],
+            timeout_ms=min(3_000, max(1_000, int((deadline - time.time()) * 1000))),
+        )
         if clicked:
             _print_and_log(
-                "[RPA] 目标页引导弹框已处理 clicked='Next'"
+                f"[RPA] 目标页引导弹框已处理 clicked={clicked_label!r}"
                 f" reason={((detected_info or {}).get('reason'))!r}"
                 f" url={((detected_info or {}).get('url'))!r}"
             )
+            handled_any = True
             try:
                 await page.wait_for_timeout(500)
             except Exception:
                 pass
-            return True
+            continue
 
         try:
             await page.wait_for_timeout(220)
