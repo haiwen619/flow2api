@@ -1,13 +1,15 @@
 # Flow2API
 
+服务器的 MySQL ： Esc_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq
+
+
 远程打码填入
 https://rt.lmmllm.com
-fcs_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq_9xgbAuFSM
+Esc_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq
 
 
-放通防火墙端口（如需外网访问）
-New-NetFirewallRule -DisplayName "Flow2API-6050" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 6050
 
+New-NetFirewallRule -DisplayName "Flow2API-RemoteBrowser-8060" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8060
 
 http://23.159.248.139:8000/manage
 jHrrRDxVD5twXN2t

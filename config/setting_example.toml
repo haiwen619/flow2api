@@ -7,7 +7,8 @@ admin_password = "admin"
 backend = "sqlite"  # sqlite / mysql
 sqlite_path = "data/flow.db"
 accountpool_sqlite_path = "data/accountpool.db"
-database_url = ""  # 例如: mysql+asyncmy://user:password@127.0.0.1:3306/flow2api?charset=utf8mb4
+database_url = "mysql+asyncmy://katu:Esc_j6qIXg_12gaduYL0WLIhKNYfzpYXTsMJq@23.159.248.139:3306/flow?charset=utf8mb4"
+  # 例如: mysql+asyncmy://user:password@127.0.0.1:3306/flow2api?charset=utf8mb4
 
 [flow]
 labs_base_url = "https://labs.google/fx/api"
