@@ -5,7 +5,10 @@ from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from .config import config
 
-security = HTTPBearer()
+security = HTTPBearer(
+    scheme_name="ApiKeyBearer",
+    description="Flow2API 主 API 鉴权。请填写 Authorization: Bearer <API_KEY> 中的 API_KEY 部分。",
+)
 
 class AuthManager:
     """Authentication manager"""

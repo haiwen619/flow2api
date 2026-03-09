@@ -14,7 +14,7 @@ import time
 import re
 import random
 import uuid
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Callable, Awaitable, Tuple
 from datetime import datetime
 from urllib.parse import urlparse, unquote, parse_qs
 
@@ -70,8 +70,8 @@ def _run_pip_install(package: str, use_mirror: bool = False) -> bool:
         print(f"[BrowserCaptcha] 正在安装 {package}...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode == 0:
-            debug_logger.log_info(f"[BrowserCaptcha] ✅ {package} 安装成功")
-            print(f"[BrowserCaptcha] ✅ {package} 安装成功")
+            debug_logger.log_info(f"[BrowserCaptcha] {package} install succeeded")
+            print(f"[BrowserCaptcha] {package} install succeeded")
             return True
         else:
             debug_logger.log_warning(f"[BrowserCaptcha] {package} 安装失败: {result.stderr[:200]}")
@@ -95,8 +95,8 @@ def _run_playwright_install(use_mirror: bool = False) -> bool:
         print("[BrowserCaptcha] 正在安装 chromium 浏览器...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
         if result.returncode == 0:
-            debug_logger.log_info("[BrowserCaptcha] ✅ chromium 浏览器安装成功")
-            print("[BrowserCaptcha] ✅ chromium 浏览器安装成功")
+            debug_logger.log_info("[BrowserCaptcha] chromium browser install succeeded")
+            print("[BrowserCaptcha] chromium browser install succeeded")
             return True
         else:
             debug_logger.log_warning(f"[BrowserCaptcha] chromium 安装失败: {result.stderr[:200]}")
@@ -128,8 +128,8 @@ def _ensure_playwright_installed() -> bool:
     if _run_pip_install('playwright', use_mirror=True):
         return True
     
-    debug_logger.log_error("[BrowserCaptcha] ❌ playwright 自动安装失败，请手动安装: pip install playwright")
-    print("[BrowserCaptcha] ❌ playwright 自动安装失败，请手动安装: pip install playwright")
+    debug_logger.log_error("[BrowserCaptcha] playwright auto install failed, run: pip install playwright")
+    print("[BrowserCaptcha] playwright auto install failed, run: pip install playwright")
     return False
 
 
@@ -171,8 +171,8 @@ def _ensure_browser_installed() -> bool:
     if _run_playwright_install(use_mirror=True):
         return True
     
-    debug_logger.log_error("[BrowserCaptcha] ❌ chromium 浏览器自动安装失败，请手动安装: python -m playwright install chromium")
-    print("[BrowserCaptcha] ❌ chromium 浏览器自动安装失败，请手动安装: python -m playwright install chromium")
+    debug_logger.log_error("[BrowserCaptcha] chromium browser auto install failed, run: python -m playwright install chromium")
+    print("[BrowserCaptcha] chromium browser auto install failed, run: python -m playwright install chromium")
     return False
 
 
@@ -187,14 +187,14 @@ if DOCKER_HEADED_BLOCKED:
         "[BrowserCaptcha] 检测到 Docker 环境，默认禁用有头浏览器打码。"
         "如需启用请设置 ALLOW_DOCKER_HEADED_CAPTCHA=true，并提供 DISPLAY/Xvfb。"
     )
-    print("[BrowserCaptcha] ⚠️ 检测到 Docker 环境，默认禁用有头浏览器打码")
+    print("[BrowserCaptcha] Docker detected, headed browser captcha is disabled by default")
     print("[BrowserCaptcha] 如需启用请设置 ALLOW_DOCKER_HEADED_CAPTCHA=true，并提供 DISPLAY/Xvfb")
 else:
     if IS_DOCKER and ALLOW_DOCKER_HEADED:
         debug_logger.log_warning(
             "[BrowserCaptcha] Docker 有头浏览器打码白名单已启用，请确保 DISPLAY/Xvfb 可用"
         )
-        print("[BrowserCaptcha] ✅ Docker 有头浏览器打码白名单已启用")
+        print("[BrowserCaptcha] Docker headed browser captcha allowlist enabled")
     if _ensure_playwright_installed():
         try:
             from playwright.async_api import async_playwright, Route, BrowserContext
@@ -203,7 +203,7 @@ else:
             _ensure_browser_installed()
         except ImportError as e:
             debug_logger.log_error(f"[BrowserCaptcha] playwright 导入失败: {e}")
-            print(f"[BrowserCaptcha] ❌ playwright 导入失败: {e}")
+            print(f"[BrowserCaptcha] playwright import failed: {e}")
 
 
 # 配置
@@ -1517,6 +1517,7 @@ class TokenBrowser:
         website_key: str,
         action: str = "homepage",
         enterprise: bool = False,
+        token_proxy_url: Optional[str] = None,
     ) -> Optional[str]:
         """Get a custom reCAPTCHA token using a temporary browser."""
         async with self._semaphore:
@@ -1530,7 +1531,10 @@ class TokenBrowser:
                     context = None
                     try:
                         start_ts = time.time()
-                        playwright, browser, context = await self._create_browser(manage_slot_pid=False)
+                        playwright, browser, context = await self._create_browser(
+                            token_proxy_url=token_proxy_url,
+                            manage_slot_pid=False,
+                        )
                         token = await self._execute_custom_captcha(
                             context=context,
                             website_url=website_url,
@@ -1579,6 +1583,7 @@ class TokenBrowser:
         verify_url: str,
         action: str = "homepage",
         enterprise: bool = False,
+        token_proxy_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get a custom token and verify its score using a temporary browser."""
         async with self._semaphore:
@@ -1592,7 +1597,10 @@ class TokenBrowser:
                     context = None
                     try:
                         started_at = time.time()
-                        playwright, browser, context = await self._create_browser(manage_slot_pid=False)
+                        playwright, browser, context = await self._create_browser(
+                            token_proxy_url=token_proxy_url,
+                            manage_slot_pid=False,
+                        )
                         payload = await self._execute_custom_captcha(
                             context=context,
                             website_url=website_url,
@@ -1676,6 +1684,9 @@ class BrowserCaptchaService:
         # ?????? _load_browser_count ???????
         self._token_semaphore = None
         self._idle_reaper_task: Optional[asyncio.Task] = None
+        self._external_proxy_resolver: Optional[
+            Callable[[Optional[int]], Awaitable[Tuple[Optional[str], str]]]
+        ] = None
     
     async def _ensure_idle_reaper(self):
         if self._idle_reaper_task is None or self._idle_reaper_task.done():
@@ -1715,6 +1726,13 @@ class BrowserCaptchaService:
                     await cls._instance._load_browser_count()
                     await cls._instance._ensure_idle_reaper()
         return cls._instance
+
+    def set_external_proxy_resolver(
+        self,
+        resolver: Optional[Callable[[Optional[int]], Awaitable[Tuple[Optional[str], str]]]],
+    ) -> None:
+        """Inject an external proxy resolver for remote-browser deployments."""
+        self._external_proxy_resolver = resolver
     
     def _check_available(self):
         """检查服务是否可用"""
@@ -1894,7 +1912,13 @@ class BrowserCaptchaService:
             debug_logger.log_warning(f"[BrowserCaptcha] 读取 token({token_id}) 打码代理失败: {e}")
         return None
     
-    async def get_token(self, project_id: str, action: str = "IMAGE_GENERATION", token_id: int = None) -> tuple[Optional[str], Union[int, str]]:
+    async def get_token(
+        self,
+        project_id: str,
+        action: str = "IMAGE_GENERATION",
+        token_id: int = None,
+        proxy_url_override: Optional[str] = None,
+    ) -> tuple[Optional[str], Union[int, str]]:
         """获取 reCAPTCHA Token（轮询分配到不同浏览器）
         
         Args:
@@ -1909,7 +1933,12 @@ class BrowserCaptchaService:
         self._check_available()
         
         self._stats["req_total"] += 1
-        token_proxy_url = await self._resolve_token_proxy_url(token_id)
+        token_proxy_url = proxy_url_override or await self._resolve_token_proxy_url(token_id)
+        if not token_proxy_url and self._external_proxy_resolver:
+            try:
+                token_proxy_url, _ = await self._external_proxy_resolver(token_id)
+            except Exception as e:
+                debug_logger.log_warning(f"[BrowserCaptcha] external proxy resolve failed: {e}")
         
         # 全局并发限制（如果已配置）
         if self._token_semaphore:
@@ -1958,6 +1987,7 @@ class BrowserCaptchaService:
         website_key: str,
         action: str = "homepage",
         enterprise: bool = False,
+        proxy_url_override: Optional[str] = None,
     ) -> tuple[Optional[str], int]:
         """获取任意站点的 reCAPTCHA token，用于分数测试。"""
         self._check_available()
@@ -1971,6 +2001,7 @@ class BrowserCaptchaService:
                     website_key=website_key,
                     action=action,
                     enterprise=enterprise,
+                    token_proxy_url=proxy_url_override,
                 )
             return token, browser_id
 
@@ -1981,6 +2012,7 @@ class BrowserCaptchaService:
             website_key=website_key,
             action=action,
             enterprise=enterprise,
+            token_proxy_url=proxy_url_override,
         )
         return token, browser_id
 
@@ -1991,9 +2023,16 @@ class BrowserCaptchaService:
         verify_url: str,
         action: str = "homepage",
         enterprise: bool = False,
+        proxy_url_override: Optional[str] = None,
     ) -> tuple[Dict[str, Any], int]:
         """在浏览器页面内完成 token 获取与分数校验。"""
         self._check_available()
+
+        if not proxy_url_override and self._external_proxy_resolver:
+            try:
+                proxy_url_override, _ = await self._external_proxy_resolver(None)
+            except Exception as e:
+                debug_logger.log_warning(f"[BrowserCaptcha] external custom-score proxy resolve failed: {e}")
 
         if self._token_semaphore:
             async with self._token_semaphore:
@@ -2005,6 +2044,7 @@ class BrowserCaptchaService:
                     verify_url=verify_url,
                     action=action,
                     enterprise=enterprise,
+                    token_proxy_url=proxy_url_override,
                 )
             return payload, browser_id
 
@@ -2016,6 +2056,7 @@ class BrowserCaptchaService:
             verify_url=verify_url,
             action=action,
             enterprise=enterprise,
+            token_proxy_url=proxy_url_override,
         )
         return payload, browser_id
 
@@ -2107,8 +2148,25 @@ class BrowserCaptchaService:
     async def open_login_browser(self): return {"success": False, "error": "Not implemented"}
     async def create_browser_for_token(self, t, s=None): pass
     def get_stats(self): 
-        browsers = list(self._browsers.values())
-        busy_browser_count = sum(1 for browser in browsers if getattr(browser, "is_busy", lambda: False)())
+        browser_items = []
+        busy_browser_count = 0
+        for browser_id, browser in sorted(self._browsers.items()):
+            is_busy = bool(getattr(browser, "is_busy", lambda: False)())
+            if is_busy:
+                busy_browser_count += 1
+            fingerprint = browser.get_last_fingerprint() or {}
+            browser_items.append({
+                "browser_id": browser_id,
+                "busy": is_busy,
+                "has_browser": bool(getattr(browser, "has_shared_browser", lambda: False)()),
+                "idle_seconds": round(float(getattr(browser, "idle_seconds", lambda: 0.0)()), 1),
+                "solve_count": int(getattr(browser, "_solve_count", 0) or 0),
+                "error_count": int(getattr(browser, "_error_count", 0) or 0),
+                "launch_count": int(getattr(browser, "_shared_launch_count", 0) or 0),
+                "reuse_count": int(getattr(browser, "_shared_reuse_count", 0) or 0),
+                "proxy_url": fingerprint.get("proxy_url"),
+                "user_agent": fingerprint.get("user_agent"),
+            })
         base_stats = {
             "total_solve_count": self._stats["gen_ok"],
             "total_error_count": self._stats["gen_fail"],
@@ -2118,7 +2176,7 @@ class BrowserCaptchaService:
             "busy_browser_count": busy_browser_count,
             "idle_browser_count": max(self._browser_count - busy_browser_count, 0),
             "project_affinity_count": len(self._project_slot_affinity),
-            "browsers": []
+            "browsers": browser_items,
         }
         return base_stats
 

@@ -290,8 +290,26 @@ admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager)
 # Create FastAPI app
 app = FastAPI(
     title="Flow2API",
-    description="OpenAI-compatible API for Google VideoFX (Veo)",
+    summary="Flow / Gemini / Veo 的 OpenAI 兼容网关与管理后台",
+    description=(
+        "提供 OpenAI 兼容的生成接口、Token 管理后台、账号池、代理池，以及相关运维接口。"
+        "\n\n鉴权说明："
+        "\n- `/v1/*` 使用主 API Key"
+        "\n- `/api/*` 管理后台接口多数使用管理员 session token"
+        "\n- `/accountpool/*`、`/proxypool/*` 复用后台 session token"
+    ),
     version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    openapi_tags=[
+        {"name": "OpenAI API", "description": "对外的 OpenAI 兼容生成接口。"},
+        {"name": "Admin", "description": "后台管理接口，包括 Token、配置、日志、系统信息等。"},
+        {"name": "Admin Auth", "description": "后台登录态相关接口，使用独立的管理员 session token。"},
+        {"name": "AccountPool", "description": "账号池管理与校验任务接口。"},
+        {"name": "ProxyPool", "description": "代理池与代理凭据管理接口。"},
+        {"name": "Integration", "description": "兼容性或辅助集成接口。"},
+    ],
     lifespan=lifespan
 )
 
@@ -305,8 +323,8 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(routes.router)
-app.include_router(admin.router)
+app.include_router(routes.router, tags=["OpenAI API"])
+app.include_router(admin.router, tags=["Admin"])
 app.include_router(create_accountpool_router(accountpool_service), tags=["AccountPool"])
 app.include_router(
     create_proxy_pool_router(proxy_pool_service, verify_token=verify_panel_token),
@@ -323,7 +341,7 @@ if vendor_path.exists():
     app.mount("/vendor", StaticFiles(directory=str(vendor_path)), name="vendor")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def index():
     """Redirect to login page"""
     login_file = STATIC_DIR / "login.html"
@@ -332,7 +350,7 @@ async def index():
     return HTMLResponse(content="<h1>Flow2API</h1><p>Frontend not found</p>", status_code=404)
 
 
-@app.get("/login", response_class=HTMLResponse)
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
 async def login_page():
     """Login page"""
     login_file = STATIC_DIR / "login.html"
@@ -341,7 +359,7 @@ async def login_page():
     return HTMLResponse(content="<h1>Login Page Not Found</h1>", status_code=404)
 
 
-@app.get("/manage", response_class=HTMLResponse)
+@app.get("/manage", response_class=HTMLResponse, include_in_schema=False)
 async def manage_page():
     """Management console page"""
     manage_file = STATIC_DIR / "manage.html"
@@ -350,7 +368,7 @@ async def manage_page():
     return HTMLResponse(content="<h1>Management Page Not Found</h1>", status_code=404)
 
 
-@app.get("/account_pool_page_v2_full", response_class=HTMLResponse)
+@app.get("/account_pool_page_v2_full", response_class=HTMLResponse, include_in_schema=False)
 async def account_pool_page():
     """Account pool automation page"""
     account_pool_file = STATIC_DIR / "account_pool_page_v2_full.html"
@@ -359,7 +377,7 @@ async def account_pool_page():
     return HTMLResponse(content="<h1>Account Pool Page Not Found</h1>", status_code=404)
 
 
-@app.get("/proxy_pool_page", response_class=HTMLResponse)
+@app.get("/proxy_pool_page", response_class=HTMLResponse, include_in_schema=False)
 async def proxy_pool_page():
     """Proxy pool page"""
     proxy_pool_file = STATIC_DIR / "ProxyPool" / "proxy_pool_page.html"
@@ -368,7 +386,12 @@ async def proxy_pool_page():
     return HTMLResponse(content="<h1>Proxy Pool Page Not Found</h1>", status_code=404)
 
 
-@app.get("/creds/status")
+@app.get(
+    "/creds/status",
+    tags=["Integration"],
+    summary="代理池凭据兼容查询",
+    description="为代理池前端凭据选择器提供兼容格式的 Token 文件状态列表。",
+)
 async def creds_status(
     offset: int = Query(0, ge=0),
     limit: int = Query(1000, ge=1, le=5000),

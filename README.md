@@ -453,6 +453,12 @@ python main.py
 | `gemini-3.1-flash-image-four-three-4k` | 图/文生图(4K) | 横屏 4:3 |
 | `gemini-3.1-flash-image-three-four-4k` | 图/文生图(4K) | 竖屏 3:4 |
 
+说明：
+
+- `gemini-2.5-flash-image` 当前只原生支持 `landscape(16:9)` 和 `portrait(9:16)`
+- 如果通过 `imageConfig.aspectRatio` 传入 `1:1` / `4:3` / `3:4`，路由层只会自动回退到最近可用的横屏或竖屏，不代表 `2.5` 原生支持这些比例
+- 需要原生 `square / four-three / three-four` 时，优先使用 `gemini-3.0-pro-image` 或 `gemini-3.1-flash-image`
+
 ### 视频生成
 
 #### 文生视频 (T2V - Text to Video)

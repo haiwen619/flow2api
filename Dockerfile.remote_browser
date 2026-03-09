@@ -1,0 +1,35 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=0 \
+    ALLOW_DOCKER_HEADED_CAPTCHA=true \
+    DISPLAY=:99 \
+    XVFB_WHD=1920x1080x24 \
+    REMOTE_BROWSER_HOST=0.0.0.0 \
+    REMOTE_BROWSER_PORT=8060
+
+COPY requirements.remote_browser.txt ./
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        xvfb \
+        fluxbox \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.remote_browser.txt \
+    && python -m playwright install --with-deps chromium \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache
+COPY src ./src
+COPY CommonFramePackage ./CommonFramePackage
+COPY config ./config
+COPY docker/entrypoint.remote_browser.sh /usr/local/bin/entrypoint.remote_browser.sh
+RUN chmod +x /usr/local/bin/entrypoint.remote_browser.sh
+
+EXPOSE 8060
+
+CMD ["/usr/local/bin/entrypoint.remote_browser.sh"]

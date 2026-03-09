@@ -1,0 +1,19 @@
+[Unit]
+Description=Flow2API Remote Browser Service
+After=network.target
+
+[Service]
+Type=simple
+User=flow2api
+Group=flow2api
+WorkingDirectory=/opt/flow2api
+EnvironmentFile=/etc/flow2api/remote-browser.env
+ExecStart=/opt/flow2api/.venv/bin/python -m uvicorn src.remote_browser_service.app:app --host ${REMOTE_BROWSER_HOST} --port ${REMOTE_BROWSER_PORT}
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

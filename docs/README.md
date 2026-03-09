@@ -239,3 +239,109 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 - 后台可正常登录（`/login`）
 - `/v1/models` 可返回模型列表
 - 随机抽一条 Token 执行一次 `刷新AT` 与 `刷Cookie` 验证链路
+
+## 11. 图片生成比例与 imageConfig 速查
+
+这部分对应 [routes.py](/h:/katu/Github/flow2api/src/api/routes.py) 里的 `_normalize_ratio_suffix_from_model()`、`_normalize_aspect_ratio()` 与 `_resolve_model_from_image_config()` 逻辑。
+
+### 11.1 当前支持的比例
+
+| 传入写法 | 标准后缀 | 实际模型示例 |
+| --- | --- | --- |
+| `16:9` / `16x9` / `landscape` / `image-aspect-ratio-landscape` | `landscape` | `gemini-3.1-flash-image-landscape` |
+| `9:16` / `9x16` / `portrait` / `image-aspect-ratio-portrait` | `portrait` | `gemini-3.1-flash-image-portrait` |
+| `1:1` / `1x1` / `square` / `image-aspect-ratio-square` | `square` | `gemini-3.1-flash-image-square` |
+| `4:3` / `4x3` / `four-three` / `image-aspect-ratio-landscape-four-three` | `four-three` | `gemini-3.1-flash-image-four-three` |
+| `3:4` / `3x4` / `three-four` / `image-aspect-ratio-portrait-three-four` | `three-four` | `gemini-3.1-flash-image-three-four` |
+
+不支持的比例：
+
+- `21:9` / `21x9` 会直接返回 `400`
+- 其他未在上表中的值也会返回 `400`
+
+### 11.2 imageConfig.aspectRatio 的处理规则
+
+- 入口字段是 `generationConfig.imageConfig.aspectRatio`
+- 会先归一化成标准模型后缀：`landscape / portrait / square / four-three / three-four`
+- 如果传的是基础 family 模型，例如 `gemini-3.1-flash-image`，系统会自动拼成对应具体模型
+- 如果目标具体模型不存在，会自动回退到当前 family 下最接近的可用模型
+
+请求示例：
+
+```json
+{
+  "model": "gemini-3.1-flash-image",
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": {
+      "aspectRatio": "4:3"
+    }
+  }
+}
+```
+
+实际会映射到类似：
+
+```text
+gemini-3.1-flash-image-four-three
+```
+
+### 11.3 imageConfig.imageSize 的处理规则
+
+支持的写法：
+
+- `1K` / `1k` / `1024` -> 不加尺寸后缀，等价默认尺寸
+- `2K` / `2k` / `2048` -> `-2k`
+- `4K` / `4k` / `4096` -> `-4k`
+
+不支持的值会返回 `400`。
+
+### 11.4 默认行为
+
+- 如果 `generationConfig` 不存在，且传入的是基础 family 模型，如 `gemini-3.1-flash-image`，默认会落到 `-landscape`
+- 如果 `imageConfig` 不是对象，行为同上
+- 如果 `imageConfig` 里既没传 `aspectRatio`，也没传 `imageSize`，基础 family 仍默认走 `-landscape`
+- 如果只传了 `imageSize`，没传 `aspectRatio`，则优先继承当前模型自带的比例；继承不到时默认 `landscape`
+- 如果只传了 `aspectRatio`，没传 `imageSize`，则保留当前模型原本的尺寸后缀；基础尺寸不会额外加 `-1k`
+
+### 11.5 模型别名也支持这些比例写法
+
+除了 `imageConfig.aspectRatio`，模型名后缀本身也支持同样的比例别名归一化，例如：
+
+- `gemini-3.1-flash-image-4x3`
+- `gemini-3.1-flash-image-4k-16x9`
+- `gemini-3.1-flash-image-2k-9x16`
+- `gemini-3.1-flash-image-1k`
+
+这些别名最终也会被规范到标准模型后缀。
+
+### 11.6 gemini-2.5-flash-image 的比例支持说明
+
+`gemini-2.5-flash-image` 当前在模型表里只有两个原生变体：
+
+- `gemini-2.5-flash-image-landscape`
+- `gemini-2.5-flash-image-portrait`
+
+也就是说，精确支持的比例只有：
+
+| 传入比例 | 实际模型 |
+| --- | --- |
+| `16:9` / `16x9` / `landscape` | `gemini-2.5-flash-image-landscape` |
+| `9:16` / `9x16` / `portrait` | `gemini-2.5-flash-image-portrait` |
+
+对于下面这些比例：
+
+- `1:1` / `square`
+- `4:3` / `four-three`
+- `3:4` / `three-four`
+
+当前不是 `gemini-2.5-flash-image` 的原生可用模型。若你传的是基础 family `gemini-2.5-flash-image` 再配合 `imageConfig.aspectRatio`，路由层会按回退规则自动改到最近可用模型：
+
+- `square` 会优先回退到 `landscape`，其次 `portrait`
+- `4:3` 会优先回退到 `landscape`
+- `3:4` 会优先回退到 `portrait`
+
+因此：
+
+- 想要精确比例输出时，`gemini-2.5-flash-image` 目前只建议用 `16:9` 和 `9:16`
+- 如果你需要原生 `1:1` / `4:3` / `3:4`，应优先使用 `gemini-3.0-pro-image` 或 `gemini-3.1-flash-image`

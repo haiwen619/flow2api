@@ -243,6 +243,19 @@
           </svg>
           说明文档
         </button>
+        <a href="/docs" target="_blank" rel="noopener noreferrer"
+          class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1"
+          title="打开 API Swagger 文档">
+          <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <path d="M9 13h6" />
+            <path d="M9 17h6" />
+            <path d="M9 9h1" />
+          </svg>
+          Swagger
+        </a>
         <a href="https://github.com/TheSmallHanCat/flow2api" target="_blank"
           class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5"
           title="GitHub 仓库">
@@ -1039,6 +1052,15 @@
                   class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   placeholder="60" value="60" />
               </div>
+              <div>
+                <label class="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" id="cfgRemoteBrowserProxyEnabled" class="h-4 w-4 rounded border-input" />
+                  <span class="text-sm font-medium">启用代理</span>
+                </label>
+                <p class="text-xs text-muted-foreground mt-2">
+                  勾选后，远程有头打码才允许使用系统代理或代理池；不勾选时强制直连
+                </p>
+              </div>
             </div>
           </div>
           <div class="grid grid-cols-2 gap-2 mt-4">
@@ -1091,7 +1113,10 @@
     <div id="panelLogs" class="hidden">
       <div class="rounded-lg border border-border bg-background">
         <div class="flex items-center justify-between gap-4 p-4 border-b border-border">
-          <h3 class="text-lg font-semibold">请求日志</h3>
+          <div>
+            <h3 class="text-lg font-semibold">请求日志</h3>
+            <p class="text-xs text-muted-foreground mt-1">时间统一按北京时间（UTC+8）展示</p>
+          </div>
           <div class="flex gap-2">
             <button onclick="clearAllLogs()"
               class="inline-flex items-center justify-center rounded-md transition-colors hover:bg-red-50 hover:text-red-700 h-8 px-3 text-sm"
@@ -1135,7 +1160,7 @@
                   耗时(秒)
                 </th>
                 <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
-                  时间
+                  时间(北京时间)
                 </th>
                 <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
                   详情
@@ -2026,6 +2051,37 @@
             day: "2-digit",
             hour: "2-digit",
             minute: "2-digit",
+            hour12: false,
+          })
+          .replace(/\//g, "-");
+      },
+      parseServerUtcTimestamp = (ts) => {
+        if (!ts) return null;
+        if (ts instanceof Date) {
+          return Number.isNaN(ts.getTime()) ? null : ts;
+        }
+        const raw = String(ts || "").trim();
+        if (!raw) return null;
+        const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+        const hasTimezone = /(?:Z|[+\-]\d{2}:\d{2})$/i.test(normalized);
+        const assumedUtc = hasTimezone ? normalized : `${normalized}Z`;
+        const date = new Date(assumedUtc);
+        if (!Number.isNaN(date.getTime())) return date;
+        const fallback = new Date(raw);
+        return Number.isNaN(fallback.getTime()) ? null : fallback;
+      },
+      formatLogTimeBeijing = (ts) => {
+        const d = parseServerUtcTimestamp(ts);
+        if (!d) return "-";
+        return d
+          .toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
             hour12: false,
           })
           .replace(/\//g, "-");
@@ -3923,6 +3979,8 @@
             d.remote_browser_api_key || "";
           $("cfgRemoteBrowserTimeout").value =
             d.remote_browser_timeout || 60;
+          $("cfgRemoteBrowserProxyEnabled").checked =
+            d.remote_browser_proxy_enabled || false;
           $("cfgBrowserProxyEnabled").checked =
             d.browser_proxy_enabled || false;
           $("cfgBrowserProxyUrl").value = d.browser_proxy_url || "";
@@ -3948,6 +4006,7 @@
           remoteBaseUrl = $("cfgRemoteBrowserBaseUrl").value.trim(),
           remoteApiKey = $("cfgRemoteBrowserApiKey").value.trim(),
           remoteTimeout = parseInt($("cfgRemoteBrowserTimeout").value) || 60,
+          remoteBrowserProxyEnabled = $("cfgRemoteBrowserProxyEnabled").checked,
           browserProxyEnabled = $("cfgBrowserProxyEnabled").checked,
           browserProxyUrl = $("cfgBrowserProxyUrl").value.trim(),
           browserCount = parseInt($("cfgBrowserCount").value) || 1;
@@ -3964,6 +4023,7 @@
           remoteBaseUrl,
           remoteApiKey,
           remoteTimeout,
+          remoteBrowserProxyEnabled,
           browserProxyEnabled,
           browserProxyUrl,
           browserCount,
@@ -3984,6 +4044,7 @@
               remote_browser_base_url: remoteBaseUrl,
               remote_browser_api_key: remoteApiKey,
               remote_browser_timeout: remoteTimeout,
+              remote_browser_proxy_enabled: remoteBrowserProxyEnabled,
               browser_proxy_enabled: browserProxyEnabled,
               browser_proxy_url: browserProxyUrl,
               browser_count: browserCount,
@@ -4238,7 +4299,7 @@
           tb.innerHTML = logs
             .map(
               (l) =>
-                `<tr><td class="py-2.5 px-3">${escapeLogHtml(l.operation || "-")}</td><td class="py-2.5 px-3"><span class="text-xs ${l.token_email ? "text-blue-600" : "text-muted-foreground"}">${escapeLogHtml(l.token_email || "未知")}</span></td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-slate-100 text-slate-700">${escapeLogHtml(getProxySourceLabel(l.proxy_source))}</span></td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${l.status_code === 200 ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}">${escapeLogHtml(l.status_code ?? "-")}</span></td><td class="py-2.5 px-3">${Number(l.duration || 0).toFixed(2)}</td><td class="py-2.5 px-3 text-xs text-muted-foreground">${l.created_at ? new Date(l.created_at).toLocaleString("zh-CN") : "-"}</td><td class="py-2.5 px-3"><button onclick="showLogDetail(${l.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs">查看</button></td></tr>`,
+                `<tr><td class="py-2.5 px-3">${escapeLogHtml(l.operation || "-")}</td><td class="py-2.5 px-3"><span class="text-xs ${l.token_email ? "text-blue-600" : "text-muted-foreground"}">${escapeLogHtml(l.token_email || "未知")}</span></td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-slate-100 text-slate-700">${escapeLogHtml(getProxySourceLabel(l.proxy_source))}</span></td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${l.status_code === 200 ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}">${escapeLogHtml(l.status_code ?? "-")}</span></td><td class="py-2.5 px-3">${Number(l.duration || 0).toFixed(2)}</td><td class="py-2.5 px-3 text-xs text-muted-foreground" title="原始时间: ${escapeLogHtml(l.created_at || "-")}">${escapeLogHtml(formatLogTimeBeijing(l.created_at))}</td><td class="py-2.5 px-3"><button onclick="showLogDetail(${l.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs">查看</button></td></tr>`,
             )
             .join("");
         } catch (e) {
@@ -4683,7 +4744,7 @@
         return "-";
       };
 
-      detailHtml += `<div class="space-y-2 pt-4 border-t border-border"><h4 class="font-medium text-sm">基本信息</h4><div class="grid grid-cols-2 gap-2 text-sm"><div><span class="text-muted-foreground">操作:</span> ${escapeLogHtml(log.operation || "-")}</div><div><span class="text-muted-foreground">状态码:</span> <span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${log.status_code === 200 ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}">${escapeLogHtml(log.status_code ?? "-")}</span></div><div><span class="text-muted-foreground">耗时:</span> ${Number(log.duration || 0).toFixed(2)}秒</div><div><span class="text-muted-foreground">时间:</span> ${log.created_at ? new Date(log.created_at).toLocaleString("zh-CN") : "-"}</div><div><span class="text-muted-foreground">Token:</span> ${escapeLogHtml(log.token_email || log.token_username || "未知")}</div><div><span class="text-muted-foreground">日志ID:</span> ${escapeLogHtml(log.id ?? "-")}</div><div><span class="text-muted-foreground">代理:</span> ${escapeLogHtml(getProxySourceLabel(log.proxy_source))}</div></div></div>`;
+      detailHtml += `<div class="space-y-2 pt-4 border-t border-border"><h4 class="font-medium text-sm">基本信息</h4><div class="grid grid-cols-2 gap-2 text-sm"><div><span class="text-muted-foreground">操作:</span> ${escapeLogHtml(log.operation || "-")}</div><div><span class="text-muted-foreground">状态码:</span> <span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${log.status_code === 200 ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}">${escapeLogHtml(log.status_code ?? "-")}</span></div><div><span class="text-muted-foreground">耗时:</span> ${Number(log.duration || 0).toFixed(2)}秒</div><div><span class="text-muted-foreground">时间(北京时间):</span> ${escapeLogHtml(formatLogTimeBeijing(log.created_at))}</div><div><span class="text-muted-foreground">Token:</span> ${escapeLogHtml(log.token_email || log.token_username || "未知")}</div><div><span class="text-muted-foreground">日志ID:</span> ${escapeLogHtml(log.id ?? "-")}</div><div><span class="text-muted-foreground">代理:</span> ${escapeLogHtml(getProxySourceLabel(log.proxy_source))}</div></div></div>`;
 
       $("logDetailContent").innerHTML = detailHtml;
     }

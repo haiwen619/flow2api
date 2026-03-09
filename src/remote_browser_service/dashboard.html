@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote Browser Service</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #101828;
+      --muted: #667085;
+      --line: #e4e7ec;
+      --brand: #0f172a;
+      --accent: #2563eb;
+      --ok-bg: #ecfdf3;
+      --ok-fg: #027a48;
+      --warn-bg: #fffaeb;
+      --warn-fg: #b54708;
+      --err-bg: #fef3f2;
+      --err-fg: #b42318;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(180deg, #eef2f6 0%, #f8fafc 100%);
+      color: var(--text);
+    }
+    a { color: inherit; text-decoration: none; }
+    .wrap { max-width: 1500px; margin: 0 auto; padding: 24px; }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .title {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .sub {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn.primary {
+      background: var(--brand);
+      color: #fff;
+      border-color: var(--brand);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    .card, .panel {
+      background: var(--panel);
+      border: 1px solid rgba(16, 24, 40, 0.06);
+      border-radius: 18px;
+      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.04);
+    }
+    .card {
+      padding: 18px;
+      min-height: 118px;
+    }
+    .label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .value {
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .hint {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .panel {
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .panel-title {
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .panel-desc {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .status-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .ok { background: var(--ok-bg); color: var(--ok-fg); }
+    .warn { background: var(--warn-bg); color: var(--warn-fg); }
+    .err { background: var(--err-bg); color: var(--err-fg); }
+    .neutral { background: #f2f4f7; color: #344054; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tr:last-child td { border-bottom: none; }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .split {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .muted { color: var(--muted); }
+    .empty {
+      padding: 18px 0;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+    @media (max-width: 1200px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .split { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .wrap { padding: 14px; }
+      .grid { grid-template-columns: 1fr; }
+      .topbar { flex-direction: column; align-items: stretch; }
+      .actions { width: 100%; }
+      .btn { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <div class="title">Remote Browser Service</div>
+        <div class="sub" id="subtitle">加载中...</div>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/docs" target="_blank" rel="noopener noreferrer">Swagger</a>
+        <a class="btn" href="/healthz" target="_blank" rel="noopener noreferrer">Healthz</a>
+        <button class="btn primary" id="refreshBtn" type="button">刷新数据</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">浏览器槽位</div>
+        <div class="value" id="configuredBrowserCount">-</div>
+        <div class="hint" id="browserUtilization">-</div>
+      </div>
+      <div class="card">
+        <div class="label">当前任务</div>
+        <div class="value" id="activeTaskCount">-</div>
+        <div class="hint" id="sessionCountHint">-</div>
+      </div>
+      <div class="card">
+        <div class="label">累计打码</div>
+        <div class="value" id="totalSolveCount">-</div>
+        <div class="hint" id="errorCountHint">-</div>
+      </div>
+      <div class="card">
+        <div class="label">代理池</div>
+        <div class="value" id="proxyPoolCount">-</div>
+        <div class="hint" id="proxyPoolHint">-</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">运行状态</div>
+          <div class="panel-desc">展示服务活跃会话、并发占用、浏览器槽位与最近一次刷新时间。</div>
+        </div>
+      </div>
+      <div class="status-row" id="statusRow"></div>
+      <div class="split">
+        <div>
+          <table>
+            <thead>
+              <tr>
+                <th>Browser</th>
+                <th>状态</th>
+                <th>已打码</th>
+                <th>错误</th>
+                <th>空闲秒数</th>
+                <th>代理</th>
+              </tr>
+            </thead>
+            <tbody id="browserTableBody"></tbody>
+          </table>
+        </div>
+        <div>
+          <table>
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>项目</th>
+                <th>Action</th>
+                <th>代理</th>
+                <th>存活秒数</th>
+              </tr>
+            </thead>
+            <tbody id="sessionTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">最近打码任务</div>
+          <div class="panel-desc">记录最近处理的 `solve / custom_score / finish / error / session_reaper` 任务。</div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>任务类型</th>
+            <th>状态</th>
+            <th>项目 / Session</th>
+            <th>Action</th>
+            <th>Token</th>
+            <th>代理</th>
+            <th>耗时</th>
+            <th>开始时间</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody id="taskTableBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">代理池概览</div>
+          <div class="panel-desc">这里直接读取当前代理池管理中的代理项，不显示密码，只展示公开状态。</div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Host</th>
+            <th>Port</th>
+            <th>用户名</th>
+            <th>绑定</th>
+            <th>测试</th>
+            <th>IP</th>
+            <th>消息</th>
+          </tr>
+        </thead>
+        <tbody id="proxyTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatUtc(ts) {
+      if (!ts) return "-";
+      const date = new Date(ts);
+      if (Number.isNaN(date.getTime())) return "-";
+      return date.toLocaleString("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).replace(/\//g, "-");
+    }
+
+    function badgeClass(status) {
+      const normalized = String(status || "").toLowerCase();
+      if (["success", "ok", "healthy"].includes(normalized)) return "badge ok";
+      if (["running", "busy", "pending", "expired"].includes(normalized)) return "badge warn";
+      if (["failed", "error"].includes(normalized)) return "badge err";
+      return "badge neutral";
+    }
+
+    function renderBadges(data) {
+      const stats = data.stats || {};
+      $("statusRow").innerHTML = [
+        `<span class="badge ok">服务运行中</span>`,
+        `<span class="${badgeClass((stats.busy_browser_count || 0) > 0 ? "busy" : "idle")}">忙碌浏览器: ${stats.busy_browser_count || 0}</span>`,
+        `<span class="badge neutral">空闲浏览器: ${stats.idle_browser_count || 0}</span>`,
+        `<span class="badge neutral">会话 TTL: ${data.session_ttl_seconds || 0}s</span>`,
+        `<span class="badge neutral">最近刷新: ${escapeHtml(formatUtc(data.generated_at))}</span>`
+      ].join("");
+    }
+
+    function renderBrowserTable(items) {
+      const body = $("browserTableBody");
+      if (!items || !items.length) {
+        body.innerHTML = `<tr><td colspan="6" class="empty">暂无浏览器槽位数据</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map((item) => `
+        <tr>
+          <td class="mono">${escapeHtml(item.browser_id)}</td>
+          <td><span class="${badgeClass(item.busy ? "busy" : "idle")}">${item.busy ? "忙碌" : (item.has_browser ? "待命" : "未启动")}</span></td>
+          <td>${escapeHtml(item.solve_count ?? 0)}</td>
+          <td>${escapeHtml(item.error_count ?? 0)}</td>
+          <td>${escapeHtml(item.idle_seconds ?? 0)}</td>
+          <td class="mono">${escapeHtml(item.proxy_url || "-")}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderSessionTable(items) {
+      const body = $("sessionTableBody");
+      if (!items || !items.length) {
+        body.innerHTML = `<tr><td colspan="5" class="empty">当前没有活跃会话</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map((item) => `
+        <tr>
+          <td class="mono">${escapeHtml(item.session_id)}</td>
+          <td class="mono">${escapeHtml(item.project_id || "-")}</td>
+          <td>${escapeHtml(item.action || "-")}</td>
+          <td class="mono">${escapeHtml(item.proxy_source || "-")} ${item.proxy_url ? `<div class="muted mono">${escapeHtml(item.proxy_url)}</div>` : ""}</td>
+          <td>${escapeHtml(item.age_seconds ?? 0)}s</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderTaskTable(items) {
+      const body = $("taskTableBody");
+      if (!items || !items.length) {
+        body.innerHTML = `<tr><td colspan="9" class="empty">暂无历史任务</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.task_type || "-")}</td>
+          <td><span class="${badgeClass(item.status)}">${escapeHtml(item.status || "-")}</span></td>
+          <td class="mono">${escapeHtml(item.project_id || item.session_id || "-")}</td>
+          <td>${escapeHtml(item.action || "-")}</td>
+          <td>${escapeHtml(item.token_id ?? "-")}</td>
+          <td class="mono">${escapeHtml(item.proxy_source || "-")}${item.proxy_url ? `<div class="muted mono">${escapeHtml(item.proxy_url)}</div>` : ""}</td>
+          <td>${item.duration_ms != null ? `${escapeHtml(item.duration_ms)}ms` : "-"}</td>
+          <td>${escapeHtml(formatUtc(item.started_at))}</td>
+          <td>${escapeHtml(item.error || item.note || "-")}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderProxyTable(items) {
+      const body = $("proxyTableBody");
+      if (!items || !items.length) {
+        body.innerHTML = `<tr><td colspan="7" class="empty">代理池暂无数据</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map((item) => `
+        <tr>
+          <td class="mono">${escapeHtml(item.host || "-")}</td>
+          <td>${escapeHtml(item.port ?? "-")}</td>
+          <td>${escapeHtml(item.username || "-")}</td>
+          <td>${item.disabled ? `<span class="badge err">禁用</span>` : `<span class="badge ok">启用</span>`}${item.bound_credential_email ? `<div class="muted mono">${escapeHtml(item.bound_credential_email)}</div>` : item.bound_credential ? `<div class="muted mono">${escapeHtml(item.bound_credential)}</div>` : ""}</td>
+          <td>${item.last_test_ok ? `<span class="badge ok">OK</span>` : `<span class="badge neutral">未测</span>`}</td>
+          <td class="mono">${escapeHtml(item.last_test_ip || "-")}</td>
+          <td>${escapeHtml(item.last_test_msg || "-")}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadOverview() {
+      $("refreshBtn").disabled = true;
+      try {
+        const response = await fetch("/ui/api/overview", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const stats = data.stats || {};
+        const proxyPool = data.proxy_pool || {};
+
+        $("subtitle").textContent = `最近刷新: ${formatUtc(data.generated_at)} | 会话TTL ${data.session_ttl_seconds || 0}s | 浏览器清理周期 ${data.cleanup_interval_seconds || 0}s`;
+        $("configuredBrowserCount").textContent = String(stats.configured_browser_count ?? 0);
+        $("browserUtilization").textContent = `忙碌 ${stats.busy_browser_count ?? 0} / 空闲 ${stats.idle_browser_count ?? 0}`;
+        $("activeTaskCount").textContent = String(data.active_task_count ?? 0);
+        $("sessionCountHint").textContent = `活跃会话 ${data.active_session_count ?? 0}`;
+        $("totalSolveCount").textContent = String(stats.total_solve_count ?? 0);
+        $("errorCountHint").textContent = `失败 ${stats.total_error_count ?? 0} / 风险403 ${stats.risk_403_count ?? 0}`;
+        $("proxyPoolCount").textContent = String(proxyPool.total ?? 0);
+        $("proxyPoolHint").textContent = `可用 ${proxyPool.available_count ?? 0} / 测试通过 ${proxyPool.tested_ok_count ?? 0}`;
+
+        renderBadges(data);
+        renderBrowserTable(stats.browsers || []);
+        renderSessionTable(data.active_sessions || []);
+        renderTaskTable(data.recent_tasks || []);
+        renderProxyTable(proxyPool.items || []);
+      } catch (error) {
+        $("subtitle").textContent = `加载失败: ${error.message}`;
+      } finally {
+        $("refreshBtn").disabled = false;
+      }
+    }
+
+    $("refreshBtn").addEventListener("click", loadOverview);
+    loadOverview();
+    setInterval(loadOverview, 5000);
+  </script>
+</body>
+</html>

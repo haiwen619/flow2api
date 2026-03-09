@@ -209,6 +209,32 @@ class ProxyManager:
         # Fallback: use email as stable binding key.
         return email
 
+    async def _resolve_credential_name_for_token_id(
+        self,
+        *,
+        token_id: Optional[int] = None,
+    ) -> Optional[str]:
+        if not token_id:
+            return None
+
+        try:
+            token = await self.db.get_token(int(token_id))
+        except Exception:
+            token = None
+
+        if token is None:
+            return None
+
+        email = str(getattr(token, "email", "") or "").strip()
+        if not email:
+            return None
+
+        credential_filename = self._resolve_credential_filename_by_email(email)
+        if credential_filename:
+            return credential_filename
+
+        return email
+
     async def select_proxy_url(
         self,
         *,
@@ -267,6 +293,51 @@ class ProxyManager:
             return None, "direct"
         except Exception as e:
             debug_logger.log_warning(f"[ProxyPool] select_proxy_url failed: {e}")
+            return None, "direct"
+
+    async def select_proxy_with_source_for_token_id(
+        self,
+        *,
+        token_id: Optional[int] = None,
+        use_media_proxy: bool = False,
+    ) -> Tuple[Optional[str], str]:
+        """
+        Select proxy by token_id.
+
+        Priority:
+        1) System proxy config (request/media proxy)
+        2) Proxy pool bound to token email/credential
+        3) Any available proxy from proxy pool
+        """
+        system_proxy = await (
+            self.get_media_proxy_url() if use_media_proxy else self.get_request_proxy_url()
+        )
+        if system_proxy:
+            return system_proxy, "system"
+
+        service = self.proxy_pool_service
+        if service is None:
+            return None, "direct"
+
+        try:
+            credential_name = await self._resolve_credential_name_for_token_id(
+                token_id=token_id,
+            )
+            if credential_name:
+                proxy_url = await service.get_proxy_url_for_credential(
+                    credential_name=credential_name,
+                    mode="antigravity",
+                    force_rebind=False,
+                )
+                if proxy_url:
+                    return proxy_url, "proxy_pool"
+
+            proxy_url = await service.get_any_proxy_url()
+            if proxy_url:
+                return proxy_url, "proxy_pool"
+            return None, "direct"
+        except Exception as e:
+            debug_logger.log_warning(f"[ProxyPool] select_proxy_with_source_for_token_id failed: {e}")
             return None, "direct"
 
     async def update_proxy_config(

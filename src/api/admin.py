@@ -12,10 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Security
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from curl_cffi.requests import AsyncSession
 
@@ -37,6 +38,11 @@ concurrency_manager: Optional[ConcurrencyManager] = None
 # Store active admin session tokens (in production, use Redis or database)
 active_admin_tokens = set()
 SUPPORTED_API_CAPTCHA_METHODS = {"yescaptcha", "capmonster", "ezcaptcha", "capsolver"}
+admin_bearer = HTTPBearer(
+    scheme_name="AdminSessionBearer",
+    description="管理后台会话鉴权。先调用 /api/admin/login 获取后台 session token，再以 Bearer 方式传入。",
+    auto_error=False,
+)
 
 
 def _mask_token(token: Optional[str]) -> str:
@@ -455,12 +461,13 @@ class InternalTokenExportRequest(BaseModel):
 
 # ========== Auth Middleware ==========
 
-async def verify_admin_token(authorization: str = Header(None)):
+async def verify_admin_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(admin_bearer),
+):
     """Verify admin session token (NOT API key)"""
-    if not authorization or not authorization.startswith("Bearer "):
+    if credentials is None or str(credentials.scheme or "").lower() != "bearer":
         raise HTTPException(status_code=401, detail="Missing authorization")
-
-    token = authorization[7:]
+    token = str(credentials.credentials or "").strip()
 
     # Check if token is in active session tokens
     if token not in active_admin_tokens:
@@ -471,7 +478,12 @@ async def verify_admin_token(authorization: str = Header(None)):
 
 # ========== Auth Endpoints ==========
 
-@router.post("/api/admin/login")
+@router.post(
+    "/api/admin/login",
+    tags=["Admin Auth"],
+    summary="管理员登录",
+    description="验证后台账号密码并返回后台 session token。该 token 仅用于管理接口，不等于主 API Key。",
+)
 async def admin_login(request: LoginRequest):
     """Admin login - returns session token (NOT API key)"""
     admin_config = await db.get_admin_config()
@@ -492,14 +504,24 @@ async def admin_login(request: LoginRequest):
     }
 
 
-@router.post("/api/admin/logout")
+@router.post(
+    "/api/admin/logout",
+    tags=["Admin Auth"],
+    summary="管理员登出",
+    description="使当前后台 session token 失效。",
+)
 async def admin_logout(token: str = Depends(verify_admin_token)):
     """Admin logout - invalidate session token"""
     active_admin_tokens.discard(token)
     return {"success": True, "message": "退出登录成功"}
 
 
-@router.post("/api/admin/change-password")
+@router.post(
+    "/api/admin/change-password",
+    tags=["Admin Auth"],
+    summary="修改管理员密码",
+    description="修改后台密码，可选同时修改后台用户名。成功后会清空全部后台 session token，需重新登录。",
+)
 async def change_password(
     request: ChangePasswordRequest,
     token: str = Depends(verify_admin_token)
@@ -1860,6 +1882,7 @@ async def update_captcha_config(
     remote_browser_base_url = request.get("remote_browser_base_url")
     remote_browser_api_key = request.get("remote_browser_api_key")
     remote_browser_timeout = request.get("remote_browser_timeout", 60)
+    remote_browser_proxy_enabled = request.get("remote_browser_proxy_enabled", False)
     browser_proxy_enabled = request.get("browser_proxy_enabled", False)
     browser_proxy_url = request.get("browser_proxy_url", "")
     browser_count = request.get("browser_count", 1)
@@ -1900,6 +1923,7 @@ async def update_captcha_config(
         remote_browser_base_url=remote_browser_base_url,
         remote_browser_api_key=remote_browser_api_key,
         remote_browser_timeout=remote_browser_timeout,
+        remote_browser_proxy_enabled=remote_browser_proxy_enabled,
         browser_proxy_enabled=browser_proxy_enabled,
         browser_proxy_url=browser_proxy_url if browser_proxy_enabled else None,
         browser_count=max(1, int(browser_count)) if browser_count else 1
@@ -1937,6 +1961,7 @@ async def get_captcha_config(token: str = Depends(verify_admin_token)):
         "remote_browser_base_url": captcha_config.remote_browser_base_url,
         "remote_browser_api_key": captcha_config.remote_browser_api_key,
         "remote_browser_timeout": captcha_config.remote_browser_timeout,
+        "remote_browser_proxy_enabled": captcha_config.remote_browser_proxy_enabled,
         "browser_proxy_enabled": captcha_config.browser_proxy_enabled,
         "browser_proxy_url": captcha_config.browser_proxy_url or "",
         "browser_count": captcha_config.browser_count
@@ -1959,6 +1984,7 @@ async def test_captcha_score(
     started_at = time.time()
     captcha_config = await db.get_captcha_config()
     captcha_method = (captcha_config.captcha_method or config.captcha_method or "").strip().lower()
+    remote_browser_proxy_enabled = bool(getattr(captcha_config, "remote_browser_proxy_enabled", False))
     browser_proxy_enabled = bool(captcha_config.browser_proxy_enabled)
     browser_proxy_url = captcha_config.browser_proxy_url or ""
 
@@ -2046,6 +2072,11 @@ async def test_captcha_score(
                 if isinstance(score_token_elapsed, (int, float)):
                     token_elapsed_ms = int(score_token_elapsed)
                 fingerprint = score_payload.get("fingerprint") if isinstance(score_payload.get("fingerprint"), dict) else None
+                verify_proxy_source = str(score_payload.get("proxy_source") or "direct")
+                verify_proxy_url = str(score_payload.get("proxy_url") or "").strip()
+                verify_proxy_used = bool(
+                    verify_proxy_url or verify_proxy_source not in {"", "direct", "none"}
+                )
         elif captcha_method in SUPPORTED_API_CAPTCHA_METHODS:
             token_value = await _solve_recaptcha_with_api_service(
                 method=captcha_method,
@@ -2088,6 +2119,7 @@ async def test_captcha_score(
                 "enterprise": enterprise,
                 "token_acquired": False,
                 "token_elapsed_ms": token_elapsed_ms,
+                "remote_browser_proxy_enabled": remote_browser_proxy_enabled,
                 "browser_proxy_enabled": browser_proxy_enabled,
                 "browser_proxy_url": browser_proxy_url if browser_proxy_enabled else "",
                 "fingerprint": fingerprint,

@@ -581,6 +581,17 @@ class Config:
             normalized = 60
         self._config["captcha"]["remote_browser_timeout"] = normalized
 
+    @property
+    def remote_browser_proxy_enabled(self) -> bool:
+        """Get whether remote browser captcha may use system proxy/proxy pool"""
+        return bool(self._config.get("captcha", {}).get("remote_browser_proxy_enabled", False))
+
+    def set_remote_browser_proxy_enabled(self, enabled: bool):
+        """Set whether remote browser captcha may use system proxy/proxy pool"""
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        self._config["captcha"]["remote_browser_proxy_enabled"] = bool(enabled)
+
     def _upsert_toml_key_in_section(
         self,
         content: str,

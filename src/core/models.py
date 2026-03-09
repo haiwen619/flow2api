@@ -193,6 +193,7 @@ class CaptchaConfig(BaseModel):
     remote_browser_base_url: str = ""
     remote_browser_api_key: str = ""
     remote_browser_timeout: int = 60
+    remote_browser_proxy_enabled: bool = False  # 远程有头打码是否允许使用系统代理/代理池
     website_key: str = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
     page_action: str = "IMAGE_GENERATION"
     browser_proxy_enabled: bool = False  # 浏览器打码是否启用代理
