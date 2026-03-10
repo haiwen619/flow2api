@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Security
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Security
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse
@@ -634,6 +634,40 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
         })
 
     return result  # 直接返回数组,兼容前端
+
+
+@router.get("/api/tokens/{token_id}/refresh-history")
+async def get_token_refresh_history(
+    token_id: int,
+    limit: int = Query(100, ge=1, le=500),
+    token: str = Depends(verify_admin_token),
+):
+    """获取某个 Token 的刷新历史记录。"""
+    _ = token
+    target = await db.get_token(token_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="token not found")
+
+    rows = await db.get_token_refresh_history(token_id, limit=limit)
+    to_iso = lambda value: value.isoformat() if hasattr(value, "isoformat") else value
+    history = [
+        {
+            "id": row.get("id"),
+            "token_id": row.get("token_id"),
+            "method": row.get("method"),
+            "status": row.get("status"),
+            "detail": row.get("detail"),
+            "created_at": to_iso(row.get("created_at")) if row.get("created_at") else None,
+        }
+        for row in rows
+    ]
+    return {
+        "success": True,
+        "token_id": token_id,
+        "email": getattr(target, "email", None),
+        "count": len(history),
+        "history": history,
+    }
 
 
 def _normalize_internal_token_email_from_name(file_name: str) -> str:

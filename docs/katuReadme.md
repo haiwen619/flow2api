@@ -24,3 +24,24 @@ git merge upstream/main
 待办：多账号同时自动化登录时可能有问题，
 需要考虑多账号同时登录时，如何处理账号切换的问题，比如如何判断当前登录的账号，如何切换账号等。
 
+
+Linux 部署 
+
+
+sudo apt-get update
+sudo apt-get install -y python3.11 python3.11-venv
+
+cd /path/to/flow2api
+cp config/setting_example.toml config/setting.toml
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -r requirements.txt
+
+# 默认配置是 browser 打码，首次建议安装 Chromium
+python -m playwright install chromium
+
+python main.py
+
+

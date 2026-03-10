@@ -566,7 +566,7 @@ class TokenBrowser:
             if token_proxy_url and token_proxy_url.strip():
                 candidate_proxy_url = token_proxy_url.strip()
                 proxy_source = "token"
-            elif self.db:
+            elif self.db and self._allow_browser_config_proxy:
                 captcha_config = await self.db.get_captcha_config()
                 if captcha_config.browser_proxy_enabled and captcha_config.browser_proxy_url:
                     candidate_proxy_url = captcha_config.browser_proxy_url.strip()
@@ -1664,6 +1664,7 @@ class BrowserCaptchaService:
         self.db = db
         self.website_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
         self.base_user_data_dir = os.path.join(os.getcwd(), "browser_data_rt")
+        self._allow_browser_config_proxy = True
         self._browsers: Dict[int, TokenBrowser] = {}
         self._browsers_lock = asyncio.Lock()
         
@@ -1733,6 +1734,10 @@ class BrowserCaptchaService:
     ) -> None:
         """Inject an external proxy resolver for remote-browser deployments."""
         self._external_proxy_resolver = resolver
+
+    def set_allow_browser_config_proxy(self, enabled: bool) -> None:
+        """Control whether browser_proxy_enabled/browser_proxy_url may be used implicitly."""
+        self._allow_browser_config_proxy = bool(enabled)
     
     def _check_available(self):
         """检查服务是否可用"""

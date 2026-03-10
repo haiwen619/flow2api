@@ -168,7 +168,8 @@ class TokenManager:
                     "auto_enable_token_on_sync": True,
                     "bitbrowser": True,
                     "bitbrowser_auto_delete": True,
-                    "reuse_test_bitbrowser_id": False,
+                    # 自动登录优先复用固定测试窗口，避免服务器侧反复 createBrowser 命中窗口数上限。
+                    "reuse_test_bitbrowser_id": True,
                 },
             )
             debug_logger.log_info(
@@ -186,13 +187,22 @@ class TokenManager:
         detail: str,
     ):
         """记录最近一次刷新结果，供管理页直接展示。"""
+        event_at = datetime.now(timezone.utc)
+        detail_text = str(detail or "").strip() or "-"
         try:
+            await self.db.add_token_refresh_history(
+                int(token_id),
+                method=method,
+                status=status,
+                detail=(detail_text[:4000] or "-"),
+                created_at=event_at,
+            )
             await self.db.update_token(
                 token_id,
-                last_refresh_at=datetime.now(timezone.utc),
+                last_refresh_at=event_at,
                 last_refresh_method=method,
                 last_refresh_status=status,
-                last_refresh_detail=(str(detail or "").strip()[:500] or "-"),
+                last_refresh_detail=(detail_text[:500] or "-"),
             )
         except Exception as log_err:
             debug_logger.log_warning(f"[AT_REFRESH] Token {token_id}: 写入刷新记录失败 - {log_err}")

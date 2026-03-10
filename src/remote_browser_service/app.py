@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import subprocess
 import time
 import uuid
 from collections import deque
@@ -36,7 +38,6 @@ from CommonFramePackage.proxy_pool import ProxyPoolRepository, ProxyPoolService
 
 from ..core.database import Database
 from ..core.logger import debug_logger
-from ..services.browser_captcha import BrowserCaptchaService
 from ..services.proxy_manager import ProxyManager
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -67,6 +68,71 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not raw:
         return bool(default)
     return raw in {"1", "true", "yes", "on"}
+
+
+def _is_running_in_docker() -> bool:
+    """Best-effort Docker/container detection used before browser service import."""
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as fh:
+            content = fh.read()
+        if any(keyword in content for keyword in ("docker", "kubepods", "containerd")):
+            return True
+    except Exception:
+        pass
+    return bool(os.getenv("DOCKER_CONTAINER") or os.getenv("KUBERNETES_SERVICE_HOST"))
+
+
+REMOTE_BROWSER_IS_DOCKER = _is_running_in_docker()
+
+
+def _prepare_remote_browser_runtime_env() -> None:
+    """Apply remote-browser friendly defaults before importing BrowserCaptchaService.
+
+    BrowserCaptchaService decides whether Docker headed mode is blocked at import time,
+    so this service needs to set its defaults first when running standalone in a container.
+    """
+    if not REMOTE_BROWSER_IS_DOCKER:
+        return
+
+    allow_headed_missing = not str(os.getenv("ALLOW_DOCKER_HEADED_CAPTCHA", "") or "").strip()
+    allow_alias_missing = not str(os.getenv("ALLOW_DOCKER_BROWSER_CAPTCHA", "") or "").strip()
+    if allow_headed_missing and allow_alias_missing and _env_bool(
+        "REMOTE_BROWSER_AUTO_ALLOW_DOCKER_HEADED",
+        default=True,
+    ):
+        os.environ["ALLOW_DOCKER_HEADED_CAPTCHA"] = "true"
+        debug_logger.log_info(
+            "[RemoteBrowser] Docker 环境下自动启用 ALLOW_DOCKER_HEADED_CAPTCHA=true"
+        )
+
+    if not str(os.getenv("DISPLAY", "") or "").strip() and _env_bool(
+        "REMOTE_BROWSER_AUTO_SET_DISPLAY",
+        default=True,
+    ):
+        default_display = str(
+            os.getenv("REMOTE_BROWSER_DEFAULT_DISPLAY", ":99") or ":99"
+        ).strip() or ":99"
+        os.environ["DISPLAY"] = default_display
+        debug_logger.log_info(
+            f"[RemoteBrowser] Docker 环境下自动设置 DISPLAY={default_display}"
+        )
+
+
+def _display_lock_path(display: str) -> Optional[Path]:
+    value = str(display or "").strip()
+    if not value.startswith(":"):
+        return None
+    display_no = value[1:].split(".", 1)[0].strip()
+    if not display_no.isdigit():
+        return None
+    return Path(f"/tmp/.X{display_no}-lock")
+
+
+_prepare_remote_browser_runtime_env()
+
+from ..services.browser_captcha import BrowserCaptchaService
 
 
 def _get_api_key() -> str:
@@ -310,6 +376,7 @@ class RemoteBrowserRuntime:
         self.proxy_manager: Optional[ProxyManager] = None
         self.proxy_pool_service: Optional[ProxyPoolService] = None
         self._reaper_task: Optional[asyncio.Task] = None
+        self._managed_xvfb: Optional[subprocess.Popen] = None
         self._task_lock = asyncio.Lock()
         self._active_tasks: Dict[str, TaskEntry] = {}
         self._recent_tasks: Deque[TaskEntry] = deque(
@@ -328,8 +395,47 @@ class RemoteBrowserRuntime:
             maximum=3600,
         )
 
+    def _ensure_xvfb(self) -> None:
+        if not REMOTE_BROWSER_IS_DOCKER or os.name == "nt":
+            return
+        if self._managed_xvfb is not None:
+            return
+        if not _env_bool("REMOTE_BROWSER_AUTO_START_XVFB", default=True):
+            return
+
+        display = str(os.getenv("DISPLAY", "") or "").strip()
+        if not display:
+            return
+
+        lock_path = _display_lock_path(display)
+        if lock_path and lock_path.exists():
+            return
+
+        xvfb_path = shutil.which("Xvfb")
+        if not xvfb_path:
+            debug_logger.log_warning(
+                "[RemoteBrowser] DISPLAY 已设置但未找到 Xvfb，可通过 REMOTE_BROWSER_AUTO_START_XVFB=false 关闭自动托管"
+            )
+            return
+
+        xvfb_whd = str(os.getenv("XVFB_WHD", "1920x1080x24") or "1920x1080x24").strip() or "1920x1080x24"
+        try:
+            process = subprocess.Popen(
+                [xvfb_path, display, "-screen", "0", xvfb_whd, "-ac", "+extension", "RANDR"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(0.3)
+            if process.poll() is not None:
+                raise RuntimeError(f"Xvfb exited immediately with code {process.returncode}")
+            self._managed_xvfb = process
+            debug_logger.log_info(f"[RemoteBrowser] 已自动启动 Xvfb: display={display}, screen={xvfb_whd}")
+        except Exception as e:
+            debug_logger.log_warning(f"[RemoteBrowser] 自动启动 Xvfb 失败: {e}")
+
     async def startup(self) -> None:
         _ = _get_api_key()
+        self._ensure_xvfb()
 
         db = Database()
         await db.init_db()
@@ -342,6 +448,7 @@ class RemoteBrowserRuntime:
         service = await BrowserCaptchaService.get_instance(db=db)
         service.db = db
         service.set_external_proxy_resolver(self.resolve_proxy_for_token)
+        service.set_allow_browser_config_proxy(False)
 
         base_user_data_dir = str(os.getenv("REMOTE_BROWSER_USER_DATA_DIR", "") or "").strip()
         if base_user_data_dir:
@@ -393,6 +500,18 @@ class RemoteBrowserRuntime:
                 await self.service.close()
             except Exception as e:
                 debug_logger.log_warning(f"[RemoteBrowser] 服务关闭时清理浏览器失败: {e}")
+
+        if self._managed_xvfb is not None:
+            try:
+                self._managed_xvfb.terminate()
+                self._managed_xvfb.wait(timeout=5)
+            except Exception:
+                try:
+                    self._managed_xvfb.kill()
+                except Exception:
+                    pass
+            finally:
+                self._managed_xvfb = None
 
         debug_logger.log_info("[RemoteBrowser] 服务已关闭")
 

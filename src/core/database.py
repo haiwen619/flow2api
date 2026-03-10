@@ -311,6 +311,29 @@ class Database:
                     )
                 """)
 
+            # Check and create token_refresh_history table if missing
+            if not await self._table_exists(db, "token_refresh_history"):
+                print("  ✓ Creating missing table: token_refresh_history")
+                await db.execute("""
+                    CREATE TABLE token_refresh_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        token_id INTEGER NOT NULL,
+                        method TEXT,
+                        status TEXT,
+                        detail TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (token_id) REFERENCES tokens(id)
+                    )
+                """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_refresh_history_token_id_created_at "
+                "ON token_refresh_history(token_id, created_at DESC)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_refresh_history_created_at "
+                "ON token_refresh_history(created_at DESC)"
+            )
+
             # ========== Step 2: Add missing columns to existing tables ==========
             # Check and add missing columns to tokens table
             if await self._table_exists(db, "tokens"):
@@ -553,6 +576,19 @@ class Database:
                 )
             """)
 
+            # Token refresh history table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS token_refresh_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER NOT NULL,
+                    method TEXT,
+                    status TEXT,
+                    detail TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
             # Admin config table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS admin_config (
@@ -667,6 +703,8 @@ class Database:
 
             # Token stats lookup index
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_token_id ON token_stats(token_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_token_refresh_history_token_id_created_at ON token_refresh_history(token_id, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_token_refresh_history_created_at ON token_refresh_history(created_at DESC)")
 
             await db.commit()
 
@@ -909,9 +947,60 @@ class Database:
                 await db.execute(query, params)
                 await db.commit()
 
+    async def add_token_refresh_history(
+        self,
+        token_id: int,
+        *,
+        method: Optional[str],
+        status: Optional[str],
+        detail: Optional[str],
+        created_at: Optional[datetime] = None,
+    ) -> int:
+        """Append a refresh history row for a token."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO token_refresh_history (token_id, method, status, detail, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    int(token_id),
+                    str(method or "").strip() or None,
+                    str(status or "").strip() or None,
+                    str(detail or "").strip() or None,
+                    created_at or datetime.utcnow(),
+                ),
+            )
+            await db.commit()
+            return int(cursor.lastrowid or 0)
+
+    async def get_token_refresh_history(
+        self,
+        token_id: int,
+        *,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Get refresh history for one token, newest first."""
+        safe_limit = max(1, min(int(limit or 100), 500))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, token_id, method, status, detail, created_at
+                FROM token_refresh_history
+                WHERE token_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (int(token_id), safe_limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
     async def delete_token(self, token_id: int):
         """Delete token and related data"""
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM token_refresh_history WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM projects WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))

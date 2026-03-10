@@ -663,7 +663,7 @@
               <label class="text-sm font-medium mb-2 block">默认服务器公网IP</label>
               <input id="cfgServerDefaultPublicIp"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                placeholder="23.159.248.139" />
+                placeholder="104.129.59.235" />
               <p id="cfgServerDetectedIpHint" class="text-xs text-muted-foreground mt-1">
                 启动时会检测本机公网IP，命中该值时自动按服务器模式运行
               </p>
@@ -1734,6 +1734,7 @@
     let tokenAutoRefreshTicker = null;
     let tokenAutoRefreshInFlight = false;
     let refreshRecordMap = {};
+    let refreshHistoryCache = {};
     let autoLoginRecoveryWatchers = {};
     let readmeDocCache = null;
     let projectVersionCache = null;
@@ -2055,6 +2056,33 @@
           })
           .replace(/\//g, "-");
       },
+      getRefreshStatusMeta = (statusRaw) => {
+        const status = String(statusRaw || "").toUpperCase();
+        const isRunning =
+          status === "PENDING" ||
+          status === "RUNNING" ||
+          status === "IN_PROGRESS";
+        return {
+          status: status || "-",
+          isRunning,
+          statusClass:
+            status === "SUCCESS"
+              ? "bg-green-50 text-green-700"
+              : isRunning
+                ? "bg-amber-50 text-amber-700"
+                : status === "FAILED"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-gray-100 text-gray-700",
+          statusLabel:
+            status === "SUCCESS"
+              ? "成功"
+              : isRunning
+                ? "执行中"
+                : status === "FAILED"
+                  ? "失败"
+                  : "未记录",
+        };
+      },
       parseServerUtcTimestamp = (ts) => {
         if (!ts) return null;
         if (ts instanceof Date) {
@@ -2087,29 +2115,10 @@
           .replace(/\//g, "-");
       },
       formatRefreshRecord = (t) => {
-        const status = String(t.last_refresh_status || "").toUpperCase();
+        const statusMeta = getRefreshStatusMeta(t.last_refresh_status);
+        const status = statusMeta.status;
         const time = formatRefreshTime(t.last_refresh_at);
-        const isRunning =
-          status === "PENDING" ||
-          status === "RUNNING" ||
-          status === "IN_PROGRESS";
-        const statusClass =
-          status === "SUCCESS"
-            ? "bg-green-50 text-green-700"
-            : isRunning
-              ? "bg-amber-50 text-amber-700"
-              : status === "FAILED"
-                ? "bg-red-50 text-red-700"
-                : "bg-gray-100 text-gray-700";
-        const statusLabel =
-          status === "SUCCESS"
-            ? "成功"
-            : isRunning
-              ? "执行中"
-              : status === "FAILED"
-                ? "失败"
-                : "未记录";
-        const progressHint = isRunning
+        const progressHint = statusMeta.isRunning
           ? '<div class="text-amber-600 animate-pulse">账号池自动登录执行中...</div>'
           : "";
         const hasDetail = Boolean(
@@ -2124,7 +2133,7 @@
         const viewBtn = hasDetail
           ? `<button onclick="showRefreshRecordDetail(${t.id})" class="${viewBtnClass}">查看信息</button>`
           : `<button class="${viewBtnClass}" disabled>查看信息</button>`;
-        return `<div class="text-xs leading-5"><div><span class="inline-flex items-center rounded px-2 py-0.5 ${statusClass}">${statusLabel}</span></div><div class="text-muted-foreground" title="${escapeHtml(time)}">${escapeHtml(time)}</div>${progressHint}<div>${viewBtn}</div></div>`;
+        return `<div class="text-xs leading-5"><div><span class="inline-flex items-center rounded px-2 py-0.5 ${statusMeta.statusClass}">${statusMeta.statusLabel}</span></div><div class="text-muted-foreground" title="${escapeHtml(time)}">${escapeHtml(time)}</div>${progressHint}<div>${viewBtn}</div></div>`;
       },
       formatPlanType = (type) => {
         if (!type) return "-";
@@ -2171,6 +2180,7 @@
       renderTokens = () => {
         const tb = $("tokenTableBody");
         refreshRecordMap = {};
+        refreshHistoryCache = {};
         tb.innerHTML = allTokens
           .map((t) => {
             const emailRaw = String(t.email || "-");
@@ -3695,7 +3705,7 @@
           $("cfgServerHost").value = d.config.host || "";
           $("cfgServerPort").value = d.config.port || 8000;
           $("cfgServerDefaultPublicIp").value =
-            d.config.default_public_ip || "23.159.248.139";
+            d.config.default_public_ip || "104.129.59.235";
           const detectedIp = String(d.config.detected_public_ip || "").trim();
           const autoDetected = Boolean(d.config.server_auto_detected);
           $("cfgServerDetectedIpHint").textContent = detectedIp
@@ -4329,14 +4339,63 @@
           showToast("清空失败: " + e.message, "error");
         }
       },
-      showRefreshRecordDetail = (tokenId) => {
+      showRefreshRecordDetail = async (tokenId) => {
         const record = refreshRecordMap[tokenId];
         if (!record) {
           showToast("暂无刷新记录详情", "info");
           return;
         }
+        $("refreshRecordModal").classList.remove("hidden");
+        $("refreshRecordDetailContent").innerHTML = `<div class="text-muted-foreground">加载中...</div>`;
 
-        $("refreshRecordDetailContent").innerHTML = `
+        const buildDetailCard = (item) => {
+          const statusMeta = getRefreshStatusMeta(item.status);
+          const time = formatRefreshTime(item.created_at || item.time || "-");
+          return `
+            <div class="rounded-md border border-border p-3 bg-muted/20 space-y-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="inline-flex items-center rounded px-2 py-0.5 ${statusMeta.statusClass}">${escapeHtml(statusMeta.statusLabel)}</span>
+                <span class="text-muted-foreground">${escapeHtml(time)}</span>
+                <span class="text-muted-foreground">方式: ${escapeHtml(item.method || "-")}</span>
+              </div>
+              <pre class="rounded-md border border-border p-3 bg-background text-xs whitespace-pre-wrap break-words">${escapeHtml(item.detail || "-")}</pre>
+            </div>
+          `;
+        };
+
+        try {
+          let history = refreshHistoryCache[tokenId];
+          if (!Array.isArray(history)) {
+            const r = await apiRequest(`/api/tokens/${tokenId}/refresh-history?limit=100`);
+            if (!r) return;
+            const d = await r.json();
+            history = Array.isArray(d.history) ? d.history : [];
+            refreshHistoryCache[tokenId] = history;
+          }
+          const displayHistory = history.length
+            ? history
+            : [{
+              created_at: record.time,
+              status: record.status,
+              method: record.method,
+              detail: record.detail,
+            }];
+          $("refreshRecordDetailContent").innerHTML = `
+            <div class="space-y-2">
+              <div><span class="text-muted-foreground">邮箱:</span> ${escapeHtml(record.email || "-")}</div>
+              <div><span class="text-muted-foreground">最近状态:</span> ${escapeHtml(record.statusLabel || "-")} (${escapeHtml(record.status || "-")})</div>
+              <div><span class="text-muted-foreground">最近时间:</span> ${escapeHtml(record.time || "-")}</div>
+              <div><span class="text-muted-foreground">历史条数:</span> ${escapeHtml(String(displayHistory.length))}</div>
+            </div>
+            <div class="pt-2">
+              <div class="text-muted-foreground mb-2">历史记录（最近 ${escapeHtml(String(displayHistory.length))} 条）</div>
+              <div class="space-y-3">
+                ${displayHistory.map((item) => buildDetailCard(item)).join("")}
+              </div>
+            </div>
+          `;
+        } catch (e) {
+          $("refreshRecordDetailContent").innerHTML = `
             <div class="space-y-2">
               <div><span class="text-muted-foreground">邮箱:</span> ${escapeHtml(record.email || "-")}</div>
               <div><span class="text-muted-foreground">时间:</span> ${escapeHtml(record.time || "-")}</div>
@@ -4347,8 +4406,9 @@
               <div class="text-muted-foreground mb-2">详细信息</div>
               <pre class="rounded-md border border-border p-3 bg-muted/30 text-xs whitespace-pre-wrap break-words">${escapeHtml(record.detail || "-")}</pre>
             </div>
+            <div class="text-xs text-red-600">加载历史记录失败: ${escapeHtml(e.message || "未知错误")}</div>
           `;
-        $("refreshRecordModal").classList.remove("hidden");
+        }
       },
       closeRefreshRecordModal = () => {
         $("refreshRecordModal").classList.add("hidden");

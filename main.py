@@ -14,6 +14,7 @@ if __name__ == "__main__":
             pass
 
     from src.core.config import config
+    from src.main import app
 
     runtime_server_info = config.bootstrap_runtime_server_mode()
     detected_public_ip = str(runtime_server_info.get("detected_public_ip") or "").strip()
@@ -34,7 +35,7 @@ if __name__ == "__main__":
         )
 
     uvicorn.run(
-        "src.main:app",
+        app,
         host=config.server_host,
         port=config.server_port,
         reload=False

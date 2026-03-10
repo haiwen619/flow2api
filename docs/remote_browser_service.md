@@ -13,6 +13,9 @@ App entry:
 
 ```bash
 uvicorn src.remote_browser_service.app:app --host 0.0.0.0 --port 8060
+
+python main.py --host 0.0.0.0 --port 8000
+
 ```
 
 Service home page:

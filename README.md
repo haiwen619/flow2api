@@ -11,7 +11,7 @@ Esc_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq
 
 New-NetFirewallRule -DisplayName "Flow2API-RemoteBrowser-8060" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8060
 
-http://23.159.248.139:8000/manage
+http://104.129.59.235:8000/manage
 jHrrRDxVD5twXN2t
 
 newapi.apishop.cc
@@ -38,7 +38,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
   }'
 
 # 1) 基础模型 + imageConfig: 4:3 + 1K 服务器地址示例
-curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
+curl -X POST "http://104.129.59.235:8000/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{
@@ -77,7 +77,7 @@ $body = @'
 }
 '@
 
-curl.exe -X POST "http://23.159.248.139:3000/v1/chat/completions" `
+curl.exe -X POST "http://104.129.59.235:3000/v1/chat/completions" `
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" `
   -H "Content-Type: application/json" `
   -d $body
@@ -171,7 +171,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 
 
 
-curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
+curl -X POST "http://104.129.59.235:3000/v1/chat/completions" \
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
   -H "Content-Type: application/json" \
   -d '{
@@ -203,7 +203,7 @@ curl -X POST "http://127.0.0.1:3000/v1/chat/completions" \
     "stream": true
   }'
 
-curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
+curl -X POST "http://104.129.59.235:3000/v1/chat/completions" \
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
   -H "Content-Type: application/json" \
   -d '{
@@ -270,7 +270,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
 
 
 
-curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
+curl -X POST "http://104.129.59.235:8000/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{
@@ -332,7 +332,10 @@ curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
 ### 前置要求
 
 - Docker 和 Docker Compose（推荐）
-- 或 Python 3.8+
+- 或 Python 3.11
+
+> 本地/Linux 直接运行时，推荐固定使用 `Python 3.11`。  
+> 当前不要使用 `Python 3.14` 执行 `pip install -r requirements.txt`，否则会在 `pydantic-core`、`curl-cffi` 等依赖上触发源码编译并初始化失败。
 
 - 由于Flow增加了额外的验证码，你可以自行选择使用浏览器打码或第三发打码：
 注册[YesCaptcha](https://yescaptcha.com/i/13Xd8K)并获取api key，将其填入系统配置页面```YesCaptcha API密钥```区域
@@ -389,21 +392,52 @@ docker compose -f docker-compose.headed.yml logs -f
 ```bash
 # 克隆项目
 git clone https://github.com/TheSmallHanCat/flow2api.git
-cd sora2api
+cd flow2api
 
-# 创建虚拟环境
-python -m venv venv
+# 复制配置
+cp config/setting_example.toml config/setting.toml
+
+# Linux 推荐显式使用 Python 3.11
+python3.11 -m venv .venv
 
 # 激活虚拟环境
 # Windows
-venv\Scripts\activate
+.\.venv\Scripts\activate
 # Linux/Mac
-source venv/bin/activate
+source .venv/bin/activate
+
+# 升级 pip
+python -m pip install -U pip
 
 # 安装依赖
 pip install -r requirements.txt
 
+# 默认 setting_example.toml 的 captcha_method=browser
+# 首次本地启动建议安装 Chromium
+python -m playwright install chromium
+
 # 启动服务
+python main.py
+```
+
+如果你的 Linux 服务器已经在用 `python3`/`pip`，先确认版本：
+
+```bash
+python3 --version
+pip3 --version
+```
+
+若输出是 `Python 3.14.x`，请改成下面这种方式初始化：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3.11 python3.11-venv
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -r requirements.txt
+python -m playwright install chromium
 python main.py
 ```
 

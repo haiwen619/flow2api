@@ -732,7 +732,6 @@ async def validate_antigravity_account(
     try:
         from playwright.async_api import (
             async_playwright,
-            TimeoutError as PwTimeoutError,
         )
     except Exception as e:  # pragma: no cover
         raise PlaywrightNotInstalled(
@@ -1011,10 +1010,10 @@ async def validate_antigravity_account(
             )
 
             try:
-                await page.wait_for_url(target_re, timeout=timeout_ms)
+                await _wait_until_target_url(page, target_re, timeout_ms=timeout_ms)
                 final_url = page.url or ""
                 _print_and_log(f"[RPA] 步骤2/2: 已进入目标页面 URL: {final_url}")
-            except PwTimeoutError:
+            except TimeoutError:
                 if options.manual:
                     _print_and_log(
                         "[RPA] 步骤2/2: 等待目标页面超时，进入人工介入等待...",
@@ -1185,7 +1184,14 @@ async def validate_antigravity_account(
                         f"[RPA] 已通过 BitBrowser 关闭窗口，ID: {bitbrowser_id}"
                     )
                     # 可选：自动删除窗口
-                    if bool(getattr(options, "bitbrowser_auto_delete", False)):
+                    should_auto_delete = bool(
+                        getattr(options, "bitbrowser_auto_delete", False)
+                    ) and not reused_default_bitbrowser_id
+                    if bool(getattr(options, "bitbrowser_auto_delete", False)) and reused_default_bitbrowser_id:
+                        _print_and_log(
+                            f"[RPA] 当前窗口为复用测试窗口，跳过自动删除，ID: {bitbrowser_id}"
+                        )
+                    elif should_auto_delete:
                         deleteBrowser(bitbrowser_id)
                         _print_and_log(
                             f"[RPA] 已通过 BitBrowser 删除窗口，ID: {bitbrowser_id}"
@@ -1232,6 +1238,22 @@ async def _wait_until_target_url(
     """人工介入时的等待：每 500ms 检查一次是否进入目标 URL。"""
     deadline = time.time() + (timeout_ms / 1000.0)
     while time.time() < deadline:
+        try:
+            disabled_info = await _detect_google_account_disabled_reason(page)
+            if disabled_info:
+                stage = "wait_target_page"
+                marker = str(disabled_info.get("marker") or "").strip()
+                snippet = str(disabled_info.get("snippet") or "").strip()
+                raise AccountInvalidError(
+                    "检测到 Google 账号已被停用/封禁，终止本次任务："
+                    f"{marker or 'account disabled'}"
+                    f"{f'；页面片段：{snippet}' if snippet else ''}"
+                    f"（阶段: {stage}）"
+                )
+        except AccountInvalidError:
+            raise
+        except Exception:
+            pass
         try:
             if target_re.match(page.url or ""):
                 return
@@ -1448,6 +1470,106 @@ async def _raise_if_google_password_changed(
             pass
 
 
+async def _detect_google_account_disabled_reason(page) -> Optional[dict]:
+    """检测 Google 登录后出现的账号停用/封禁提示页。"""
+    try:
+        raw_url = str(page.url or "").strip()
+    except Exception:
+        raw_url = ""
+    url = raw_url.lower()
+
+    strong_url_markers = [
+        "/disabled",
+        "/signin/rejected",
+        "/deniedsigninrejected",
+        "/v3/signin/rejected",
+    ]
+    for marker in strong_url_markers:
+        if marker in url:
+            return {
+                "reason": "url_marker",
+                "marker": marker,
+                "url": raw_url,
+                "snippet": "",
+            }
+
+    selectors = [
+        "h1",
+        "div[role='heading']",
+        "div[role='alert']",
+        "main",
+        "body",
+    ]
+    text_markers = [
+        "your account has been disabled",
+        "this account has been disabled",
+        "account has been disabled",
+        "violated the google workspace policy",
+        "this account became unavailable",
+        "submit an appeal",
+        "start appeal",
+        "your account is disabled",
+        "账号已被停用",
+        "账号已被禁用",
+        "此账号已被停用",
+        "此账号已被禁用",
+        "违反了 google workspace 政策",
+        "提交申诉",
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() <= 0:
+                continue
+            text = ""
+            try:
+                text = await loc.inner_text(timeout=700)
+            except Exception:
+                text = await loc.text_content(timeout=700)
+            clean = str(text or "").strip().replace("\r", " ").replace("\n", " ")
+            norm = clean.lower()
+            if not norm:
+                continue
+            for marker in text_markers:
+                if marker in norm:
+                    return {
+                        "reason": f"text_marker:{sel}",
+                        "marker": marker,
+                        "url": raw_url,
+                        "snippet": clean[:260],
+                    }
+        except Exception:
+            continue
+    return None
+
+
+async def _raise_if_google_account_disabled(
+    page, *, stage: str = "", timeout_ms: int = 6000
+) -> None:
+    """在密码提交后快速检测账号停用页，命中则立即终止。"""
+    deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
+    while time.time() < deadline:
+        disabled_info = await _detect_google_account_disabled_reason(page)
+        if disabled_info:
+            marker = str(disabled_info.get("marker") or "").strip() or "account disabled"
+            snippet = str(disabled_info.get("snippet") or "").strip()
+            stage_msg = f"（阶段: {stage}）" if stage else ""
+            snippet_msg = f" 页面片段: {snippet}" if snippet else ""
+            raise AccountInvalidError(
+                f"检测到 Google 账号已被停用/封禁，终止本次任务：{marker}.{snippet_msg}{stage_msg}"
+            )
+        try:
+            if "accounts.google.com" not in str(page.url or "").lower():
+                return
+        except Exception:
+            pass
+        try:
+            await page.wait_for_timeout(220)
+        except Exception:
+            pass
+
+
 async def _detect_google_challenge_reason(page) -> Optional[str]:
     """快速检测 Google 登录/授权过程中是否出现挑战页。
 
@@ -1653,6 +1775,9 @@ async def _best_effort_google_login(
                     await page.locator(pwd_sel).first.press("Enter")
                 except Exception:
                     pass
+            await _raise_if_google_account_disabled(
+                page, stage="after_click_password_next", timeout_ms=8000
+            )
             await _best_effort_google_new_account_notice(
                 page,
                 options=options,
@@ -1710,6 +1835,7 @@ async def _best_effort_google_login(
         options=options,
         timeout_ms=5_000,
     )
+    await _raise_if_google_account_disabled(page, stage="login_end", timeout_ms=2500)
 
     # 登录流程结束前再检查一次（有些风控会在点击 Next 后延迟出现）
     await _raise_if_google_challenge(

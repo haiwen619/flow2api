@@ -88,6 +88,16 @@ CREATE TABLE IF NOT EXISTS request_logs (
     CONSTRAINT fk_request_logs_token_id FOREIGN KEY (token_id) REFERENCES tokens(id)
 );
 
+CREATE TABLE IF NOT EXISTS token_refresh_history (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    token_id BIGINT NOT NULL,
+    method VARCHAR(64) NULL,
+    status VARCHAR(64) NULL,
+    detail TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_token_refresh_history_token_id FOREIGN KEY (token_id) REFERENCES tokens(id)
+);
+
 CREATE TABLE IF NOT EXISTS admin_config (
     id INT PRIMARY KEY DEFAULT 1,
     username VARCHAR(255) NOT NULL,
@@ -194,5 +204,7 @@ CREATE INDEX idx_tokens_is_active_last_used_at ON tokens(is_active, last_used_at
 CREATE INDEX idx_request_logs_created_at ON request_logs(created_at DESC);
 CREATE INDEX idx_request_logs_token_id_created_at ON request_logs(token_id, created_at DESC);
 CREATE INDEX idx_token_stats_token_id ON token_stats(token_id);
+CREATE INDEX idx_token_refresh_history_token_id_created_at ON token_refresh_history(token_id, created_at DESC);
+CREATE INDEX idx_token_refresh_history_created_at ON token_refresh_history(created_at DESC);
 CREATE INDEX idx_account_pool_platform ON account_pool_accounts(platform);
 CREATE INDEX idx_account_pool_updated_at ON account_pool_accounts(updated_at);
