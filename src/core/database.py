@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from .db_compat import dbapi as aiosqlite, is_mysql_target
 from .config import config
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, normalize_captcha_priority_order
 
 
 class Database:
@@ -177,7 +177,8 @@ class Database:
         cursor = await db.execute("SELECT COUNT(*) FROM captcha_config")
         count = await cursor.fetchone()
         if count[0] == 0:
-            captcha_method = "browser"
+            captcha_method = "remote_browser"
+            captcha_priority_order = json.dumps(normalize_captcha_priority_order(None), ensure_ascii=False)
             yescaptcha_api_key = ""
             yescaptcha_base_url = "https://api.yescaptcha.com"
             remote_browser_base_url = ""
@@ -187,7 +188,13 @@ class Database:
 
             if config_dict:
                 captcha_config = config_dict.get("captcha", {})
-                captcha_method = captcha_config.get("captcha_method", "browser")
+                captcha_method = captcha_config.get("captcha_method", "remote_browser")
+                captcha_priority_order = json.dumps(
+                    normalize_captcha_priority_order(
+                        captcha_config.get("captcha_priority_order", captcha_method)
+                    ),
+                    ensure_ascii=False,
+                )
                 yescaptcha_api_key = captcha_config.get("yescaptcha_api_key", "")
                 yescaptcha_base_url = captcha_config.get("yescaptcha_base_url", "https://api.yescaptcha.com")
                 remote_browser_base_url = captcha_config.get("remote_browser_base_url", "")
@@ -203,9 +210,9 @@ class Database:
                 INSERT INTO captcha_config (
                     id, captcha_method, yescaptcha_api_key, yescaptcha_base_url,
                     remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
-                    remote_browser_proxy_enabled
+                    remote_browser_proxy_enabled, captcha_priority_order
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 captcha_method,
                 yescaptcha_api_key,
@@ -214,6 +221,7 @@ class Database:
                 remote_browser_api_key,
                 remote_browser_timeout,
                 remote_browser_proxy_enabled,
+                captcha_priority_order,
             ))
 
         # Ensure plugin_config has a row
@@ -407,6 +415,7 @@ class Database:
                     ("remote_browser_api_key", "TEXT DEFAULT ''"),
                     ("remote_browser_timeout", "INTEGER DEFAULT 60"),
                     ("remote_browser_proxy_enabled", "BOOLEAN DEFAULT 0"),
+                    ("captcha_priority_order", "TEXT"),
                 ]
 
                 for col_name, col_type in captcha_columns_to_add:
@@ -652,7 +661,7 @@ class Database:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS captcha_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
-                    captcha_method TEXT DEFAULT 'browser',
+                    captcha_method TEXT DEFAULT 'remote_browser',
                     yescaptcha_api_key TEXT DEFAULT '',
                     yescaptcha_base_url TEXT DEFAULT 'https://api.yescaptcha.com',
                     capmonster_api_key TEXT DEFAULT '',
@@ -661,6 +670,7 @@ class Database:
                     ezcaptcha_base_url TEXT DEFAULT 'https://api.ez-captcha.com',
                     capsolver_api_key TEXT DEFAULT '',
                     capsolver_base_url TEXT DEFAULT 'https://api.capsolver.com',
+                    captcha_priority_order TEXT,
                     remote_browser_base_url TEXT DEFAULT '',
                     remote_browser_api_key TEXT DEFAULT '',
                     remote_browser_timeout INTEGER DEFAULT 60,
@@ -1000,11 +1010,29 @@ class Database:
     async def delete_token(self, token_id: int):
         """Delete token and related data"""
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM request_logs WHERE token_id = ?", (token_id,))
+            await db.execute("DELETE FROM tasks WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM token_refresh_history WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM projects WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
             await db.commit()
+
+    async def delete_all_tokens(self) -> int:
+        """Delete all tokens and related data"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM tokens")
+            row = await cursor.fetchone()
+            total = int(row[0] or 0) if row else 0
+
+            await db.execute("DELETE FROM request_logs")
+            await db.execute("DELETE FROM tasks")
+            await db.execute("DELETE FROM token_refresh_history")
+            await db.execute("DELETE FROM token_stats")
+            await db.execute("DELETE FROM projects")
+            await db.execute("DELETE FROM tokens")
+            await db.commit()
+            return total
 
     # Project operations
     async def add_project(self, project: Project) -> int:
@@ -1474,6 +1502,7 @@ class Database:
         captcha_config = await self.get_captcha_config()
         if captcha_config:
             config.set_captcha_method(captcha_config.captcha_method)
+            config.set_captcha_priority_order(captcha_config.captcha_priority_order)
             config.set_yescaptcha_api_key(captcha_config.yescaptcha_api_key)
             config.set_yescaptcha_base_url(captcha_config.yescaptcha_base_url)
             config.set_capmonster_api_key(captcha_config.capmonster_api_key)
@@ -1612,6 +1641,7 @@ class Database:
         ezcaptcha_base_url: str = None,
         capsolver_api_key: str = None,
         capsolver_base_url: str = None,
+        captcha_priority_order = None,
         remote_browser_base_url: str = None,
         remote_browser_api_key: str = None,
         remote_browser_timeout: int = None,
@@ -1628,7 +1658,17 @@ class Database:
 
             if row:
                 current = dict(row)
-                new_method = captcha_method if captcha_method is not None else current.get("captcha_method", "yescaptcha")
+                current_order = normalize_captcha_priority_order(current.get("captcha_priority_order"))
+                if captcha_priority_order is not None:
+                    new_order = normalize_captcha_priority_order(captcha_priority_order)
+                elif captcha_method is not None:
+                    method_value = str(captcha_method or "").strip().lower()
+                    new_order = normalize_captcha_priority_order(
+                        [method_value] + [item for item in current_order if item != method_value]
+                    )
+                else:
+                    new_order = current_order
+                new_method = new_order[0]
                 new_yes_key = yescaptcha_api_key if yescaptcha_api_key is not None else current.get("yescaptcha_api_key", "")
                 new_yes_url = yescaptcha_base_url if yescaptcha_base_url is not None else current.get("yescaptcha_base_url", "https://api.yescaptcha.com")
                 new_cap_key = capmonster_api_key if capmonster_api_key is not None else current.get("capmonster_api_key", "")
@@ -1645,6 +1685,7 @@ class Database:
                 new_proxy_url = browser_proxy_url if browser_proxy_url is not None else current.get("browser_proxy_url")
                 new_browser_count = browser_count if browser_count is not None else current.get("browser_count", 1)
                 new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else 60
+                new_priority_order = json.dumps(new_order, ensure_ascii=False)
 
                 await db.execute("""
                     UPDATE captcha_config
@@ -1652,15 +1693,23 @@ class Database:
                         capmonster_api_key = ?, capmonster_base_url = ?,
                         ezcaptcha_api_key = ?, ezcaptcha_base_url = ?,
                         capsolver_api_key = ?, capsolver_base_url = ?,
+                        captcha_priority_order = ?,
                         remote_browser_base_url = ?, remote_browser_api_key = ?, remote_browser_timeout = ?,
                         remote_browser_proxy_enabled = ?, browser_proxy_enabled = ?, browser_proxy_url = ?, browser_count = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
                 """, (new_method, new_yes_key, new_yes_url, new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
+                      new_priority_order,
                       (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_remote_proxy_enabled, new_proxy_enabled, new_proxy_url, new_browser_count))
             else:
-                new_method = captcha_method if captcha_method is not None else "yescaptcha"
+                if captcha_priority_order is not None:
+                    new_order = normalize_captcha_priority_order(captcha_priority_order)
+                elif captcha_method is not None:
+                    new_order = normalize_captcha_priority_order([captcha_method])
+                else:
+                    new_order = normalize_captcha_priority_order(None)
+                new_method = new_order[0]
                 new_yes_key = yescaptcha_api_key if yescaptcha_api_key is not None else ""
                 new_yes_url = yescaptcha_base_url if yescaptcha_base_url is not None else "https://api.yescaptcha.com"
                 new_cap_key = capmonster_api_key if capmonster_api_key is not None else ""
@@ -1677,16 +1726,19 @@ class Database:
                 new_proxy_url = browser_proxy_url
                 new_browser_count = browser_count if browser_count is not None else 1
                 new_remote_timeout = max(5, int(new_remote_timeout))
+                new_priority_order = json.dumps(new_order, ensure_ascii=False)
 
                 await db.execute("""
                     INSERT INTO captcha_config (id, captcha_method, yescaptcha_api_key, yescaptcha_base_url,
                         capmonster_api_key, capmonster_base_url, ezcaptcha_api_key, ezcaptcha_base_url,
                         capsolver_api_key, capsolver_base_url,
+                        captcha_priority_order,
                         remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                         remote_browser_proxy_enabled, browser_proxy_enabled, browser_proxy_url, browser_count)
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (new_method, new_yes_key, new_yes_url, new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
+                      new_priority_order,
                       (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_remote_proxy_enabled, new_proxy_enabled, new_proxy_url, new_browser_count))
 

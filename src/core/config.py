@@ -5,6 +5,7 @@ import re
 from urllib import request as urllib_request
 from pathlib import Path
 from typing import Dict, Any, Optional
+from .models import normalize_captcha_priority_order
 
 class Config:
     """Application configuration"""
@@ -434,13 +435,30 @@ class Config:
     @property
     def captcha_method(self) -> str:
         """Get captcha method"""
-        return self._config.get("captcha", {}).get("captcha_method", "yescaptcha")
+        order = self.captcha_priority_order
+        if order:
+            return order[0]
+        return self._config.get("captcha", {}).get("captcha_method", "remote_browser")
 
     def set_captcha_method(self, method: str):
         """Set captcha method"""
         if "captcha" not in self._config:
             self._config["captcha"] = {}
         self._config["captcha"]["captcha_method"] = method
+
+    @property
+    def captcha_priority_order(self) -> list[str]:
+        """验证码打码优先级，前面的优先级更高。"""
+        raw = self._config.get("captcha", {}).get("captcha_priority_order", [])
+        return normalize_captcha_priority_order(raw)
+
+    def set_captcha_priority_order(self, order: Any):
+        """设置验证码打码优先级。"""
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        normalized = normalize_captcha_priority_order(order)
+        self._config["captcha"]["captcha_priority_order"] = list(normalized)
+        self._config["captcha"]["captcha_method"] = normalized[0] if normalized else "remote_browser"
 
     @property
     def browser_launch_background(self) -> bool:

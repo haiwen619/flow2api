@@ -1,7 +1,50 @@
 """Data models for Flow2API"""
-from pydantic import BaseModel, model_validator
+import json
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Union, Any
 from datetime import datetime
+
+
+SUPPORTED_CAPTCHA_METHODS_ORDER = [
+    "remote_browser",
+    "yescaptcha",
+    "capmonster",
+    "ezcaptcha",
+    "capsolver",
+    "browser",
+    "personal",
+]
+
+
+def normalize_captcha_priority_order(value: Any) -> List[str]:
+    """规范化验证码打码优先级顺序。"""
+    parsed: List[str] = []
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            try:
+                decoded = json.loads(text)
+                if isinstance(decoded, list):
+                    value = decoded
+                else:
+                    value = [item.strip() for item in text.split(",") if item.strip()]
+            except Exception:
+                value = [item.strip() for item in text.split(",") if item.strip()]
+        else:
+            value = []
+
+    if isinstance(value, list):
+        for item in value:
+            method = str(item or "").strip().lower()
+            if method in SUPPORTED_CAPTCHA_METHODS_ORDER and method not in parsed:
+                parsed.append(method)
+
+    for method in SUPPORTED_CAPTCHA_METHODS_ORDER:
+        if method not in parsed:
+            parsed.append(method)
+
+    return parsed
 
 
 class Token(BaseModel):
@@ -181,7 +224,8 @@ class DebugConfig(BaseModel):
 class CaptchaConfig(BaseModel):
     """Captcha configuration"""
     id: int = 1
-    captcha_method: str = "browser"  # yescaptcha/capmonster/ezcaptcha/capsolver/browser/personal/remote_browser
+    captcha_method: str = "remote_browser"  # 兼容字段，实际执行以 captcha_priority_order 为准
+    captcha_priority_order: List[str] = Field(default_factory=lambda: normalize_captcha_priority_order(None))
     yescaptcha_api_key: str = ""
     yescaptcha_base_url: str = "https://api.yescaptcha.com"
     capmonster_api_key: str = ""
@@ -201,6 +245,21 @@ class CaptchaConfig(BaseModel):
     browser_count: int = 1  # 浏览器打码实例数量
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_priority_fields(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        order = normalize_captcha_priority_order(normalized.get("captcha_priority_order"))
+        method = str(normalized.get("captcha_method") or "").strip().lower()
+        if method in SUPPORTED_CAPTCHA_METHODS_ORDER:
+            order = [method] + [item for item in order if item != method]
+        normalized["captcha_priority_order"] = order
+        normalized["captcha_method"] = order[0]
+        return normalized
 
 
 class PluginConfig(BaseModel):

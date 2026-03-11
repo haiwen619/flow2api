@@ -59,7 +59,8 @@ timeout = 7200  # 缓存超时时间(秒), 默认2小时
 base_url = ""   # 缓存文件访问的基础URL, 留空则使用服务器地址
 
 [captcha]
-captcha_method = "browser"  # 打码方式: yescaptcha/browser/personal/remote_browser
+captcha_method = "remote_browser"  # 兼容字段，实际执行按 captcha_priority_order 的第1项
+captcha_priority_order = ["remote_browser", "yescaptcha", "capmonster", "ezcaptcha", "capsolver", "browser", "personal"]
 browser_recaptcha_settle_seconds = 3.0  # reload/clr 就绪后的额外稳态等待
 yescaptcha_api_key = ""  # YesCaptcha API密钥
 yescaptcha_base_url = "https://api.yescaptcha.com"

@@ -337,6 +337,10 @@ class TokenManager:
         """Delete token"""
         await self.db.delete_token(token_id)
 
+    async def delete_all_tokens(self) -> int:
+        """Delete all tokens"""
+        return await self.db.delete_all_tokens()
+
     async def enable_token(self, token_id: int):
         """Enable a token and reset error count"""
         # Enable the token

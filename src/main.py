@@ -147,6 +147,7 @@ async def lifespan(app: FastAPI):
     captcha_config = await db.get_captcha_config()
     
     config.set_captcha_method(captcha_config.captcha_method)
+    config.set_captcha_priority_order(captcha_config.captcha_priority_order)
     config.set_yescaptcha_api_key(captcha_config.yescaptcha_api_key)
     config.set_yescaptcha_base_url(captcha_config.yescaptcha_base_url)
     config.set_capmonster_api_key(captcha_config.capmonster_api_key)

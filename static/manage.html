@@ -408,6 +408,11 @@
             title="批量禁用全部活跃Token">
             <span class="text-sm font-medium">全部禁用</span>
           </button>
+          <button onclick="deleteAllTokens()"
+            class="inline-flex items-center justify-center rounded-md bg-red-700 text-white hover:bg-red-800 h-8 px-3"
+            title="删除全部Token">
+            <span class="text-sm font-medium">全部删除</span>
+          </button>
           <button onclick="exportTokens()"
             class="inline-flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 h-8 px-3"
             title="导出所有Token">
@@ -917,7 +922,7 @@
           <h3 class="text-lg font-semibold mb-4">验证码配置</h3>
           <div class="space-y-4 flex-1">
             <div>
-              <label class="text-sm font-medium mb-2 block">打码方式</label>
+              <label class="text-sm font-medium mb-2 block">打码配置面板</label>
               <select id="cfgCaptchaMethod"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 onchange="toggleCaptchaOptions()">
@@ -930,7 +935,18 @@
                 <option value="remote_browser">远程有头打码</option>
               </select>
               <p class="text-xs text-muted-foreground mt-1">
-                选择验证码获取方式
+                这里只控制当前展示哪一种配置项。实际执行顺序以下方“打码优先级”列表为准。
+              </p>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <label class="text-sm font-medium block">打码优先级</label>
+                <span class="text-xs text-muted-foreground">越靠上优先级越高，失败后立即切到下一项</span>
+              </div>
+              <div id="captchaPriorityList" class="space-y-2"></div>
+              <p class="text-xs text-muted-foreground mt-2">
+                默认优先级第 1 位为远程有头打码。
               </p>
             </div>
 
@@ -1782,6 +1798,7 @@
     let autoLoginRecoveryWatchers = {};
     let readmeDocCache = null;
     let projectVersionCache = null;
+    let captchaPriorityOrder = [];
     const $ = (id) => document.getElementById(id),
       checkAuth = () => {
         const t = localStorage.getItem("adminToken");
@@ -2891,6 +2908,31 @@
         } catch (e) {
           if (!skipConfirm) showToast("删除失败: " + e.message, "error");
           return false;
+        }
+      },
+      deleteAllTokens = async () => {
+        if (!Array.isArray(allTokens) || allTokens.length === 0) {
+          showToast("当前没有可删除的Token", "info");
+          return;
+        }
+        const ok = confirm(
+          `确定要删除全部 ${allTokens.length} 个Token吗？此操作会同时清空相关项目、任务、请求日志、统计和刷新记录，且无法恢复。`,
+        );
+        if (!ok) return;
+        try {
+          const r = await apiRequest("/api/tokens", {
+            method: "DELETE",
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (d.success) {
+            await refreshTokens();
+            showToast(d.message || "已删除全部Token", "success");
+          } else {
+            showToast(d.message || "全部删除失败", "error");
+          }
+        } catch (e) {
+          showToast("全部删除失败: " + e.message, "error");
         }
       },
       copySora2Code = async (code) => {
@@ -4075,6 +4117,71 @@
           showToast("保存失败: " + e.message, "error");
         }
       },
+      CAPTCHA_METHOD_META = [
+        { value: "remote_browser", label: "远程有头打码" },
+        { value: "yescaptcha", label: "YesCaptcha打码" },
+        { value: "capmonster", label: "CapMonster打码" },
+        { value: "ezcaptcha", label: "EzCaptcha打码" },
+        { value: "capsolver", label: "CapSolver打码" },
+        { value: "browser", label: "有头浏览器打码" },
+        { value: "personal", label: "内置浏览器打码" },
+      ],
+      normalizeCaptchaPriorityOrder = (order) => {
+        const normalized = [];
+        if (Array.isArray(order)) {
+          order.forEach((item) => {
+            const method = String(item || "").trim();
+            if (
+              CAPTCHA_METHOD_META.some((meta) => meta.value === method) &&
+              !normalized.includes(method)
+            ) {
+              normalized.push(method);
+            }
+          });
+        }
+        CAPTCHA_METHOD_META.forEach((item) => {
+          if (!normalized.includes(item.value)) normalized.push(item.value);
+        });
+        return normalized;
+      },
+      moveCaptchaPriority = (method, offset) => {
+        const current = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
+        const index = current.indexOf(method);
+        const nextIndex = index + offset;
+        if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return;
+        [current[index], current[nextIndex]] = [current[nextIndex], current[index]];
+        captchaPriorityOrder = current;
+        renderCaptchaPriorityList();
+      },
+      renderCaptchaPriorityList = () => {
+        const root = $("captchaPriorityList");
+        if (!root) return;
+        const order = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
+        captchaPriorityOrder = order;
+        root.innerHTML = order
+          .map((method, index) => {
+            const meta =
+              CAPTCHA_METHOD_META.find((item) => item.value === method) ||
+              { value: method, label: method };
+            return `
+              <div class="flex items-center gap-3 rounded-md border border-input bg-muted/20 px-3 py-2">
+                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold">
+                  ${index + 1}
+                </div>
+                <div class="flex-1 text-sm">${meta.label}</div>
+                <div class="flex items-center gap-2">
+                  <button type="button"
+                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent ${index === 0 ? "opacity-40 cursor-not-allowed" : ""}"
+                    onclick="moveCaptchaPriority('${method}', -1)" ${index === 0 ? "disabled" : ""}>上移</button>
+                  <button type="button"
+                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent ${index === order.length - 1 ? "opacity-40 cursor-not-allowed" : ""}"
+                    onclick="moveCaptchaPriority('${method}', 1)" ${index === order.length - 1 ? "disabled" : ""}>下移</button>
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+      },
       toggleCaptchaOptions = () => {
         const method = $("cfgCaptchaMethod").value;
         $("yescaptchaOptions").style.display =
@@ -4114,7 +4221,10 @@
           }
           const d = await r.json();
           console.log("验证码配置数据:", d);
-          $("cfgCaptchaMethod").value = d.captcha_method || "yescaptcha";
+          captchaPriorityOrder = normalizeCaptchaPriorityOrder(
+            d.captcha_priority_order || [d.captcha_method || "remote_browser"],
+          );
+          $("cfgCaptchaMethod").value = captchaPriorityOrder[0] || "remote_browser";
           $("cfgYescaptchaApiKey").value = d.yescaptcha_api_key || "";
           $("cfgYescaptchaBaseUrl").value =
             d.yescaptcha_base_url || "https://api.yescaptcha.com";
@@ -4139,6 +4249,7 @@
             d.browser_proxy_enabled || false;
           $("cfgBrowserProxyUrl").value = d.browser_proxy_url || "";
           $("cfgBrowserCount").value = d.browser_count || 1;
+          renderCaptchaPriorityList();
           toggleCaptchaOptions();
           toggleBrowserProxyInput();
           console.log("验证码配置加载成功");
@@ -4148,7 +4259,8 @@
         }
       },
       saveCaptchaConfig = async () => {
-        const method = $("cfgCaptchaMethod").value,
+        const method = normalizeCaptchaPriorityOrder(captchaPriorityOrder)[0] || "remote_browser",
+          panelMethod = $("cfgCaptchaMethod").value,
           yesApiKey = $("cfgYescaptchaApiKey").value.trim(),
           yesBaseUrl = $("cfgYescaptchaBaseUrl").value.trim(),
           capApiKey = $("cfgCapmonsterApiKey").value.trim(),
@@ -4166,6 +4278,8 @@
           browserCount = parseInt($("cfgBrowserCount").value) || 1;
         console.log("保存验证码配置:", {
           method,
+          panelMethod,
+          captchaPriorityOrder,
           yesApiKey,
           yesBaseUrl,
           capApiKey,
@@ -4187,6 +4301,7 @@
             method: "POST",
             body: JSON.stringify({
               captcha_method: method,
+              captcha_priority_order: normalizeCaptchaPriorityOrder(captchaPriorityOrder),
               yescaptcha_api_key: yesApiKey,
               yescaptcha_base_url: yesBaseUrl,
               capmonster_api_key: capApiKey,

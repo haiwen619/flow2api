@@ -30,7 +30,7 @@ video_launch_stagger_ms = 250
 poll_interval = 3.0
 max_poll_attempts = 200
 
-reauth_cookie_invalid_auto_login_enabled = true
+reauth_cookie_invalid_auto_login_enabled = false
 [server]
 host = "127.0.0.1"
 port = 8000

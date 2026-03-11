@@ -23,6 +23,7 @@ from curl_cffi.requests import AsyncSession
 from ..core.auth import AuthManager
 from ..core.config import config
 from ..core.database import Database
+from ..core.models import normalize_captcha_priority_order
 from ..services.concurrency_manager import ConcurrencyManager
 from ..services.proxy_manager import ProxyManager
 from ..services.token_manager import TokenManager
@@ -934,7 +935,25 @@ async def delete_token(
     """Delete token"""
     try:
         await token_manager.delete_token(token_id)
+        if concurrency_manager:
+            await concurrency_manager.remove_token(token_id)
         return {"success": True, "message": "Token删除成功"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/api/tokens")
+async def delete_all_tokens(token: str = Depends(verify_admin_token)):
+    """Delete all tokens"""
+    try:
+        deleted = await token_manager.delete_all_tokens()
+        if concurrency_manager:
+            await concurrency_manager.initialize([])
+        return {
+            "success": True,
+            "message": f"已删除全部Token（{deleted}个）",
+            "deleted": deleted,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1913,6 +1932,10 @@ async def update_captcha_config(
     ezcaptcha_base_url = request.get("ezcaptcha_base_url")
     capsolver_api_key = request.get("capsolver_api_key")
     capsolver_base_url = request.get("capsolver_base_url")
+    captcha_priority_order = normalize_captcha_priority_order(
+        request.get("captcha_priority_order", request.get("captcha_method"))
+    )
+    captcha_method = captcha_priority_order[0]
     remote_browser_base_url = request.get("remote_browser_base_url")
     remote_browser_api_key = request.get("remote_browser_api_key")
     remote_browser_timeout = request.get("remote_browser_timeout", 60)
@@ -1938,12 +1961,6 @@ async def update_captcha_config(
     except Exception:
         return {"success": False, "message": "远程打码超时时间必须是整数秒"}
 
-    if captcha_method == "remote_browser":
-        if not (remote_browser_base_url or "").strip():
-            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务地址"}
-        if not (remote_browser_api_key or "").strip():
-            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务 API Key"}
-
     await db.update_captcha_config(
         captcha_method=captcha_method,
         yescaptcha_api_key=yescaptcha_api_key,
@@ -1954,6 +1971,7 @@ async def update_captcha_config(
         ezcaptcha_base_url=ezcaptcha_base_url,
         capsolver_api_key=capsolver_api_key,
         capsolver_base_url=capsolver_base_url,
+        captcha_priority_order=captcha_priority_order,
         remote_browser_base_url=remote_browser_base_url,
         remote_browser_api_key=remote_browser_api_key,
         remote_browser_timeout=remote_browser_timeout,
@@ -1963,8 +1981,8 @@ async def update_captcha_config(
         browser_count=max(1, int(browser_count)) if browser_count else 1
     )
 
-    # 如果使用 browser 打码，热重载浏览器数量配置
-    if captcha_method == "browser":
+    # 配置包含 browser 时，热重载浏览器数量配置
+    if "browser" in captcha_priority_order:
         try:
             from ..services.browser_captcha import BrowserCaptchaService
             service = await BrowserCaptchaService.get_instance(db)
@@ -1984,6 +2002,7 @@ async def get_captcha_config(token: str = Depends(verify_admin_token)):
     captcha_config = await db.get_captcha_config()
     return {
         "captcha_method": captcha_config.captcha_method,
+        "captcha_priority_order": captcha_config.captcha_priority_order,
         "yescaptcha_api_key": captcha_config.yescaptcha_api_key,
         "yescaptcha_base_url": captcha_config.yescaptcha_base_url,
         "capmonster_api_key": captcha_config.capmonster_api_key,
