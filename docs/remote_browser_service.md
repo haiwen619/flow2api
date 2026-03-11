@@ -174,6 +174,7 @@ Notes:
 - `finish` and `error` are intentionally idempotent. Unknown `session_id` returns `200` with `found=false`.
 - The session registry is only used to map external `session_id` to the internal browser handle returned by the local browser service.
 - The root path `/` redirects to Swagger docs.
+- Java 调用方接入说明见 [docs/remote_browser_service_java.md](/h:/katu/Github/flow2api/docs/remote_browser_service_java.md)。
 
 ## systemd deployment
 

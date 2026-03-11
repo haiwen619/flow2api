@@ -43,6 +43,7 @@ import random
 import re
 import sys
 import time
+import uuid
 import webbrowser
 from pathlib import Path
 from dataclasses import dataclass
@@ -545,6 +546,20 @@ def _extract_email_from_cookies(cookies: list[dict], *, fallback: str = "") -> s
     return fb if "@" in fb else ""
 
 
+def _normalize_project_id_candidate(value: object) -> Optional[str]:
+    """规范化 projectId 候选值，过滤 null/undefined 等占位值。"""
+    text = str(value or "").strip().strip("\"' ")
+    if not text:
+        return None
+    text = urllib_parse.unquote(text)
+    if text.lower() in {"null", "none", "undefined", "nan"}:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except Exception:
+        return None
+
+
 def _try_extract_project_id_from_candidate(candidate_url: str) -> Optional[str]:
     """从单条 URL 中提取 projectId（支持 path 与 query 参数）。"""
     u = str(candidate_url or "").strip()
@@ -554,7 +569,7 @@ def _try_extract_project_id_from_candidate(candidate_url: str) -> Optional[str]:
     # 1) 常见 path：.../project/{id}
     m = re.search(r"/project/([a-zA-Z0-9\-]+)", u, flags=re.IGNORECASE)
     if m:
-        pid = (m.group(1) or "").strip()
+        pid = _normalize_project_id_candidate(m.group(1))
         if pid:
             return pid
 
@@ -565,7 +580,7 @@ def _try_extract_project_id_from_candidate(candidate_url: str) -> Optional[str]:
         for key in ("projectId", "projectid", "project_id"):
             vals = qs.get(key) or []
             for v in vals:
-                vv = str(v or "").strip()
+                vv = _normalize_project_id_candidate(v)
                 if vv:
                     return vv
     except Exception:
@@ -576,7 +591,7 @@ def _try_extract_project_id_from_candidate(candidate_url: str) -> Optional[str]:
         decoded = urllib_parse.unquote(u)
         m2 = re.search(r"(?:[?&])projectId=([a-zA-Z0-9\-]+)", decoded, flags=re.IGNORECASE)
         if m2:
-            pid = (m2.group(1) or "").strip()
+            pid = _normalize_project_id_candidate(m2.group(1))
             if pid:
                 return pid
     except Exception:
@@ -594,10 +609,314 @@ def _extract_project_ids_from_project_search_response_text(resp_text: str) -> li
     found = re.findall(r'"projectId"\s*:\s*"([a-zA-Z0-9\-]+)"', text)
     uniq: list[str] = []
     for pid in found:
-        p = str(pid or "").strip()
+        p = _normalize_project_id_candidate(pid)
         if p and p not in uniq:
             uniq.append(p)
     return uniq
+
+
+def _get_flow_labs_base_url() -> str:
+    """获取 Labs API 基地址。"""
+    env_val = str(
+        os.getenv("FLOW_LABS_BASE_URL")
+        or os.getenv("FLOW_LABS_API_BASE_URL")
+        or ""
+    ).strip()
+    if env_val:
+        return env_val.rstrip("/")
+    try:
+        from src.core.config import config as app_config
+
+        cfg_val = str(app_config.flow_labs_base_url or "").strip()
+        if cfg_val:
+            return cfg_val.rstrip("/")
+    except Exception:
+        pass
+    return "https://labs.google/fx/api"
+
+
+def _build_rpa_project_title(username: str) -> str:
+    """构造自动补建项目名。"""
+    local_part = str(username or "").strip().split("@", 1)[0]
+    safe_local = re.sub(r"[^a-zA-Z0-9._-]+", "-", local_part).strip("-") or "flow2api"
+    return f"Flow2API {safe_local} {time.strftime('%m%d-%H%M%S')}"
+
+
+def _extract_project_id_from_create_project_response_text(resp_text: str) -> Optional[str]:
+    """从 createProject 响应文本里解析 projectId。"""
+    text = str(resp_text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        pid = (
+            data.get("result", {})
+            .get("data", {})
+            .get("json", {})
+            .get("result", {})
+            .get("projectId")
+        )
+        normalized = _normalize_project_id_candidate(pid)
+        if normalized:
+            return normalized
+    except Exception:
+        pass
+    match = re.search(r'"projectId"\s*:\s*"([a-zA-Z0-9\-]+)"', text)
+    if match:
+        return _normalize_project_id_candidate(match.group(1))
+    return None
+
+
+def _clip_log_text(value: object, *, limit: int = 160) -> str:
+    text = str(value or "").strip().replace("\r", " ").replace("\n", " ")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _log_project_id_resolution(
+    *,
+    stage: str,
+    current_url: str,
+    project_ids_from_api: Optional[list[str]] = None,
+    next_data_request_urls: Optional[list[str]] = None,
+    resolved_project_id: Optional[str] = None,
+    resolution_source: str = "",
+    note: str = "",
+) -> None:
+    """输出 projectId 诊断摘要，便于线上排查整个获取链路。"""
+    api_ids: list[str] = []
+    for pid in (project_ids_from_api or []):
+        normalized = _normalize_project_id_candidate(pid)
+        if normalized and normalized not in api_ids:
+            api_ids.append(normalized)
+
+    url_candidate = _try_extract_project_id_from_candidate(current_url)
+    next_data_candidate = None
+    req_urls = list(next_data_request_urls or [])
+    for req_url in reversed(req_urls):
+        candidate = _try_extract_project_id_from_candidate(req_url)
+        if candidate:
+            next_data_candidate = candidate
+            break
+
+    resolved = _normalize_project_id_candidate(resolved_project_id)
+    if not resolved:
+        resolved = api_ids[0] if api_ids else url_candidate or next_data_candidate
+
+    msg = (
+        f"[RPA][projectId][{stage}] "
+        f"resolved={resolved or '-'} "
+        f"source={resolution_source or '-'} "
+        f"api_candidates={len(api_ids)} "
+        f"url_candidate={url_candidate or '-'} "
+        f"next_data_candidate={next_data_candidate or '-'} "
+        f"next_data_count={len(req_urls)} "
+        f"current_url={_clip_log_text(current_url or '-', limit=180)!r}"
+    )
+    if note:
+        msg += f" note={_clip_log_text(note, limit=220)!r}"
+    _print_and_log(msg)
+
+
+async def _ensure_project_id_after_labs_ready(
+    page,
+    *,
+    username: str,
+    project_ids_from_api: list[str],
+    next_data_request_urls: list[str],
+    timeout_ms: int = 12_000,
+) -> Optional[str]:
+    """目标页引导处理完成后，尽力确保当前账号存在可用 projectId。"""
+    current_url = ""
+    try:
+        current_url = str(page.url or "").strip()
+    except Exception:
+        current_url = ""
+
+    existing_pid = _extract_project_id_from_url(
+        current_url,
+        project_ids_from_api=project_ids_from_api,
+        next_data_request_urls=next_data_request_urls,
+    )
+    if existing_pid:
+        if existing_pid not in project_ids_from_api:
+            project_ids_from_api.append(existing_pid)
+        _log_project_id_resolution(
+            stage="ensure_after_labs",
+            current_url=current_url,
+            project_ids_from_api=project_ids_from_api,
+            next_data_request_urls=next_data_request_urls,
+            resolved_project_id=existing_pid,
+            resolution_source="passive_capture",
+            note="引导完成后已从监听/URL 提取到有效 projectId，无需主动建项目",
+        )
+        return existing_pid
+
+    endpoint = f"{_get_flow_labs_base_url()}/trpc/project.createProject"
+    project_title = _build_rpa_project_title(username)
+    _print_and_log(
+        f"[RPA][projectId] 当前未检测到有效 projectId，准备主动创建项目: {project_title}"
+    )
+
+    try:
+        result = await page.evaluate(
+            """async (payload) => {
+                const endpoint = String(payload?.endpoint || '');
+                const timeoutMs = Math.max(3000, Number(payload?.timeout_ms || 12000));
+                const body = {
+                    json: {
+                        projectTitle: String(payload?.project_title || 'Flow2API Auto Project'),
+                        toolName: 'PINHOLE',
+                    },
+                };
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+                try {
+                    const resp = await fetch(endpoint, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify(body),
+                        signal: controller.signal,
+                    });
+                    const text = await resp.text();
+                    let projectId = '';
+                    try {
+                        const data = JSON.parse(text);
+                        projectId = String(
+                            data?.result?.data?.json?.result?.projectId || ''
+                        ).trim();
+                    } catch (e) {}
+                    return {
+                        ok: !!resp.ok,
+                        status: Number(resp.status || 0),
+                        projectId,
+                        bodyPreview: String(text || '').slice(0, 400),
+                    };
+                } catch (e) {
+                    return {
+                        ok: false,
+                        status: 0,
+                        error: String((e && e.message) || e || 'unknown error'),
+                    };
+                } finally {
+                    clearTimeout(timer);
+                }
+            }""",
+            {
+                "endpoint": endpoint,
+                "project_title": project_title,
+                "timeout_ms": max(3_000, int(timeout_ms)),
+            },
+        )
+    except Exception as e:
+        _print_and_log_exception(
+            f"[RPA][projectId] 浏览器内主动创建项目失败: {type(e).__name__}: {e}"
+        )
+        return None
+
+    created_pid = _normalize_project_id_candidate(
+        (result or {}).get("projectId") if isinstance(result, dict) else None
+    )
+    if created_pid:
+        if created_pid not in project_ids_from_api:
+            project_ids_from_api.append(created_pid)
+        _print_and_log(
+            f"[RPA][projectId] 已主动创建项目成功: {created_pid} (title={project_title})"
+        )
+        _log_project_id_resolution(
+            stage="ensure_after_labs",
+            current_url=current_url,
+            project_ids_from_api=project_ids_from_api,
+            next_data_request_urls=next_data_request_urls,
+            resolved_project_id=created_pid,
+            resolution_source="browser_create_project",
+            note=f"引导完成后主动创建项目成功，title={project_title}",
+        )
+        return created_pid
+
+    status = ""
+    preview = ""
+    error = ""
+    if isinstance(result, dict):
+        status = str(result.get("status") or "").strip()
+        preview = str(result.get("bodyPreview") or "").strip()
+        error = str(result.get("error") or "").strip()
+    _print_and_log(
+        "[RPA][projectId] 主动创建项目未返回有效 projectId"
+        f"{f', status={status}' if status else ''}"
+        f"{f', error={error}' if error else ''}"
+        f"{f', body={preview[:180]!r}' if preview else ''}",
+        level="warning",
+    )
+    _log_project_id_resolution(
+        stage="ensure_after_labs",
+        current_url=current_url,
+        project_ids_from_api=project_ids_from_api,
+        next_data_request_urls=next_data_request_urls,
+        resolved_project_id=None,
+        resolution_source="browser_create_project_failed",
+        note=f"主动建项目未返回有效结果 status={status or '-'} error={error or '-'}",
+    )
+    return None
+
+
+def _create_project_id_via_session_token(
+    session_token: str,
+    *,
+    username: str,
+    timeout_sec: int = 20,
+) -> Optional[str]:
+    """使用已提取的 ST 直接创建项目，作为浏览器内创建失败时的兜底。"""
+    st = str(session_token or "").strip()
+    if not st:
+        return None
+
+    endpoint = f"{_get_flow_labs_base_url()}/trpc/project.createProject"
+    body = {
+        "json": {
+            "projectTitle": _build_rpa_project_title(username),
+            "toolName": "PINHOLE",
+        }
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": f"__Secure-next-auth.session-token={st}",
+        "Origin": "https://labs.google",
+        "Referer": "https://labs.google/fx/tools/flow",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+    }
+    req = urllib_request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=max(5, int(timeout_sec))) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        _print_and_log(
+            f"[RPA][projectId] 使用 ST 兜底创建项目失败: {type(e).__name__}: {e}",
+            level="warning",
+        )
+        return None
+
+    pid = _extract_project_id_from_create_project_response_text(raw)
+    if pid:
+        _print_and_log(f"[RPA][projectId] 使用 ST 兜底创建项目成功: {pid}")
+        return pid
+
+    _print_and_log(
+        f"[RPA][projectId] 使用 ST 兜底创建项目未返回有效 projectId: {raw[:180]!r}",
+        level="warning",
+    )
+    return None
 
 
 def _extract_project_id_from_url(
@@ -783,6 +1102,8 @@ async def validate_antigravity_account(
         token_payload_cookie: Optional[str] = None
         token_payload_cookie_file: Optional[str] = None
         token_payload_email: Optional[str] = None
+        ensured_project_id: Optional[str] = None
+        project_id_resolution_source = ""
         project_id_request_urls: list[str] = []
         next_data_request_cookies: list[str] = []
         project_ids_from_api: list[str] = []
@@ -1046,6 +1367,33 @@ async def validate_antigravity_account(
             except Exception:
                 pass
 
+            _log_project_id_resolution(
+                stage="post_onboarding_before_ensure",
+                current_url=(page.url or final_url or entry_url),
+                project_ids_from_api=project_ids_from_api,
+                next_data_request_urls=project_id_request_urls,
+                resolved_project_id=ensured_project_id,
+                resolution_source=project_id_resolution_source,
+                note="引导弹框与停留阶段完成，准备确保项目存在",
+            )
+
+            # 新号首次进入可能要在引导弹框处理完成后才会稳定触发项目相关接口；
+            # 若此时仍无 projectId，则主动补建一个项目，避免导出 payload 时写成 null。
+            try:
+                ensured_project_id = await _ensure_project_id_after_labs_ready(
+                    page,
+                    username=username,
+                    project_ids_from_api=project_ids_from_api,
+                    next_data_request_urls=project_id_request_urls,
+                    timeout_ms=12_000,
+                )
+                if ensured_project_id:
+                    project_id_resolution_source = "post_onboarding_ensure"
+            except Exception as e:
+                _print_and_log_exception(
+                    f"[RPA][projectId] 引导完成后确保项目存在失败: {type(e).__name__}: {e}"
+                )
+
             # 3) 从当前浏览器上下文提取 __Secure-next-auth.session-token
             _print_and_log("[RPA] 开始提取 __Secure-next-auth.session-token ...")
             session_token: Optional[str] = None
@@ -1063,6 +1411,19 @@ async def validate_antigravity_account(
                         await asyncio.gather(*pending_tasks, return_exceptions=True)
                 except Exception:
                     pass
+
+                _log_project_id_resolution(
+                    stage="after_capture_tasks",
+                    current_url=(page.url or final_url or entry_url),
+                    project_ids_from_api=project_ids_from_api,
+                    next_data_request_urls=project_id_request_urls,
+                    resolved_project_id=ensured_project_id,
+                    resolution_source=project_id_resolution_source,
+                    note=(
+                        f"request_tasks={len(request_capture_tasks)} "
+                        f"response_tasks={len(response_capture_tasks)}"
+                    ),
+                )
 
                 all_cookies = await _collect_google_labs_cookies(
                     context, entry_url=entry_url
@@ -1093,6 +1454,38 @@ async def validate_antigravity_account(
                         level="warning",
                     )
 
+                if not ensured_project_id:
+                    ensured_project_id = _extract_project_id_from_url(
+                        (page.url or final_url or entry_url),
+                        project_ids_from_api=project_ids_from_api,
+                        next_data_request_urls=project_id_request_urls,
+                    )
+                    if ensured_project_id:
+                        project_id_resolution_source = "passive_capture_after_wait"
+                if (not ensured_project_id) and session_token:
+                    ensured_project_id = _create_project_id_via_session_token(
+                        session_token,
+                        username=username,
+                        timeout_sec=20,
+                    )
+                    if ensured_project_id and ensured_project_id not in project_ids_from_api:
+                        project_ids_from_api.append(ensured_project_id)
+                    if ensured_project_id:
+                        project_id_resolution_source = "st_create_fallback"
+
+                _log_project_id_resolution(
+                    stage="before_payload_export",
+                    current_url=(page.url or final_url or entry_url),
+                    project_ids_from_api=project_ids_from_api,
+                    next_data_request_urls=project_id_request_urls,
+                    resolved_project_id=ensured_project_id,
+                    resolution_source=project_id_resolution_source,
+                    note=(
+                        f"session_token={'yes' if session_token else 'no'} "
+                        f"cookies={len(all_cookies)}"
+                    ),
+                )
+
                 # 4) 导出完整 token（labs.google + google.com）到 tmp/Token/*.json
                 try:
                     payload = _build_token_payload(
@@ -1103,6 +1496,13 @@ async def validate_antigravity_account(
                         next_data_request_urls=project_id_request_urls,
                         state=2,
                     )
+                    if ensured_project_id:
+                        payload["projectId"] = ensured_project_id
+                    if not payload.get("projectId"):
+                        _print_and_log(
+                            "[RPA][projectId] 最终导出 payload 仍未拿到有效 projectId",
+                            level="warning",
+                        )
                     cookie_from_next_data = (
                         str(next_data_request_cookies[-1] or "").strip()
                         if next_data_request_cookies
@@ -1132,6 +1532,15 @@ async def validate_antigravity_account(
                     token_payload_file_path = _save_token_payload_to_tmp(payload)
                     _print_and_log(
                         f"[RPA] 已保存完整 Token JSON: {token_payload_file_path}"
+                    )
+                    _log_project_id_resolution(
+                        stage="payload_saved",
+                        current_url=(page.url or final_url or entry_url),
+                        project_ids_from_api=project_ids_from_api,
+                        next_data_request_urls=project_id_request_urls,
+                        resolved_project_id=str((payload or {}).get("projectId") or ""),
+                        resolution_source=project_id_resolution_source or "payload_export",
+                        note=f"file={token_payload_file_path}",
                     )
                 except Exception as e:
                     _print_and_log_exception(
