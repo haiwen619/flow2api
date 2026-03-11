@@ -81,29 +81,57 @@ class TokenManager:
         token_id: int,
         at_expires: Optional[datetime],
     ) -> int:
-        """获取 AT 自动刷新提前窗口（稳定随机 2-4 小时，按 token+过期时间确定）。"""
-        min_seconds = 2 * 3600
-        max_seconds = 4 * 3600
-        span = max_seconds - min_seconds
+        """获取 AT 自动刷新提前窗口，默认 1 小时。"""
+        try:
+            value = int(os.getenv("FLOW_AUTO_REFRESH_ADVANCE_SECONDS", "3600") or "3600")
+        except Exception:
+            value = 3600
+        return max(300, min(4 * 3600, value))
 
-        exp_seed = 0
-        if at_expires:
-            try:
-                exp_aware = (
-                    at_expires
-                    if at_expires.tzinfo
-                    else at_expires.replace(tzinfo=timezone.utc)
-                )
-                exp_seed = int(exp_aware.timestamp())
-            except Exception:
-                exp_seed = 0
+    def _normalize_utc_datetime(self, value: Optional[datetime]) -> Optional[datetime]:
+        """将 datetime 规范化为 UTC aware。"""
+        if value is None:
+            return None
+        try:
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
 
-        seed_text = f"{int(token_id)}|{exp_seed}"
-        hashed = 0
-        for ch in seed_text:
-            hashed = (hashed * 131 + ord(ch)) % 2147483647
+    def _get_auto_refresh_retry_cooldown_seconds(self) -> int:
+        """无过期时间场景下的自动刷新重试冷却，避免每分钟重复触发。"""
+        try:
+            value = int(os.getenv("FLOW_AUTO_REFRESH_RETRY_COOLDOWN_SECONDS", "900") or "900")
+        except Exception:
+            value = 900
+        return max(300, min(3600, value))
 
-        return min_seconds + (hashed % (span + 1))
+    def _has_recent_auto_refresh_attempt(
+        self,
+        token: Token,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """同一自动刷新窗口内只尝试一次，避免后台巡检每分钟重复刷新。"""
+        method = str(getattr(token, "last_refresh_method", "") or "").strip().upper()
+        if not method.startswith("AUTO_"):
+            return False
+
+        now_aware = self._normalize_utc_datetime(now or datetime.now(timezone.utc))
+        last_refresh_at = self._normalize_utc_datetime(getattr(token, "last_refresh_at", None))
+        if now_aware is None or last_refresh_at is None or last_refresh_at > now_aware:
+            return False
+
+        at_expires = self._normalize_utc_datetime(getattr(token, "at_expires", None))
+        token_id = getattr(token, "id", None)
+        if at_expires is not None and token_id is not None:
+            advance_seconds = self._get_auto_refresh_advance_seconds(
+                token_id=int(token_id),
+                at_expires=at_expires,
+            )
+            window_start = at_expires - timedelta(seconds=advance_seconds)
+            return last_refresh_at >= window_start
+
+        cooldown_seconds = self._get_auto_refresh_retry_cooldown_seconds()
+        return (now_aware - last_refresh_at).total_seconds() < cooldown_seconds
 
     async def _trigger_accountpool_auto_login_if_enabled(
         self,
@@ -1441,6 +1469,13 @@ class TokenManager:
                 needs_refresh = time_left_seconds < advance_seconds
 
             if not needs_refresh:
+                continue
+
+            if self._has_recent_auto_refresh_attempt(token, now=now):
+                debug_logger.log_info(
+                    f"[AT_AUTO_SCAN] Token {token.id}: 当前自动刷新窗口内已尝试过 "
+                    f"{getattr(token, 'last_refresh_method', '-')}, 跳过重复自动刷新"
+                )
                 continue
 
             refresh_attempted += 1

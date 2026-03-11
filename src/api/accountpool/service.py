@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import os
 import time
@@ -172,10 +172,40 @@ class AccountPoolService:
         keep = max(40, max_len // 2)
         return f"{text[:keep]} ... {text[-keep:]}"
 
+    @staticmethod
+    def _is_google_account_disabled_detail(detail: Any) -> bool:
+        text = str(detail or "").strip().lower()
+        if not text:
+            return False
+        markers = [
+            "检测到 google 账号已被停用/封禁",
+            "google 账号已被停用/封禁",
+            "账号已被停用",
+            "账号已被禁用",
+            "此账号已被停用",
+            "此账号已被禁用",
+            "your account has been disabled",
+            "this account has been disabled",
+            "account has been disabled",
+            "your account is disabled",
+            "submit an appeal",
+            "start appeal",
+            "/disabled",
+            "/signin/rejected",
+            "/deniedsigninrejected",
+        ]
+        return any(marker in text for marker in markers)
+
     def _classify_rpa_failure_detail(self, error: Any, message: Any = None) -> str:
         raw_error = str(error or "").strip()
         raw_message = str(message or "").strip()
         combined = f"{raw_message}\n{raw_error}".lower()
+
+        if self._is_google_account_disabled_detail(combined):
+            return (
+                "RPA封禁：检测到 Google 账号已被停用/封禁，当前 Token 已判定为封禁。"
+                f" 请更换账号或提交申诉。原始错误：{self._clip_error_text(raw_error or raw_message)}"
+            )
 
         if (
             "password was changed" in combined
@@ -365,10 +395,28 @@ class AccountPoolService:
             }
 
         detail_text = f"{detail}（job_id={job_id}, account_key={account_key}）"
+        status_text = str(status or "").strip().upper() or "FAILED"
+        if status_text == "FAILED" and self._is_google_account_disabled_detail(detail_text):
+            status_text = "BANNED"
+        if status_text == "BANNED":
+            try:
+                await tm.db.update_token(
+                    int(token.id),
+                    is_active=False,
+                    ban_reason="google_account_disabled",
+                    banned_at=datetime.now(timezone.utc),
+                )
+            except Exception as e:
+                return {
+                    "recorded": False,
+                    "reason": "update_token_failed",
+                    "token_id": int(getattr(token, "id", 0) or 0),
+                    "error": str(e),
+                }
         await tm._record_refresh_event(
             int(token.id),
             refresh_method,
-            status,
+            status_text,
             detail_text,
         )
         return {"recorded": True, "token_id": int(token.id), "email": str(getattr(token, "email", "") or "")}

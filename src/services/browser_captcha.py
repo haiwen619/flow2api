@@ -1474,7 +1474,8 @@ class TokenBrowser:
                             self._solve_count += 1
                             self._consecutive_browser_failures = 0
                             debug_logger.log_info(
-                                f"[BrowserCaptcha] Token-{self.token_id} token acquired ({(time.time()-start_ts)*1000:.0f}ms, launches={self._shared_launch_count}, reuse={self._shared_reuse_count})"
+                                f"[BrowserCaptcha] Token-{self.token_id} 打码成功，已获取 reCAPTCHA token "
+                                f"({(time.time()-start_ts)*1000:.0f}ms, launches={self._shared_launch_count}, reuse={self._shared_reuse_count})"
                             )
                             return token, None
 
@@ -2123,7 +2124,8 @@ class BrowserCaptchaService:
             except Exception:
                 keepalive_alive = False
             debug_logger.log_info(
-                f"[BrowserCaptcha] browser {browser_id} request finished; keepalive_alive={keepalive_alive}"
+                f"[BrowserCaptcha] browser {browser_id} 收到上游请求结束通知，keepalive_alive={keepalive_alive} "
+                f"(该日志仅表示业务请求结束，不代表本次打码成功)"
             )
 
     async def remove_browser(self, browser_id: int):

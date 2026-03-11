@@ -11,7 +11,9 @@ Esc_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq
 
 New-NetFirewallRule -DisplayName "Flow2API-RemoteBrowser-8060" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8060
 
-http://104.129.59.235:8000/manage
+New-NetFirewallRule -DisplayName "CAP-8137" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8137
+
+http://23.159.248.139:8000/manage
 jHrrRDxVD5twXN2t
 
 newapi.apishop.cc
@@ -20,6 +22,10 @@ https://newapi.apishop.cc/
 
 
 https://docs.cqtai.com/nano%E7%94%9F%E6%88%90/
+
+Linux  1panl面板  
+uvicorn src.main:app --host 0.0.0.0 --port 8000
+
 
 # 1) 基础模型 + imageConfig: 4:3 + 1K
 curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
@@ -38,7 +44,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
   }'
 
 # 1) 基础模型 + imageConfig: 4:3 + 1K 服务器地址示例
-curl -X POST "http://104.129.59.235:8000/v1/chat/completions" \
+curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{
@@ -77,7 +83,7 @@ $body = @'
 }
 '@
 
-curl.exe -X POST "http://104.129.59.235:3000/v1/chat/completions" `
+curl.exe -X POST "http://23.159.248.139:3000/v1/chat/completions" `
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" `
   -H "Content-Type: application/json" `
   -d $body
@@ -171,7 +177,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 
 
 
-curl -X POST "http://104.129.59.235:3000/v1/chat/completions" \
+curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
   -H "Content-Type: application/json" \
   -d '{
@@ -203,7 +209,7 @@ curl -X POST "http://127.0.0.1:3000/v1/chat/completions" \
     "stream": true
   }'
 
-curl -X POST "http://104.129.59.235:3000/v1/chat/completions" \
+curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
   -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
   -H "Content-Type: application/json" \
   -d '{
@@ -270,7 +276,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
 
 
 
-curl -X POST "http://104.129.59.235:8000/v1/chat/completions" \
+curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{

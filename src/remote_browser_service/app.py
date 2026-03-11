@@ -830,6 +830,11 @@ async def solve_recaptcha(
             proxy_url=actual_proxy_url,
             extra={"fingerprint": fingerprint or {}},
         )
+        debug_logger.log_info(
+            f"[RemoteBrowser] 打码成功：session_id={session_entry.session_id}, "
+            f"project_id={request.project_id}, action={request.action}, "
+            f"proxy_source={actual_proxy_source}, proxy={actual_proxy_url or 'direct'}"
+        )
         return {
             "success": True,
             "token": token,

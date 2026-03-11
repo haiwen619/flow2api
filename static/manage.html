@@ -529,6 +529,49 @@
           </tbody>
         </table>
       </div>
+
+      <div id="bannedTokensPanel" class="mt-6 border-t border-border pt-4 hidden">
+        <button id="bannedTokensToggleBtn" onclick="toggleBannedTokensSection()"
+          class="w-full flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3 text-left hover:bg-muted/50">
+          <div>
+            <div class="text-sm font-semibold">已封禁 Token</div>
+            <div id="bannedTokensSummary" class="text-xs text-muted-foreground mt-1">共 0 个，默认折叠</div>
+          </div>
+          <div class="text-xs text-muted-foreground flex items-center gap-2">
+            <span id="bannedTokensToggleLabel">展开</span>
+            <span id="bannedTokensToggleIcon">▼</span>
+          </div>
+        </button>
+        <div id="bannedTokensSection" class="hidden mt-3">
+          <div class="relative w-full overflow-x-auto overflow-y-hidden rounded-lg border border-border">
+            <table class="token-list-table min-w-[1940px] text-sm">
+              <thead>
+                <tr class="border-b border-border">
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">邮箱</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">Cookie</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">CookieFile</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">状态</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">过期时间</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">距刷新Cookie</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">刷新记录</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">余额</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">类型</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">项目名称</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">项目ID</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">图片</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">视频</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">错误</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">备注</th>
+                  <th class="h-10 px-3 text-right align-middle font-medium text-muted-foreground action-header">操作</th>
+                </tr>
+              </thead>
+              <tbody id="bannedTokenTableBody" class="divide-y divide-border">
+                <!-- 动态填充 -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
     </div>
 
@@ -663,7 +706,7 @@
               <label class="text-sm font-medium mb-2 block">默认服务器公网IP</label>
               <input id="cfgServerDefaultPublicIp"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                placeholder="104.129.59.235" />
+                placeholder="23.159.248.139" />
               <p id="cfgServerDetectedIpHint" class="text-xs text-muted-foreground mt-1">
                 启动时会检测本机公网IP，命中该值时自动按服务器模式运行
               </p>
@@ -1735,6 +1778,7 @@
     let tokenAutoRefreshInFlight = false;
     let refreshRecordMap = {};
     let refreshHistoryCache = {};
+    let bannedTokensExpanded = false;
     let autoLoginRecoveryWatchers = {};
     let readmeDocCache = null;
     let projectVersionCache = null;
@@ -1985,7 +2029,7 @@
       },
       updateCookieRefreshCountdowns = () => {
         document
-          .querySelectorAll("#tokenTableBody .cookie-refresh-countdown")
+          .querySelectorAll(".cookie-refresh-countdown")
           .forEach((el) => {
             const tokenId = el.getAttribute("data-token-id") || "0";
             const exp = el.getAttribute("data-at-expires") || "";
@@ -2056,8 +2100,17 @@
           })
           .replace(/\//g, "-");
       },
-      getRefreshStatusMeta = (statusRaw) => {
-        const status = String(statusRaw || "").toUpperCase();
+      isCookieInvalidNeedReloginToken = (t) =>
+        String(t?.ban_reason || "").trim() === "cookie_invalid_need_relogin",
+      isBannedToken = (t) => {
+        const reason = String(t?.ban_reason || "").trim();
+        return Boolean(reason) && reason !== "cookie_invalid_need_relogin";
+      },
+      getRefreshStatusMeta = (statusRaw, token = null) => {
+        let status = String(statusRaw || "").toUpperCase();
+        if ((!status || status === "FAILED") && isBannedToken(token)) {
+          status = "BANNED";
+        }
         const isRunning =
           status === "PENDING" ||
           status === "RUNNING" ||
@@ -2070,6 +2123,8 @@
               ? "bg-green-50 text-green-700"
               : isRunning
                 ? "bg-amber-50 text-amber-700"
+                : status === "BANNED"
+                  ? "bg-red-100 text-red-800"
                 : status === "FAILED"
                   ? "bg-red-50 text-red-700"
                   : "bg-gray-100 text-gray-700",
@@ -2078,10 +2133,73 @@
               ? "成功"
               : isRunning
                 ? "执行中"
+                : status === "BANNED"
+                  ? "封禁"
                 : status === "FAILED"
                   ? "失败"
                   : "未记录",
         };
+      },
+      formatBanReasonLabel = (reasonRaw) => {
+        const reason = String(reasonRaw || "").trim();
+        if (!reason) return "未封禁";
+        if (reason === "cookie_invalid_need_relogin") return "Cookie失效待重登";
+        if (reason === "429_rate_limit") return "429频率封禁";
+        if (reason === "google_account_disabled") return "Google账号封禁";
+        return reason;
+      },
+      formatBanStatusInfo = (t) => {
+        const reason = String(t?.ban_reason || "").trim();
+        if (!reason) {
+          return {
+            isBanned: false,
+            label: "未封禁",
+            text: "未封禁",
+            time: "-",
+            badgeClass: "bg-gray-100 text-gray-700",
+          };
+        }
+        const label = formatBanReasonLabel(reason);
+        const time = formatRefreshTime(t?.banned_at);
+        return {
+          isBanned: true,
+          label,
+          text: time && time !== "-" ? `${label} · ${time}` : label,
+          time,
+          badgeClass:
+            reason === "cookie_invalid_need_relogin"
+              ? "bg-amber-100 text-amber-800"
+              : "bg-red-100 text-red-800",
+        };
+      },
+      updateBannedTokensSection = (count) => {
+        const panel = $("bannedTokensPanel");
+        const section = $("bannedTokensSection");
+        const summary = $("bannedTokensSummary");
+        const label = $("bannedTokensToggleLabel");
+        const icon = $("bannedTokensToggleIcon");
+        const total = Math.max(0, Number(count || 0));
+        if (total <= 0) {
+          panel.classList.add("hidden");
+          section.classList.add("hidden");
+          bannedTokensExpanded = false;
+          summary.textContent = "共 0 个，默认折叠";
+          label.textContent = "展开";
+          icon.textContent = "▼";
+          return;
+        }
+        panel.classList.remove("hidden");
+        summary.textContent = `共 ${total} 个，默认折叠`;
+        section.classList.toggle("hidden", !bannedTokensExpanded);
+        label.textContent = bannedTokensExpanded ? "收起" : "展开";
+        icon.textContent = bannedTokensExpanded ? "▲" : "▼";
+      },
+      toggleBannedTokensSection = () => {
+        bannedTokensExpanded = !bannedTokensExpanded;
+        const bannedCount = Array.isArray(allTokens)
+          ? allTokens.filter((item) => isBannedToken(item)).length
+          : 0;
+        updateBannedTokensSection(bannedCount);
       },
       parseServerUtcTimestamp = (ts) => {
         if (!ts) return null;
@@ -2115,7 +2233,7 @@
           .replace(/\//g, "-");
       },
       formatRefreshRecord = (t) => {
-        const statusMeta = getRefreshStatusMeta(t.last_refresh_status);
+        const statusMeta = getRefreshStatusMeta(t.last_refresh_status, t);
         const status = statusMeta.status;
         const time = formatRefreshTime(t.last_refresh_at);
         const progressHint = statusMeta.isRunning
@@ -2177,79 +2295,95 @@
           return `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-purple-50 text-purple-700">会员</span>`;
         }
       },
+      buildTokenRow = (t, options = {}) => {
+        const hardBanned = Boolean(options.hardBanned) || isBannedToken(t);
+        const emailRaw = String(t.email || "-");
+        const emailShort =
+          emailRaw.length > 24 ? `${emailRaw.substring(0, 24)}...` : emailRaw;
+        const emailDisplay = `<span class="email-text" title="${escapeHtml(emailRaw)}">${escapeHtml(emailShort)}</span>`;
+        const imageDisplay = t.image_enabled
+          ? `${t.image_count || 0}`
+          : "-";
+        const videoDisplay = t.video_enabled
+          ? `${t.video_count || 0}`
+          : "-";
+        const creditsDisplay =
+          t.credits !== undefined ? `${t.credits}` : "-";
+        const accountTypeDisplay = formatAccountType(t.user_paygate_tier);
+        const projectDisplay = t.current_project_name || "-";
+        const cookieDisplay = t.cookie
+          ? `<button class="cursor-pointer text-blue-600 hover:text-blue-700 text-xs" onclick="copyTokenCookie(${t.id})" title="点击复制完整 Cookie">${t.cookie.length > 12 ? t.cookie.substring(0, 12) + "..." : t.cookie}</button>`
+          : "-";
+        const cookieFileValue = t.cookieFile || t.cookie_file || "";
+        const cookieFileDisplay = cookieFileValue
+          ? `<button class="cursor-pointer text-blue-600 hover:text-blue-700 text-xs" onclick="copyTokenCookieFile(${t.id})" title="点击复制完整 CookieFile">${cookieFileValue.length > 12 ? cookieFileValue.substring(0, 12) + "..." : cookieFileValue}</button>`
+          : "-";
+        const projectIdDisplay = t.current_project_id
+          ? t.current_project_id.length > 5
+            ? `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id.substring(0, 5)}...</span>`
+            : `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id}</span>`
+          : "-";
+        const expiryDisplay = formatExpiry(t.at_expires);
+        const cookieRefreshRemainingDisplay = renderCookieRefreshRemaining(
+          t.id,
+          t.at_expires
+        );
+        const refreshRecordDisplay = formatRefreshRecord(t);
+        const statusMeta = getRefreshStatusMeta(t.last_refresh_status, t);
+        const banInfo = formatBanStatusInfo(t);
+        const refreshStatusRaw = statusMeta.status;
+        const refreshStatusLabel = statusMeta.statusLabel;
+        const statusClass = hardBanned
+          ? banInfo.badgeClass
+          : isCookieInvalidNeedReloginToken(t)
+            ? "bg-amber-100 text-amber-800"
+            : t.is_active
+              ? "bg-green-50 text-green-700"
+              : "bg-gray-100 text-gray-700";
+        const statusText = hardBanned
+          ? banInfo.label
+          : isCookieInvalidNeedReloginToken(t)
+            ? "Cookie失效(需重新自动登录)"
+            : t.is_active
+              ? "活跃"
+              : "禁用";
+        const statusCellHtml = `<td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${statusClass}">${statusText}</span></td>`;
+        const creditsCellHtml = hardBanned
+          ? `<span class="text-sm text-muted-foreground">${escapeHtml(creditsDisplay)}</span>`
+          : `<button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button>`;
+        const refreshAtBtn = hardBanned
+          ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-muted-foreground cursor-not-allowed" title="已封禁，禁止刷新AT" disabled>更新</button>`
+          : `<button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button>`;
+        const refreshCookieBtn = hardBanned
+          ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-muted-foreground cursor-not-allowed" title="已封禁，禁止刷新Cookie" disabled>刷Cookie</button>`
+          : `<button onclick="refreshTokenCookie(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-amber-50 hover:text-amber-700 h-7 px-2 text-xs mr-1" title="仅 reAuth 刷新 Cookie">刷Cookie</button>`;
+        const toggleBtn = hardBanned
+          ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-muted-foreground cursor-not-allowed" title="已封禁，无法启用" disabled>已封禁</button>`
+          : `<button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button>`;
+        refreshRecordMap[t.id] = {
+          email: emailRaw,
+          time: formatRefreshTime(t.last_refresh_at),
+          status: refreshStatusRaw || "-",
+          statusLabel: refreshStatusLabel,
+          method: t.last_refresh_method || "-",
+          detail: t.last_refresh_detail || "-",
+        };
+        return `<tr${hardBanned ? ' class="bg-red-50/30"' : ""}><td class="py-2.5 px-3 email-cell">${emailDisplay}</td><td class="py-2.5 px-3 text-xs cookie-cell">${cookieDisplay}</td><td class="py-2.5 px-3 text-xs cookie-file-cell">${cookieFileDisplay}</td>${statusCellHtml}<td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3 text-xs cookie-refresh-remaining-cell">${cookieRefreshRemainingDisplay}</td><td class="py-2.5 px-3 text-xs refresh-record-cell">${refreshRecordDisplay}</td><td class="py-2.5 px-3">${creditsCellHtml}</td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs project-name-cell">${projectDisplay}</td><td class="py-2.5 px-3 text-xs project-id-cell">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground max-w-[200px] truncate" title="${escapeHtml(t.remark || "-")}">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right action-cell">${refreshAtBtn}${refreshCookieBtn}<button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button>${toggleBtn}<button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
+      },
       renderTokens = () => {
         const tb = $("tokenTableBody");
+        const bannedTb = $("bannedTokenTableBody");
         refreshRecordMap = {};
         refreshHistoryCache = {};
-        tb.innerHTML = allTokens
-          .map((t) => {
-            const emailRaw = String(t.email || "-");
-            const emailShort =
-              emailRaw.length > 24 ? `${emailRaw.substring(0, 24)}...` : emailRaw;
-            const emailDisplay = `<span class="email-text" title="${escapeHtml(emailRaw)}">${escapeHtml(emailShort)}</span>`;
-            const imageDisplay = t.image_enabled
-              ? `${t.image_count || 0}`
-              : "-";
-            const videoDisplay = t.video_enabled
-              ? `${t.video_count || 0}`
-              : "-";
-            const creditsDisplay =
-              t.credits !== undefined ? `${t.credits}` : "-";
-            const accountTypeDisplay = formatAccountType(t.user_paygate_tier);
-            const projectDisplay = t.current_project_name || "-";
-            const cookieDisplay = t.cookie
-              ? `<button class="cursor-pointer text-blue-600 hover:text-blue-700 text-xs" onclick="copyTokenCookie(${t.id})" title="点击复制完整 Cookie">${t.cookie.length > 12 ? t.cookie.substring(0, 12) + "..." : t.cookie}</button>`
-              : "-";
-            const cookieFileValue = t.cookieFile || t.cookie_file || "";
-            const cookieFileDisplay = cookieFileValue
-              ? `<button class="cursor-pointer text-blue-600 hover:text-blue-700 text-xs" onclick="copyTokenCookieFile(${t.id})" title="点击复制完整 CookieFile">${cookieFileValue.length > 12 ? cookieFileValue.substring(0, 12) + "..." : cookieFileValue}</button>`
-              : "-";
-            const projectIdDisplay = t.current_project_id
-              ? t.current_project_id.length > 5
-                ? `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id.substring(0, 5)}...</span>`
-                : `<span class="cursor-pointer text-blue-600 hover:text-blue-700" onclick="copyProjectId('${t.current_project_id}')" title="${t.current_project_id}">${t.current_project_id}</span>`
-              : "-";
-            const expiryDisplay = formatExpiry(t.at_expires);
-            const cookieRefreshRemainingDisplay = renderCookieRefreshRemaining(
-              t.id,
-              t.at_expires
-            );
-            const refreshRecordDisplay = formatRefreshRecord(t);
-            const refreshStatusRaw = String(t.last_refresh_status || "").toUpperCase();
-            const refreshStatusLabel =
-              refreshStatusRaw === "SUCCESS"
-                ? "成功"
-                : refreshStatusRaw === "PENDING" ||
-                  refreshStatusRaw === "RUNNING" ||
-                  refreshStatusRaw === "IN_PROGRESS"
-                  ? "执行中"
-                  : refreshStatusRaw === "FAILED"
-                    ? "失败"
-                    : "未记录";
-            const isCookieInvalidNeedRelogin =
-              String(t.ban_reason || "") === "cookie_invalid_need_relogin";
-            const statusClass = isCookieInvalidNeedRelogin
-              ? "bg-amber-100 text-amber-800"
-              : t.is_active
-                ? "bg-green-50 text-green-700"
-                : "bg-gray-100 text-gray-700";
-            const statusText = isCookieInvalidNeedRelogin
-              ? "Cookie失效(需重新自动登录)"
-              : t.is_active
-                ? "活跃"
-                : "禁用";
-            const statusCellHtml = `<td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${statusClass}">${statusText}</span></td>`;
-            refreshRecordMap[t.id] = {
-              email: emailRaw,
-              time: formatRefreshTime(t.last_refresh_at),
-              status: refreshStatusRaw || "-",
-              statusLabel: refreshStatusLabel,
-              method: t.last_refresh_method || "-",
-              detail: t.last_refresh_detail || "-",
-            };
-            return `<tr><td class="py-2.5 px-3 email-cell">${emailDisplay}</td><td class="py-2.5 px-3 text-xs cookie-cell">${cookieDisplay}</td><td class="py-2.5 px-3 text-xs cookie-file-cell">${cookieFileDisplay}</td>${statusCellHtml}<td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3 text-xs cookie-refresh-remaining-cell">${cookieRefreshRemainingDisplay}</td><td class="py-2.5 px-3 text-xs refresh-record-cell">${refreshRecordDisplay}</td><td class="py-2.5 px-3"><button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button></td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs project-name-cell">${projectDisplay}</td><td class="py-2.5 px-3 text-xs project-id-cell">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground max-w-[200px] truncate" title="${escapeHtml(t.remark || "-")}">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right action-cell"><button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button><button onclick="refreshTokenCookie(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-amber-50 hover:text-amber-700 h-7 px-2 text-xs mr-1" title="仅 reAuth 刷新 Cookie">刷Cookie</button><button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button><button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button><button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
-          })
-          .join("");
+        const visibleTokens = Array.isArray(allTokens)
+          ? allTokens.filter((item) => !isBannedToken(item))
+          : [];
+        const bannedTokens = Array.isArray(allTokens)
+          ? allTokens.filter((item) => isBannedToken(item))
+          : [];
+        tb.innerHTML = visibleTokens.map((t) => buildTokenRow(t)).join("");
+        bannedTb.innerHTML = bannedTokens.map((t) => buildTokenRow(t, { hardBanned: true })).join("");
+        updateBannedTokensSection(bannedTokens.length);
         updateCookieRefreshCountdowns();
         ensureCookieRefreshTicker();
         ensureTokenAutoRefreshWatcher();
@@ -2364,6 +2498,13 @@
             if (!Array.isArray(list)) continue;
             const item = list.find((t) => Number(t.id) === Number(id));
             if (!item) continue;
+            if (isBannedToken(item)) {
+              allTokens = list;
+              renderTokens();
+              await loadStats();
+              showToast("账号池自动登录已识别为封禁，Token已移至底部封禁列表", "error");
+              return;
+            }
             const recovered =
               Boolean(item.is_active) &&
               String(item.ban_reason || "") !== "cookie_invalid_need_relogin";
@@ -2664,10 +2805,13 @@
         const action = targetActive ? "enable" : "disable";
         const actionText = targetActive ? "启用" : "禁用";
         const candidates = allTokens.filter(
-          (t) => t && t.id && t.is_active !== targetActive,
+          (t) => t && t.id && t.is_active !== targetActive && (!targetActive || !isBannedToken(t)),
         );
 
         if (candidates.length === 0) {
+          if (targetActive && allTokens.some((t) => t && isBannedToken(t))) {
+            return showToast("封禁Token不会参与批量启用", "info");
+          }
           return showToast(`所有Token已${actionText}`, "info");
         }
 
@@ -3705,7 +3849,7 @@
           $("cfgServerHost").value = d.config.host || "";
           $("cfgServerPort").value = d.config.port || 8000;
           $("cfgServerDefaultPublicIp").value =
-            d.config.default_public_ip || "104.129.59.235";
+            d.config.default_public_ip || "23.159.248.139";
           const detectedIp = String(d.config.detected_public_ip || "").trim();
           const autoDetected = Boolean(d.config.server_auto_detected);
           $("cfgServerDetectedIpHint").textContent = detectedIp

@@ -152,6 +152,40 @@ class FlowClient:
         self._set_request_fingerprint(None)
         self._set_request_proxy_state("direct", None)
 
+    def _log_recaptcha_success(
+        self,
+        *,
+        captcha_method: str,
+        action: str,
+        project_id: str,
+        browser_ref: Optional[Union[int, str]] = None,
+        fingerprint: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        method_text = {
+            "personal": "内置浏览器打码",
+            "browser": "本地有头浏览器打码",
+            "remote_browser": "远程有头浏览器打码",
+            "yescaptcha": "YesCaptcha",
+            "capmonster": "CapMonster",
+            "ezcaptcha": "EZCaptcha",
+            "capsolver": "Capsolver",
+        }.get(str(captcha_method or "").strip().lower(), str(captcha_method or "unknown"))
+        ref_label = ""
+        if browser_ref is not None:
+            ref_key = "session_id" if str(captcha_method or "").strip().lower() == "remote_browser" else "browser_id"
+            ref_label = f", {ref_key}={browser_ref}"
+        proxy_url = ""
+        ua = ""
+        if isinstance(fingerprint, dict):
+            proxy_url = str(fingerprint.get("proxy_url") or "").strip()
+            ua = str(fingerprint.get("user_agent") or "").strip()
+        proxy_text = proxy_url or "direct"
+        ua_text = ua[:96] if ua else "-"
+        debug_logger.log_info(
+            f"[reCAPTCHA] 打码成功：已获取有效 token，方式={method_text}, action={action}, "
+            f"project_id={project_id}{ref_label}, proxy={proxy_text}, UA={ua_text}"
+        )
+
     async def _make_request(
         self,
         method: str,
@@ -1987,6 +2021,13 @@ class FlowClient:
                 token = await service.get_token(project_id, action)
                 fingerprint = service.get_last_fingerprint() if token else None
                 self._set_request_fingerprint(fingerprint if token else None)
+                if token:
+                    self._log_recaptcha_success(
+                        captcha_method=captcha_method,
+                        action=action,
+                        project_id=project_id,
+                        fingerprint=fingerprint,
+                    )
                 return token, None
             except RuntimeError as e:
                 # 捕获 Docker 环境或依赖缺失的明确错误
@@ -2012,6 +2053,14 @@ class FlowClient:
                 token, browser_id = await service.get_token(project_id, action, token_id=token_id)
                 fingerprint = await service.get_fingerprint(browser_id) if token else None
                 self._set_request_fingerprint(fingerprint if token else None)
+                if token:
+                    self._log_recaptcha_success(
+                        captcha_method=captcha_method,
+                        action=action,
+                        project_id=project_id,
+                        browser_ref=browser_id,
+                        fingerprint=fingerprint,
+                    )
                 return token, browser_id
             except RuntimeError as e:
                 # 捕获 Docker 环境或依赖缺失的明确错误
@@ -2048,6 +2097,13 @@ class FlowClient:
                 self._set_request_fingerprint(fingerprint if token else None)
                 if not token or not session_id:
                     raise RuntimeError(f"remote_browser 返回缺少 token/session_id: {payload}")
+                self._log_recaptcha_success(
+                    captcha_method=captcha_method,
+                    action=action,
+                    project_id=project_id,
+                    browser_ref=str(session_id),
+                    fingerprint=fingerprint,
+                )
                 return token, str(session_id)
             except Exception as e:
                 debug_logger.log_error(f"[reCAPTCHA RemoteBrowser] 错误: {str(e)}")
@@ -2057,6 +2113,13 @@ class FlowClient:
         elif captcha_method in ["yescaptcha", "capmonster", "ezcaptcha", "capsolver"]:
             self._set_request_fingerprint(None)
             token = await self._get_api_captcha_token(captcha_method, project_id, action)
+            if token:
+                self._log_recaptcha_success(
+                    captcha_method=captcha_method,
+                    action=action,
+                    project_id=project_id,
+                    fingerprint=None,
+                )
             return token, None
         else:
             debug_logger.log_info(f"[reCAPTCHA] 未知的打码方式: {captcha_method}")
