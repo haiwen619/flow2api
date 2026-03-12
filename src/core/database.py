@@ -1,9 +1,10 @@
 """Database storage layer for Flow2API"""
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db_compat import dbapi as aiosqlite, is_mysql_target
 from .config import config
 from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, normalize_captcha_priority_order
@@ -35,6 +36,17 @@ class Database:
             return Path(self.db_path).exists()
         async with aiosqlite.connect(self.db_path) as db:
             return await self._table_exists(db, "tokens")
+
+    @staticmethod
+    def _resolve_timezone(tz_name: str):
+        """Resolve tzinfo with a safe fallback for Windows environments without tzdata."""
+        normalized = str(tz_name or "").strip() or "UTC"
+        try:
+            return ZoneInfo(normalized)
+        except ZoneInfoNotFoundError:
+            if normalized == "Asia/Shanghai":
+                return timezone(timedelta(hours=8), name="Asia/Shanghai")
+            return timezone.utc
 
     async def _table_exists(self, db, table_name: str) -> bool:
         """Check if a table exists in the database"""
@@ -882,7 +894,10 @@ class Database:
                     t.*,
                     COALESCE(ts.image_count, 0) AS image_count,
                     COALESCE(ts.video_count, 0) AS video_count,
-                    COALESCE(ts.error_count, 0) AS error_count
+                    COALESCE(ts.error_count, 0) AS error_count,
+                    COALESCE(ts.today_error_count, 0) AS today_error_count,
+                    COALESCE(ts.consecutive_error_count, 0) AS consecutive_error_count,
+                    ts.last_error_at AS last_error_at
                 FROM tokens t
                 LEFT JOIN token_stats ts ON ts.token_id = t.id
                 ORDER BY t.created_at DESC
@@ -1423,8 +1438,114 @@ class Database:
             )
             await db.commit()
 
-    async def get_logs(self, limit: int = 100, token_id: Optional[int] = None, include_payload: bool = False):
-        """Get request logs with token info, optionally including payload fields"""
+    @staticmethod
+    def _parse_log_time(value: Any) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            parsed = None
+        if parsed is None:
+            try:
+                parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _extract_error_text_from_payload(payload: Any) -> str:
+        if payload is None:
+            return ""
+        if isinstance(payload, str):
+            text = payload.strip()
+            if not text:
+                return ""
+            try:
+                decoded = json.loads(text)
+            except Exception:
+                decoded = None
+            if decoded is not None:
+                return Database._extract_error_text_from_payload(decoded)
+            return text
+        if isinstance(payload, dict):
+            priority_keys = [
+                "detail",
+                "error",
+                "message",
+                "error_message",
+                "reason",
+                "msg",
+            ]
+            for key in priority_keys:
+                value = payload.get(key)
+                text = Database._extract_error_text_from_payload(value)
+                if text:
+                    return text
+            for value in payload.values():
+                text = Database._extract_error_text_from_payload(value)
+                if text:
+                    return text
+            return ""
+        if isinstance(payload, list):
+            for item in payload:
+                text = Database._extract_error_text_from_payload(item)
+                if text:
+                    return text
+            return ""
+        return str(payload).strip()
+
+    @staticmethod
+    def _normalize_error_signature(text: str) -> str:
+        normalized = " ".join(str(text or "").strip().split())
+        if not normalized:
+            return ""
+        normalized = normalized[:220]
+        return normalized
+
+    @classmethod
+    def _summarize_error_log(cls, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        status_code = int(row.get("status_code") or 0)
+        status_text = str(row.get("status_text") or "").strip()
+        response_body = row.get("response_body")
+        operation = str(row.get("operation") or "").strip() or "unknown"
+
+        looks_failed = status_code >= 400
+        status_text_lower = status_text.lower()
+        if status_text_lower in {"failed", "error", "cancelled", "timeout", "banned"}:
+            looks_failed = True
+
+        if not looks_failed:
+            return None
+
+        detail = cls._extract_error_text_from_payload(response_body)
+
+        signature = cls._normalize_error_signature(detail or status_text or f"HTTP {status_code}")
+        if not signature:
+            signature = f"HTTP {status_code or 0}"
+
+        return {
+            "signature": signature,
+            "operation": operation,
+            "status_code": status_code,
+            "status_text": status_text,
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "token_email": row.get("token_email"),
+        }
+
+    async def get_logs_paginated(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 10,
+        token_id: Optional[int] = None,
+        include_payload: bool = False,
+    ) -> Dict[str, Any]:
+        """Get paginated request logs with total count."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             payload_columns = "rl.request_body, rl.response_body," if include_payload else ""
@@ -1434,8 +1555,19 @@ class Database:
             status_text_column = "rl.status_text," if has_status_text else "'' as status_text,"
             progress_column = "rl.progress," if has_progress else "0 as progress,"
             updated_at_column = "rl.updated_at," if has_updated_at else "rl.created_at as updated_at,"
+            safe_page = max(1, int(page or 1))
+            safe_page_size = max(1, min(100, int(page_size or 10)))
 
             if token_id:
+                count_cursor = await db.execute(
+                    "SELECT COUNT(1) FROM request_logs WHERE token_id = ?",
+                    (token_id,),
+                )
+                count_row = await count_cursor.fetchone()
+                total = int((count_row[0] if count_row else 0) or 0)
+                total_pages = max(1, (total + safe_page_size - 1) // safe_page_size) if total else 1
+                effective_page = min(safe_page, total_pages)
+                offset = (effective_page - 1) * safe_page_size
                 cursor = await db.execute(f"""
                     SELECT
                         rl.id,
@@ -1455,9 +1587,15 @@ class Database:
                     LEFT JOIN tokens t ON rl.token_id = t.id
                     WHERE rl.token_id = ?
                     ORDER BY rl.created_at DESC
-                    LIMIT ?
-                """, (token_id, limit))
+                    LIMIT ? OFFSET ?
+                """, (token_id, safe_page_size, offset))
             else:
+                count_cursor = await db.execute("SELECT COUNT(1) FROM request_logs")
+                count_row = await count_cursor.fetchone()
+                total = int((count_row[0] if count_row else 0) or 0)
+                total_pages = max(1, (total + safe_page_size - 1) // safe_page_size) if total else 1
+                effective_page = min(safe_page, total_pages)
+                offset = (effective_page - 1) * safe_page_size
                 cursor = await db.execute(f"""
                     SELECT
                         rl.id,
@@ -1476,11 +1614,86 @@ class Database:
                     FROM request_logs rl
                     LEFT JOIN tokens t ON rl.token_id = t.id
                     ORDER BY rl.created_at DESC
-                    LIMIT ?
-                """, (limit,))
+                    LIMIT ? OFFSET ?
+                """, (safe_page_size, offset))
 
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return {
+                "items": [dict(row) for row in rows],
+                "total": total,
+                "page": effective_page,
+                "page_size": safe_page_size,
+                "total_pages": total_pages,
+            }
+
+    async def get_today_error_summary(self, *, tz_name: str = "Asia/Shanghai") -> Dict[str, Any]:
+        """Aggregate today's request-log errors by normalized error signature."""
+        tz = self._resolve_timezone(tz_name)
+        now_local = datetime.now(tz)
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+        start_utc = start_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_utc = end_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            has_status_text = await self._column_exists(db, "request_logs", "status_text")
+            has_updated_at = await self._column_exists(db, "request_logs", "updated_at")
+            status_text_column = "rl.status_text," if has_status_text else "'' as status_text,"
+            updated_at_column = "rl.updated_at," if has_updated_at else "rl.created_at as updated_at,"
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    rl.id,
+                    rl.operation,
+                    rl.response_body,
+                    rl.status_code,
+                    {status_text_column}
+                    rl.created_at,
+                    {updated_at_column}
+                    t.email as token_email
+                FROM request_logs rl
+                LEFT JOIN tokens t ON rl.token_id = t.id
+                WHERE rl.created_at >= ? AND rl.created_at < ?
+                ORDER BY rl.created_at DESC
+                """,
+                (start_utc, end_utc),
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+
+        grouped: Dict[str, Dict[str, Any]] = {}
+        total_errors = 0
+        for row in rows:
+            summary = self._summarize_error_log(row)
+            if not summary:
+                continue
+            total_errors += 1
+            signature = summary["signature"]
+            bucket = grouped.get(signature)
+            if bucket is None:
+                grouped[signature] = {
+                    "signature": signature,
+                    "count": 1,
+                    "latest_at": summary.get("created_at"),
+                    "sample_operation": summary.get("operation"),
+                    "sample_status_code": summary.get("status_code"),
+                    "sample_status_text": summary.get("status_text"),
+                    "sample_token_email": summary.get("token_email"),
+                }
+            else:
+                bucket["count"] += 1
+
+        items = sorted(
+            grouped.values(),
+            key=lambda item: (-int(item.get("count") or 0), str(item.get("signature") or "")),
+        )
+        return {
+            "date": start_local.strftime("%Y-%m-%d"),
+            "timezone": tz_name,
+            "total_errors": total_errors,
+            "unique_errors": len(items),
+            "items": items,
+        }
 
     async def get_log_detail(self, log_id: int) -> Optional[Dict[str, Any]]:
         """Get single request log detail including payload fields"""
@@ -1856,3 +2069,251 @@ class Database:
                 """, (connection_token, auto_enable_on_update))
 
             await db.commit()
+
+    # ==================== 历史性能分析 ====================
+
+    async def get_performance_history(
+        self,
+        *,
+        minutes: int = 60,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        """从 request_logs 提取最近 N 分钟的性能数据，聚合各阶段耗时分布。
+
+        读取 response_body JSON 中的 performance 字段并在 Python 侧聚合，
+        避免 SQLite JSON 扩展兼容性问题。
+        """
+        import json as _json
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # 取最近 N 分钟、已完成的日志（status_code 200 或 500）
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            cursor = await db.execute(
+                """
+                SELECT rl.id, rl.token_id, rl.operation, rl.status_code,
+                       rl.duration, rl.response_body, rl.created_at,
+                       t.email as token_email
+                FROM request_logs rl
+                LEFT JOIN tokens t ON rl.token_id = t.id
+                WHERE rl.created_at >= ?
+                  AND rl.status_code IN (200, 500)
+                ORDER BY rl.created_at DESC
+                LIMIT ?
+                """,
+                (cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+
+        # ---- 在 Python 侧解析 & 聚合 ----
+        records = []
+        for row in rows:
+            row_dict = dict(row)
+            perf = {}
+            img_perf = {}
+            try:
+                resp = _json.loads(row_dict.get("response_body") or "{}")
+                perf = resp.get("performance") or {}
+                img_perf = perf.get("image_generation") or {}
+            except Exception:
+                pass
+
+            records.append({
+                "id": row_dict["id"],
+                "token_id": row_dict.get("token_id"),
+                "token_email": row_dict.get("token_email", ""),
+                "operation": row_dict.get("operation", ""),
+                "status_code": row_dict.get("status_code"),
+                "duration_s": round(row_dict.get("duration") or 0, 2),
+                "created_at": row_dict.get("created_at", ""),
+                # 顶层阶段 (ms)
+                "total_ms": perf.get("total_ms", 0),
+                "token_select_ms": perf.get("token_select_ms", 0),
+                "ensure_at_ms": perf.get("ensure_at_ms", 0),
+                "ensure_project_ms": perf.get("ensure_project_ms", 0),
+                "generation_pipeline_ms": perf.get("generation_pipeline_ms", 0),
+                # 图片管线细分 (ms)
+                "slot_wait_ms": img_perf.get("slot_wait_ms", 0),
+                "upload_images_ms": img_perf.get("upload_images_ms", 0),
+                "generate_api_ms": img_perf.get("generate_api_ms", 0),
+                "upsample_ms": img_perf.get("upsample_ms", 0),
+                "cache_image_ms": img_perf.get("cache_image_ms", 0),
+                "launch_queue_wait_ms": img_perf.get("launch_queue_wait_ms", 0),
+                "launch_stagger_wait_ms": img_perf.get("launch_stagger_wait_ms", 0),
+                # 重试信息
+                "generation_attempts": len(
+                    (perf.get("image_generation") or {})
+                    .get("upstream_trace", {})
+                    .get("generation_attempts", [])
+                ) if isinstance(perf.get("image_generation"), dict) else 0,
+            })
+
+        def _infer_root_cause(record: Dict[str, Any]) -> Dict[str, str]:
+            total_ms = int(record.get("total_ms") or 0)
+            attempts = int(record.get("generation_attempts") or 0)
+            upload_ms = int(record.get("upload_images_ms") or 0)
+            generate_api_ms = int(record.get("generate_api_ms") or 0)
+            queue_ms = int(record.get("launch_queue_wait_ms") or 0)
+            ensure_at_ms = int(record.get("ensure_at_ms") or 0)
+            upsample_ms = int(record.get("upsample_ms") or 0)
+
+            if total_ms >= 300000:
+                if attempts >= 2:
+                    return {
+                        "root_cause_label": "疑似重试放大",
+                        "root_cause_reason": f"检测到 {attempts} 次生成尝试，单次正常耗时被重试放大。",
+                    }
+                if queue_ms >= 30000 or generate_api_ms >= max(180000, int(total_ms * 0.6)):
+                    return {
+                        "root_cause_label": "疑似上游排队",
+                        "root_cause_reason": "生成 API / 上游排队阶段占比过高，更像 Google 侧拥堵或账号限流。",
+                    }
+                if upload_ms >= max(30000, int(total_ms * 0.15)) and generate_api_ms < max(120000, int(total_ms * 0.5)):
+                    return {
+                        "root_cause_label": "疑似带宽问题",
+                        "root_cause_reason": "图片上传阶段异常偏长，而生成 API 阶段不算最高，像出口带宽或链路质量不足。",
+                    }
+                if ensure_at_ms >= 5000:
+                    return {
+                        "root_cause_label": "疑似AT刷新",
+                        "root_cause_reason": "请求内发生较慢的 AT 刷新/校验，账号状态可能不稳定。",
+                    }
+                if upsample_ms >= 60000:
+                    return {
+                        "root_cause_label": "疑似放大阶段",
+                        "root_cause_reason": "图片放大阶段耗时过长，主生成可能已完成但后处理拖慢了总时长。",
+                    }
+            else:
+                if attempts >= 2:
+                    return {
+                        "root_cause_label": "重试放大",
+                        "root_cause_reason": f"检测到 {attempts} 次生成尝试。",
+                    }
+                if queue_ms >= 30000 or generate_api_ms >= 120000:
+                    return {
+                        "root_cause_label": "上游偏慢",
+                        "root_cause_reason": "生成 API / 排队阶段偏高。",
+                    }
+                if upload_ms >= 20000 and generate_api_ms < 120000:
+                    return {
+                        "root_cause_label": "链路偏慢",
+                        "root_cause_reason": "上传阶段偏高，更像网络链路问题。",
+                    }
+
+            return {
+                "root_cause_label": "待进一步排查",
+                "root_cause_reason": "未出现单一绝对主导阶段，建议结合详细日志与实时监控继续判断。",
+            }
+
+        # 聚合统计
+        def _percentiles(values):
+            s = sorted(v for v in values if v and v > 0)
+            n = len(s)
+            if n == 0:
+                return {"count": 0, "min": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0, "max": 0}
+            return {
+                "count": n,
+                "min": s[0],
+                "avg": round(sum(s) / n, 1),
+                "p50": s[n // 2],
+                "p95": s[min(int(n * 0.95), n - 1)],
+                "p99": s[min(int(n * 0.99), n - 1)],
+                "max": s[-1],
+            }
+
+        success_records = [r for r in records if r["status_code"] == 200]
+        failed_records = [r for r in records if r["status_code"] != 200]
+
+        phase_keys = [
+            "total_ms", "token_select_ms", "ensure_at_ms", "ensure_project_ms",
+            "generation_pipeline_ms", "slot_wait_ms", "upload_images_ms",
+            "generate_api_ms", "upsample_ms", "cache_image_ms",
+            "launch_queue_wait_ms", "launch_stagger_wait_ms",
+        ]
+        phase_stats = {}
+        for key in phase_keys:
+            phase_stats[key] = _percentiles([r[key] for r in success_records])
+
+        # Per-token stats
+        token_stats = {}
+        for r in records:
+            tid = r.get("token_id")
+            if tid is None:
+                continue
+            if tid not in token_stats:
+                token_stats[tid] = {
+                    "token_id": tid,
+                    "email": r.get("token_email", ""),
+                    "total": 0, "success": 0, "failed": 0,
+                    "durations": [],
+                }
+            token_stats[tid]["total"] += 1
+            if r["status_code"] == 200:
+                token_stats[tid]["success"] += 1
+                token_stats[tid]["durations"].append(r["total_ms"])
+            else:
+                token_stats[tid]["failed"] += 1
+
+        for ts in token_stats.values():
+            durs = sorted(d for d in ts["durations"] if d > 0)
+            n = len(durs)
+            ts["avg_ms"] = round(sum(durs) / n, 0) if n else 0
+            ts["p95_ms"] = durs[min(int(n * 0.95), n - 1)] if n else 0
+            del ts["durations"]
+
+        # 每 5 分钟桶的时间线
+        timeline_buckets = {}
+        for r in records:
+            try:
+                ts = r["created_at"]
+                parts = ts.split(" ")[-1] if " " in ts else ts
+                h_part = parts.split(":")[0]
+                m_part = parts.split(":")[1] if ":" in parts else "00"
+                m_bucket = str(int(m_part) // 5 * 5).zfill(2)
+                bucket_key = f"{h_part}:{m_bucket}"
+            except Exception:
+                bucket_key = "unknown"
+            if bucket_key not in timeline_buckets:
+                timeline_buckets[bucket_key] = {"label": bucket_key, "total": 0, "success": 0, "failed": 0, "durations": []}
+            timeline_buckets[bucket_key]["total"] += 1
+            if r["status_code"] == 200:
+                timeline_buckets[bucket_key]["success"] += 1
+                timeline_buckets[bucket_key]["durations"].append(r["total_ms"])
+            else:
+                timeline_buckets[bucket_key]["failed"] += 1
+
+        timeline = []
+        for key in sorted(timeline_buckets.keys()):
+            b = timeline_buckets[key]
+            durs = [d for d in b["durations"] if d > 0]
+            avg_ms = round(sum(durs) / len(durs), 0) if durs else 0
+            timeline.append({
+                "label": b["label"],
+                "total": b["total"],
+                "success": b["success"],
+                "failed": b["failed"],
+                "avg_duration_ms": avg_ms,
+            })
+
+        # 慢请求 top 20 + 根因标签
+        slow = sorted(success_records, key=lambda r: -(r.get("total_ms") or 0))[:20]
+        slow = [
+            {
+                **r,
+                **_infer_root_cause(r),
+            }
+            for r in slow
+        ]
+
+        return {
+            "minutes": minutes,
+            "total_records": len(records),
+            "success_count": len(success_records),
+            "failed_count": len(failed_records),
+            "phase_stats": phase_stats,
+            "token_stats": list(token_stats.values()),
+            "timeline": timeline,
+            "slow_requests": slow,
+        }

@@ -300,3 +300,115 @@ class ConcurrencyManager:
             self._image_inflight.pop(token_id, None)
             self._video_inflight.pop(token_id, None)
             debug_logger.log_info(f"Token {token_id} concurrency state removed")
+
+    async def get_all_concurrency_status(self) -> dict:
+        """获取所有 token 的实时并发状态快照。
+
+        Returns:
+            {
+                "tokens": {
+                    <token_id>: {
+                        "image_inflight": int,
+                        "image_limit": int | None,
+                        "image_remaining": int | None,
+                        "video_inflight": int,
+                        "video_limit": int | None,
+                        "video_remaining": int | None,
+                    },
+                    ...
+                },
+                "summary": {
+                    "total_image_inflight": int,
+                    "total_video_inflight": int,
+                    "total_image_capacity": int | None,
+                    "total_video_capacity": int | None,
+                    "token_count": int,
+                    "image_idle": int,
+                    "image_busy": int,
+                    "image_saturated": int,
+                    "video_idle": int,
+                    "video_busy": int,
+                    "video_saturated": int,
+                }
+            }
+        """
+        async with self._lock:
+            all_token_ids = set(self._image_inflight.keys()) | set(self._video_inflight.keys())
+            tokens_status = {}
+            total_image_inflight = 0
+            total_video_inflight = 0
+            total_image_capacity: Optional[int] = 0
+            total_video_capacity: Optional[int] = 0
+            has_unlimited_image = False
+            has_unlimited_video = False
+
+            # Token 可用性统计
+            image_idle = 0      # 图片 inflight == 0
+            image_busy = 0      # 图片 0 < inflight < limit
+            image_saturated = 0 # 图片 inflight >= limit (已满)
+            video_idle = 0
+            video_busy = 0
+            video_saturated = 0
+
+            for tid in all_token_ids:
+                img_inflight = self._image_inflight.get(tid, 0)
+                vid_inflight = self._video_inflight.get(tid, 0)
+                img_limit = self._image_limits.get(tid)  # None = unlimited
+                vid_limit = self._video_limits.get(tid)
+                img_remaining = max(0, img_limit - img_inflight) if img_limit is not None else None
+                vid_remaining = max(0, vid_limit - vid_inflight) if vid_limit is not None else None
+
+                tokens_status[tid] = {
+                    "image_inflight": img_inflight,
+                    "image_limit": img_limit,
+                    "image_remaining": img_remaining,
+                    "video_inflight": vid_inflight,
+                    "video_limit": vid_limit,
+                    "video_remaining": vid_remaining,
+                }
+
+                total_image_inflight += img_inflight
+                total_video_inflight += vid_inflight
+
+                # 图片可用性
+                if img_inflight == 0:
+                    image_idle += 1
+                elif img_limit is not None and img_inflight >= img_limit:
+                    image_saturated += 1
+                else:
+                    image_busy += 1
+
+                # 视频可用性
+                if vid_inflight == 0:
+                    video_idle += 1
+                elif vid_limit is not None and vid_inflight >= vid_limit:
+                    video_saturated += 1
+                else:
+                    video_busy += 1
+
+                if img_limit is None:
+                    has_unlimited_image = True
+                elif total_image_capacity is not None:
+                    total_image_capacity += img_limit
+
+                if vid_limit is None:
+                    has_unlimited_video = True
+                elif total_video_capacity is not None:
+                    total_video_capacity += vid_limit
+
+            return {
+                "tokens": tokens_status,
+                "summary": {
+                    "total_image_inflight": total_image_inflight,
+                    "total_video_inflight": total_video_inflight,
+                    "total_image_capacity": None if has_unlimited_image else total_image_capacity,
+                    "total_video_capacity": None if has_unlimited_video else total_video_capacity,
+                    "token_count": len(all_token_ids),
+                    "image_idle": image_idle,
+                    "image_busy": image_busy,
+                    "image_saturated": image_saturated,
+                    "video_idle": video_idle,
+                    "video_busy": video_busy,
+                    "video_saturated": video_saturated,
+                },
+            }

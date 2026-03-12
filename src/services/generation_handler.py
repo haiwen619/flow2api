@@ -5,6 +5,7 @@ import json
 import time
 from typing import Optional, AsyncGenerator, List, Dict, Any
 from ..core.logger import debug_logger
+from .perf_monitor import perf_monitor
 from ..core.config import config
 from ..core.models import Task, RequestLog
 from ..core.account_tiers import (
@@ -765,6 +766,9 @@ class GenerationHandler:
         model_config = MODEL_CONFIG[model]
         generation_type = model_config["type"]
         request_operation = f"generate_{generation_type}"
+
+        # 性能监控 - 标记请求开始
+        await perf_monitor.on_request_start(request_id, operation=request_operation)
         prompt_for_log = prompt if len(prompt) <= 2000 else f"{prompt[:2000]}...(truncated)"
         request_payload = {
             "model": model,
@@ -832,6 +836,8 @@ class GenerationHandler:
             if stream:
                 yield self._create_stream_chunk(f"❌ {error_msg}\n")
             yield self._create_error_response(error_msg)
+            # 性能监控 - 无可用Token，标记请求失败
+            await perf_monitor.on_request_end(request_id, success=False, token_id=None, perf_trace=perf_trace)
             return
 
         debug_logger.log_info(f"[GENERATION] 已选择Token: {token.id} ({token.email})")
@@ -990,6 +996,11 @@ class GenerationHandler:
                 f"video_slot_wait={video_perf.get('slot_wait_ms', 0)}ms"
             )
 
+            # 性能监控 - 标记请求完成(成功)
+            _final_perf = dict(perf_trace)
+            _final_perf["slot_wait_ms"] = image_perf.get("slot_wait_ms", 0) or video_perf.get("slot_wait_ms", 0)
+            await perf_monitor.on_request_end(request_id, success=True, token_id=token.id if token else None, perf_trace=_final_perf)
+
             await self._log_request(
                 token.id,
                 request_operation,
@@ -1042,6 +1053,14 @@ class GenerationHandler:
                 progress=request_log_state.get("progress", 0),
             )
         finally:
+            # 性能监控 - 确保请求结束时总是记录（处理 except 路径和未被上面 success 路径覆盖的情况）
+            if request_id in perf_monitor._inflight:
+                await perf_monitor.on_request_end(
+                    request_id,
+                    success=False,
+                    token_id=token.id if token else None,
+                    perf_trace=perf_trace,
+                )
             if pending_token_state.get("active") and token and self.load_balancer:
                 await self.load_balancer.release_pending(
                     token.id,

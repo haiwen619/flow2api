@@ -408,9 +408,21 @@ class TokenManager:
         # Reset error count when enabling (only reset total error_count, keep today_error_count)
         await self.db.reset_error_count(token_id)
 
-    async def disable_token(self, token_id: int):
-        """Disable a token"""
-        await self.db.update_token(token_id, is_active=False)
+    async def disable_token(
+        self,
+        token_id: int,
+        *,
+        reason: Optional[str] = None,
+        disabled_at: Optional[datetime] = None,
+    ):
+        """Disable a token and optionally persist a structured reason."""
+        update_fields: Dict[str, Any] = {"is_active": False}
+        if reason is not None:
+            update_fields["ban_reason"] = reason
+            update_fields["banned_at"] = disabled_at or datetime.now(timezone.utc)
+        elif disabled_at is not None:
+            update_fields["banned_at"] = disabled_at
+        await self.db.update_token(token_id, **update_fields)
 
     # ========== Token添加 (支持Project创建) ==========
 
@@ -856,7 +868,7 @@ class TokenManager:
                 "FAILED",
                 failed_detail,
             )
-            await self.disable_token(token_id)
+            await self.disable_token(token_id, reason="refresh_failed")
             return False
 
     async def refresh_cookie_via_reauth(
@@ -1409,7 +1421,7 @@ class TokenManager:
                 f"[TOKEN_BAN] Token {token_id} consecutive error count ({stats.consecutive_error_count}) "
                 f"reached threshold ({admin_config.error_ban_threshold}), auto-disabling"
             )
-            await self.disable_token(token_id)
+            await self.disable_token(token_id, reason="consecutive_error_limit")
 
     async def record_success(self, token_id: int):
         """Record successful request (reset consecutive error count)

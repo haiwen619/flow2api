@@ -103,7 +103,13 @@ def _get_test_default_bitbrowser_id() -> Optional[str]:
     # 1) env override
     env_val = str(os.environ.get("RPA_TEST_BITBROWSER_ID", "") or "").strip()
     if env_val:
-        return env_val
+        env_candidates = [
+            item.strip()
+            for item in env_val.replace("\r", "\n").replace(",", "\n").split("\n")
+            if item.strip()
+        ]
+        if env_candidates:
+            return env_candidates[0]
 
     # 2) 优先复用全局配置中的当前生效值，避免本模块自行猜测 local/server 模式
     try:
@@ -127,9 +133,27 @@ def _get_test_default_bitbrowser_id() -> Optional[str]:
             mode = "local" if server_host in {"127.0.0.1", "localhost"} else "server"
             rpa_cfg = setting.get("rpa", {}) or {}
             if mode == "local":
-                cfg_val = str(rpa_cfg.get("test_bitbrowser_id_local", "") or "").strip()
+                cfg_candidates = rpa_cfg.get("test_bitbrowser_ids_local")
+                if isinstance(cfg_candidates, list):
+                    cfg_candidates = [str(v or "").strip() for v in cfg_candidates if str(v or "").strip()]
+                else:
+                    cfg_candidates = []
+                cfg_val = (
+                    cfg_candidates[0]
+                    if cfg_candidates
+                    else str(rpa_cfg.get("test_bitbrowser_id_local", "") or "").strip()
+                )
             else:
-                cfg_val = str(rpa_cfg.get("test_bitbrowser_id_server", "") or "").strip()
+                cfg_candidates = rpa_cfg.get("test_bitbrowser_ids_server")
+                if isinstance(cfg_candidates, list):
+                    cfg_candidates = [str(v or "").strip() for v in cfg_candidates if str(v or "").strip()]
+                else:
+                    cfg_candidates = []
+                cfg_val = (
+                    cfg_candidates[0]
+                    if cfg_candidates
+                    else str(rpa_cfg.get("test_bitbrowser_id_server", "") or "").strip()
+                )
             if cfg_val:
                 return cfg_val
     except Exception:

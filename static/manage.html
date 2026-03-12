@@ -303,13 +303,18 @@
           title="代理池管理">
           代理池
         </button>
+        <button onclick="switchTab('loadAnalysis')" id="tabLoadAnalysis"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 text-muted-foreground"
+          title="服务负载分析">
+          ⚡ 负载分析
+        </button>
       </nav>
     </div>
 
     <!-- Token 管理面板 -->
     <div id="panelTokens">
       <!-- 统计卡片 -->
-      <div class="grid gap-4 grid-cols-2 md:grid-cols-5 mb-6">
+      <div class="grid gap-4 grid-cols-2 md:grid-cols-6 mb-6">
         <div class="rounded-lg border border-border bg-background p-4">
           <p class="text-sm font-medium text-muted-foreground mb-2">
             Token 总数
@@ -321,6 +326,43 @@
             活跃 Token
           </p>
           <h3 class="text-xl font-bold text-green-600" id="statActive">-</h3>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-sm font-medium text-muted-foreground mb-1">
+            Token池 实时负载
+          </p>
+          <div id="statLoad" class="space-y-1.5">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="w-8 text-muted-foreground">🖼图片</span>
+              <span class="font-semibold" id="statLoadImageInflight">0</span>
+              <span class="text-muted-foreground">处理中</span>
+              <span class="text-muted-foreground">|</span>
+              <span class="text-green-600 font-medium" id="statLoadImageIdle">0</span>
+              <span class="text-muted-foreground">空闲</span>
+              <span class="text-orange-500 font-medium" id="statLoadImageBusy">0</span>
+              <span class="text-muted-foreground">繁忙</span>
+              <span class="text-red-600 font-medium" id="statLoadImageFull">0</span>
+              <span class="text-muted-foreground">满载</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-1.5" title="图片负载">
+              <div id="statLoadImageBar" class="h-1.5 rounded-full bg-green-500 transition-all duration-300" style="width:0%"></div>
+            </div>
+            <div class="flex items-center gap-2 text-xs">
+              <span class="w-8 text-muted-foreground">🎬视频</span>
+              <span class="font-semibold" id="statLoadVideoInflight">0</span>
+              <span class="text-muted-foreground">处理中</span>
+              <span class="text-muted-foreground">|</span>
+              <span class="text-green-600 font-medium" id="statLoadVideoIdle">0</span>
+              <span class="text-muted-foreground">空闲</span>
+              <span class="text-orange-500 font-medium" id="statLoadVideoBusy">0</span>
+              <span class="text-muted-foreground">繁忙</span>
+              <span class="text-red-600 font-medium" id="statLoadVideoFull">0</span>
+              <span class="text-muted-foreground">满载</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-1.5" title="视频负载">
+              <div id="statLoadVideoBar" class="h-1.5 rounded-full bg-green-500 transition-all duration-300" style="width:0%"></div>
+            </div>
+          </div>
         </div>
         <div class="rounded-lg border border-border bg-background p-4">
           <p class="text-sm font-medium text-muted-foreground mb-2">
@@ -346,8 +388,30 @@
 
       <!-- Token 列表 -->
       <div class="rounded-lg border border-border bg-background">
-        <div class="flex items-center justify-between gap-4 p-4 border-b border-border">
-          <h3 class="text-lg font-semibold">Token 列表</h3>
+        <div class="flex flex-col gap-3 p-4 border-b border-border lg:flex-row lg:items-center lg:justify-between">
+          <div class="flex flex-col gap-3 lg:min-w-[340px]">
+            <div class="flex items-center gap-3">
+              <h3 class="text-lg font-semibold">Token 列表</h3>
+              <span id="tokenSearchSummary" class="text-xs text-muted-foreground"></span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="relative w-full sm:w-[320px]">
+                <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                  xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.3-4.3"></path>
+                </svg>
+                <input id="tokenEmailSearchInput" type="text" placeholder="按邮箱搜索 Token"
+                  oninput="applyTokenEmailSearch(this.value)"
+                  class="h-9 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20" />
+              </div>
+              <button onclick="clearTokenEmailSearch()"
+                class="inline-flex items-center justify-center rounded-md border border-border bg-background hover:bg-accent h-9 px-3 text-sm">
+                清空
+              </button>
+            </div>
+          </div>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <!-- 自动刷新AT标签和开关 -->
             <div class="flex items-center gap-2">
@@ -507,6 +571,9 @@
                 类型
               </th>
               <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
+                负载
+              </th>
+              <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
                 项目名称
               </th>
               <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">
@@ -561,6 +628,7 @@
                   <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">刷新记录</th>
                   <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">余额</th>
                   <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">类型</th>
+                  <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">负载</th>
                   <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">项目名称</th>
                   <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">项目ID</th>
                   <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">图片</th>
@@ -732,22 +800,34 @@
               </p>
             </div>
             <div class="pt-2 border-t border-border">
-              <label class="text-sm font-medium mb-2 block">RPA_TEST_BITBROWSER_ID（本地）</label>
-              <input id="cfgRpaBitbrowserIdLocal"
-                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                placeholder="f1ef6f8ccb6146988c67a63b92a78971" />
-              <p class="text-xs text-muted-foreground mt-1">
-                本地模式默认指纹浏览器窗口ID（host=127.0.0.1/localhost 时使用）
-              </p>
-            </div>
-            <div>
-              <label class="text-sm font-medium mb-2 block">RPA_TEST_BITBROWSER_ID（服务器）</label>
-              <input id="cfgRpaBitbrowserIdServer"
-                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                placeholder="服务器环境对应的窗口ID" />
-              <p class="text-xs text-muted-foreground mt-1">
-                服务器模式默认指纹浏览器窗口ID（host=0.0.0.0 时使用）
-              </p>
+              <div class="rounded-lg border border-border bg-muted/20 p-4 space-y-3">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <label class="text-sm font-medium block">RPA_TEST_BITBROWSER_ID 窗口池</label>
+                    <p class="text-xs text-muted-foreground mt-1">
+                      支持分别维护本地/服务器模式的多个窗口 ID。批量验活时，并发数小于等于可用数量会按槽位并发复用。
+                    </p>
+                  </div>
+                  <button type="button" onclick="openRpaBitbrowserPoolModal()"
+                    class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm shrink-0">
+                    配置窗口池
+                  </button>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2">
+                  <div class="rounded-md border border-border bg-background p-3">
+                    <div class="text-xs font-medium text-muted-foreground">本地模式</div>
+                    <div id="cfgRpaBitbrowserIdLocalSummary" class="mt-2 text-xs text-foreground break-all">
+                      未配置
+                    </div>
+                  </div>
+                  <div class="rounded-md border border-border bg-background p-3">
+                    <div class="text-xs font-medium text-muted-foreground">服务器模式</div>
+                    <div id="cfgRpaBitbrowserIdServerSummary" class="mt-2 text-xs text-foreground break-all">
+                      未配置
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="pt-2 border-t border-border">
               <label class="inline-flex items-center gap-2 cursor-pointer">
@@ -763,10 +843,92 @@
             class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 w-full mt-4">
             保存配置
           </button>
-        </div>
+    </div>
 
-        <!-- 生成超时配置 -->
-        <div class="rounded-lg border border-border bg-background p-6 flex flex-col">
+    <div id="rpaBitbrowserPoolModal" onclick="if (event.target === this) closeRpaBitbrowserPoolModal()"
+      class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+      <div class="bg-background rounded-xl border border-border w-full max-w-5xl shadow-2xl my-auto overflow-hidden">
+        <div class="flex items-center justify-between p-5 border-b border-border sticky top-0 bg-background">
+          <div>
+            <h3 class="text-lg font-semibold">BitBrowser 窗口池配置</h3>
+            <p class="text-xs text-muted-foreground mt-1">
+              可分别维护本地/服务器模式窗口 ID。修改后仍需点击系统配置里的“保存配置”才会写入文件。
+            </p>
+          </div>
+          <button type="button" onclick="closeRpaBitbrowserPoolModal()"
+            class="text-muted-foreground hover:text-foreground">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-5 max-h-[calc(100vh-180px)] overflow-y-auto space-y-5">
+          <div class="rounded-lg border border-sky-100 bg-sky-50/80 px-4 py-3">
+            <div class="text-sm font-medium text-sky-900">并发复用规则</div>
+            <p class="mt-1 text-xs leading-5 text-sky-800">
+              当前模式下，可用窗口 ID 数量大于等于批量验活并发数时，系统会按并发槽位稳定复用不同窗口；单账号验活仍默认取列表第一个。
+            </p>
+          </div>
+          <div class="grid gap-5 lg:grid-cols-2">
+            <div class="rounded-xl border border-border bg-muted/20 overflow-hidden">
+              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-background/80">
+                <div>
+                  <div class="text-sm font-semibold">本地模式窗口池</div>
+                  <div class="text-xs text-muted-foreground mt-1">用于 `127.0.0.1 / localhost` 模式</div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span id="cfgRpaBitbrowserIdLocalCount"
+                    class="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700">0 个</span>
+                  <button type="button" onclick="addRpaBitbrowserIdRow('local')"
+                    class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+                    新增一行
+                  </button>
+                </div>
+              </div>
+              <div class="p-4">
+                <div id="cfgRpaBitbrowserIdLocalList" class="space-y-2"></div>
+                <p class="text-xs text-muted-foreground mt-3">
+                  默认保留 5 行输入。批量验活时会按并发槽位优先一一对应复用。
+                </p>
+              </div>
+            </div>
+            <div class="rounded-xl border border-border bg-muted/20 overflow-hidden">
+              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-background/80">
+                <div>
+                  <div class="text-sm font-semibold">服务器模式窗口池</div>
+                  <div class="text-xs text-muted-foreground mt-1">用于 `0.0.0.0 / 公网 IP` 模式</div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span id="cfgRpaBitbrowserIdServerCount"
+                    class="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700">0 个</span>
+                  <button type="button" onclick="addRpaBitbrowserIdRow('server')"
+                    class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+                    新增一行
+                  </button>
+                </div>
+              </div>
+              <div class="p-4">
+                <div id="cfgRpaBitbrowserIdServerList" class="space-y-2"></div>
+                <p class="text-xs text-muted-foreground mt-3">
+                  并发数小于等于可用 ID 数量时，会并发复用不同窗口执行批量验活。
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-3 p-5 border-t border-border sticky bottom-0 bg-background">
+          <button type="button" onclick="closeRpaBitbrowserPoolModal()"
+            class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5">
+            完成
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 生成超时配置 -->
+    <div class="rounded-lg border border-border bg-background p-6 flex flex-col">
           <h3 class="text-lg font-semibold mb-4">生成超时配置</h3>
           <div class="space-y-4 flex-1">
             <div>
@@ -1158,7 +1320,7 @@
               </label>
               <p class="text-xs text-muted-foreground mt-2">
                 开启后，详细的上游API请求和响应日志将写入
-                <code class="bg-muted px-1 py-0.5 rounded">logs.txt</code>
+                <code class="bg-muted px-1 py-0.5 rounded">RunLogs/app.log</code>
                 文件
               </p>
             </div>
@@ -1208,6 +1370,44 @@
             </button>
           </div>
         </div>
+        <div class="border-b border-border p-4 space-y-4">
+          <div class="grid gap-3 md:grid-cols-3">
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="text-xs text-muted-foreground">今日错误总数</div>
+              <div id="logsTodayErrorTotal" class="mt-2 text-2xl font-semibold text-red-600">0</div>
+            </div>
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="text-xs text-muted-foreground">今日错误类型</div>
+              <div id="logsTodayErrorUnique" class="mt-2 text-2xl font-semibold text-foreground">0</div>
+            </div>
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="text-xs text-muted-foreground">日志总条数</div>
+              <div id="logsTotalCount" class="mt-2 text-2xl font-semibold text-foreground">0</div>
+            </div>
+          </div>
+          <div class="rounded-lg border border-border overflow-hidden">
+            <div class="flex items-center justify-between gap-3 px-4 py-3 bg-muted/20 border-b border-border">
+              <div>
+                <div class="text-sm font-medium">今日错误分析</div>
+                <div id="logsTodayErrorMeta" class="text-xs text-muted-foreground mt-1">按北京时间统计</div>
+              </div>
+            </div>
+            <div class="relative w-full overflow-auto">
+              <table class="w-full text-sm">
+                <thead class="bg-background">
+                  <tr class="border-b border-border">
+                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">错误原因</th>
+                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">次数</th>
+                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">示例操作</th>
+                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">状态码</th>
+                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">示例 Token</th>
+                  </tr>
+                </thead>
+                <tbody id="logsTodayErrorBody" class="divide-y divide-border"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
         <div class="relative w-full overflow-auto max-h-[600px]">
           <table class="w-full text-sm">
             <thead class="sticky top-0 bg-background">
@@ -1246,6 +1446,19 @@
             </tbody>
           </table>
         </div>
+        <div class="flex items-center justify-between gap-3 border-t border-border p-4">
+          <div id="logsPaginationInfo" class="text-xs text-muted-foreground">第 1 页 / 共 1 页</div>
+          <div class="flex items-center gap-2">
+            <button id="logsPrevPageBtn" onclick="changeLogsPage(-1)"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+              上一页
+            </button>
+            <button id="logsNextPageBtn" onclick="changeLogsPage(1)"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+              下一页
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1262,6 +1475,313 @@
       <div class="rounded-lg border border-border bg-background overflow-hidden">
         <iframe src="/proxy_pool_page" title="代理池管理" class="w-full h-[80vh] border-0" loading="lazy">
         </iframe>
+      </div>
+    </div>
+
+    <!-- 服务负载分析面板 -->
+    <div id="panelLoadAnalysis" class="hidden">
+      <!-- 顶部操作栏 -->
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold">⚡ 服务负载分析</h2>
+          <span id="diagUptime" class="text-xs text-muted-foreground"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="diagLastUpdate" class="text-xs text-muted-foreground"></span>
+          <button onclick="loadDiagnostics()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border hover:bg-accent transition-colors">
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            刷新
+          </button>
+        </div>
+      </div>
+
+      <!-- 核心指标卡片 -->
+      <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-4">
+        <!-- 实时 RPM -->
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground mb-1">实时吞吐</div>
+          <div class="text-2xl font-bold" id="diagRpm">-</div>
+          <div class="text-xs text-muted-foreground">req/min</div>
+        </div>
+        <!-- 正在处理 -->
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground mb-1">正在处理</div>
+          <div class="text-2xl font-bold" id="diagInflight">-</div>
+          <div class="text-xs text-muted-foreground">请求</div>
+        </div>
+        <!-- 成功率 -->
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground mb-1">成功率 (5min)</div>
+          <div class="text-2xl font-bold" id="diagSuccessRate">-</div>
+          <div class="text-xs text-muted-foreground" id="diagSuccessFailed">-</div>
+        </div>
+        <!-- 平均耗时 -->
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground mb-1">平均耗时</div>
+          <div class="text-2xl font-bold" id="diagAvgDuration">-</div>
+          <div class="text-xs text-muted-foreground">ms</div>
+        </div>
+        <!-- P95 耗时 -->
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground mb-1">P95 耗时</div>
+          <div class="text-2xl font-bold" id="diagP95Duration">-</div>
+          <div class="text-xs text-muted-foreground">ms</div>
+        </div>
+        <!-- 事件循环延迟 -->
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground mb-1">Event Loop 延迟</div>
+          <div class="text-2xl font-bold" id="diagLoopLag">-</div>
+          <div class="text-xs text-muted-foreground" id="diagLoopLagMax">-</div>
+        </div>
+      </div>
+
+      <!-- 系统资源条 -->
+      <div class="grid grid-cols-2 md:grid-cols-7 gap-3 mb-4">
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">内存 RSS</div>
+          <div class="text-lg font-semibold" id="diagMemRss">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">CPU</div>
+          <div class="text-lg font-semibold" id="diagCpu">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">线程数</div>
+          <div class="text-lg font-semibold" id="diagThreads">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">Asyncio Tasks</div>
+          <div class="text-lg font-semibold" id="diagAsyncTasks">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">实时发送</div>
+          <div class="text-lg font-semibold" id="diagNetSend">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">实时接收</div>
+          <div class="text-lg font-semibold" id="diagNetRecv">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-3">
+          <div class="text-xs text-muted-foreground">累计请求</div>
+          <div class="text-lg font-semibold" id="diagTotalReqs">-</div>
+        </div>
+      </div>
+
+      <!-- 图表行 -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <!-- 吞吐量 / 错误时间线 -->
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-sm font-medium mb-3">吞吐量 & 错误 (每分钟)</h3>
+          <div id="chartTimeline" style="height:260px;"></div>
+        </div>
+        <!-- 耗时阶段分布 -->
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-sm font-medium mb-3">耗时阶段分析 (平均 ms)</h3>
+          <div id="chartBreakdown" style="height:260px;"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+        <!-- Event Loop 延迟趋势 -->
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-sm font-medium mb-3">Event Loop 延迟趋势 (ms)</h3>
+          <div id="chartLoopLag" style="height:220px;"></div>
+        </div>
+        <!-- Token 负载分布 -->
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-sm font-medium mb-3">Token 负载分布 (5min)</h3>
+          <div id="chartTokenDist" style="height:220px;"></div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-sm font-medium mb-3">带宽历史曲线 (最近30秒)</h3>
+          <div id="chartNetwork" style="height:220px;"></div>
+        </div>
+      </div>
+
+      <!-- 正在处理的请求列表 -->
+      <div class="rounded-lg border border-border bg-background p-4 mb-4">
+        <h3 class="text-sm font-medium mb-3">🔄 当前正在处理的请求</h3>
+        <div id="diagInflightTable" class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-xs text-muted-foreground border-b border-border">
+              <tr><th class="py-2 text-left">Request ID</th><th class="py-2 text-left">操作</th><th class="py-2 text-left">Token</th><th class="py-2 text-right">已耗时</th></tr>
+            </thead>
+            <tbody id="diagInflightBody" class="divide-y divide-border"></tbody>
+          </table>
+          <div id="diagInflightEmpty" class="text-center text-muted-foreground py-6 text-sm hidden">当前没有处理中的请求</div>
+        </div>
+      </div>
+
+      <!-- 慢请求排行 -->
+      <div class="rounded-lg border border-border bg-background p-4 mb-4">
+        <h3 class="text-sm font-medium mb-3">🐌 慢请求排行 (5min 内 Top 10)</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-xs text-muted-foreground border-b border-border">
+              <tr>
+                <th class="py-2 text-left">Request ID</th>
+                <th class="py-2 text-left">操作</th>
+                <th class="py-2 text-left">Token</th>
+                <th class="py-2 text-right">总耗时</th>
+                <th class="py-2 text-right">Token选择</th>
+                <th class="py-2 text-right">AT验证</th>
+                <th class="py-2 text-right">Project</th>
+                <th class="py-2 text-right">生成流水线</th>
+                <th class="py-2 text-right">槽位等待</th>
+                <th class="py-2 text-left">状态</th>
+              </tr>
+            </thead>
+            <tbody id="diagSlowBody" class="divide-y divide-border"></tbody>
+          </table>
+          <div id="diagSlowEmpty" class="text-center text-muted-foreground py-6 text-sm hidden">暂无慢请求数据</div>
+        </div>
+      </div>
+
+      <!-- 瓶颈诊断建议 -->
+      <div class="rounded-lg border border-border bg-background p-4 mb-4">
+        <h3 class="text-sm font-medium mb-3">🔍 瓶颈诊断</h3>
+        <div id="diagBottlenecks" class="space-y-2 text-sm"></div>
+      </div>
+
+      <!-- ========== 历史性能分析 ========== -->
+      <div class="border-t border-border pt-6 mt-2">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold">📊 历史性能分析 <span class="text-xs font-normal text-muted-foreground">(基于数据库日志)</span></h2>
+          <div class="flex items-center gap-2">
+            <select id="historyMinutes" onchange="loadHistoryDiag()" class="text-xs rounded-md border border-border bg-background px-2 py-1.5">
+              <option value="30">最近 30 分钟</option>
+              <option value="60" selected>最近 1 小时</option>
+              <option value="180">最近 3 小时</option>
+              <option value="360">最近 6 小时</option>
+              <option value="720">最近 12 小时</option>
+              <option value="1440">最近 24 小时</option>
+            </select>
+            <button onclick="loadHistoryDiag()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border hover:bg-accent transition-colors">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+              查询
+            </button>
+          </div>
+        </div>
+
+        <!-- 历史汇总指标 -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground mb-1">总请求</div>
+            <div class="text-xl font-bold" id="histTotal">-</div>
+            <div class="text-xs text-muted-foreground" id="histSuccFail">-</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground mb-1">平均总耗时</div>
+            <div class="text-xl font-bold" id="histAvgTotal">-</div>
+            <div class="text-xs text-muted-foreground">ms (成功请求)</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground mb-1">P95 总耗时</div>
+            <div class="text-xl font-bold" id="histP95Total">-</div>
+            <div class="text-xs text-muted-foreground">ms</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground mb-1">最慢请求</div>
+            <div class="text-xl font-bold" id="histMaxTotal">-</div>
+            <div class="text-xs text-muted-foreground">ms</div>
+          </div>
+        </div>
+
+        <!-- 历史图表 -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <div class="rounded-lg border border-border bg-background p-4">
+            <h3 class="text-sm font-medium mb-3">吞吐量 & 平均耗时 (每5分钟)</h3>
+            <div id="chartHistTimeline" style="height:280px;"></div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-4">
+            <h3 class="text-sm font-medium mb-3">阶段耗时瀑布图 (avg / P95 / P99 ms)</h3>
+            <div id="chartHistBreakdown" style="height:280px;"></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <div class="rounded-lg border border-border bg-background p-4">
+            <h3 class="text-sm font-medium mb-3">图片管线内部细分 (avg ms)</h3>
+            <div id="chartHistPipeline" style="height:280px;"></div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-4">
+            <h3 class="text-sm font-medium mb-3">各 Token 性能对比</h3>
+            <div id="chartHistTokenPerf" style="height:280px;"></div>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-border bg-background p-4 mb-4">
+          <h3 class="text-sm font-medium mb-3">🚨 异常 Token 排行榜</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="text-xs text-muted-foreground border-b border-border">
+                <tr>
+                  <th class="py-2 text-left">Token</th>
+                  <th class="py-2 text-right">总请求</th>
+                  <th class="py-2 text-right">成功率</th>
+                  <th class="py-2 text-right">平均耗时</th>
+                  <th class="py-2 text-right">P95耗时</th>
+                  <th class="py-2 text-left">风险判断</th>
+                </tr>
+              </thead>
+              <tbody id="histTokenRankBody" class="divide-y divide-border"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 历史耗时分阶段明细表 -->
+        <div class="rounded-lg border border-border bg-background p-4 mb-4">
+          <h3 class="text-sm font-medium mb-3">⏱️ 分阶段百分位耗时 (仅成功请求)</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="text-xs text-muted-foreground border-b border-border">
+                <tr>
+                  <th class="py-2 text-left">阶段</th>
+                  <th class="py-2 text-right">样本数</th>
+                  <th class="py-2 text-right">最小</th>
+                  <th class="py-2 text-right">平均</th>
+                  <th class="py-2 text-right">P50</th>
+                  <th class="py-2 text-right">P95</th>
+                  <th class="py-2 text-right">P99</th>
+                  <th class="py-2 text-right">最大</th>
+                </tr>
+              </thead>
+              <tbody id="histPhaseTableBody" class="divide-y divide-border"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 历史慢请求 Top 20 -->
+        <div class="rounded-lg border border-border bg-background p-4 mb-4">
+          <h3 class="text-sm font-medium mb-3">🐌 历史慢请求 Top 20</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="text-xs text-muted-foreground border-b border-border">
+                <tr>
+                  <th class="py-2 text-left">时间</th>
+                  <th class="py-2 text-left">Token</th>
+                  <th class="py-2 text-right">总耗时</th>
+                  <th class="py-2 text-right">Token选择</th>
+                  <th class="py-2 text-right">AT验证</th>
+                  <th class="py-2 text-right">Project</th>
+                  <th class="py-2 text-right">生成API</th>
+                  <th class="py-2 text-right">图片上传</th>
+                  <th class="py-2 text-right">放大</th>
+                  <th class="py-2 text-right">重试次数</th>
+                  <th class="py-2 text-left">根因标签</th>
+                  <th class="py-2 text-left">说明</th>
+                </tr>
+              </thead>
+              <tbody id="histSlowBody" class="divide-y divide-border"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 历史瓶颈诊断 -->
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-sm font-medium mb-3">🔍 历史瓶颈诊断</h3>
+          <div id="histBottlenecks" class="space-y-2 text-sm"></div>
+        </div>
       </div>
     </div>
 
@@ -1800,6 +2320,7 @@
 
   <script>
     let allTokens = [];
+    let tokenEmailSearchKeyword = "";
     let batchImportSelectedFile = null;
     let internalExportFiles = [];
     let internalExportMeta = {};
@@ -1814,6 +2335,9 @@
     let readmeDocCache = null;
     let projectVersionCache = null;
     let captchaPriorityOrder = [];
+    let currentLogsPage = 1;
+    const logsPageSize = 10;
+    let logPaginationMeta = { page: 1, page_size: 10, total: 0, total_pages: 1 };
     const $ = (id) => document.getElementById(id),
       checkAuth = () => {
         const t = localStorage.getItem("adminToken");
@@ -1884,6 +2408,77 @@
         } catch (e) {
           console.error("加载统计失败:", e);
         }
+      },
+      /* ===== 并发负载状态 ===== */
+      _concurrencyData = {},  // token_id -> { image_inflight, image_limit, ... }
+      loadConcurrencyStatus = async () => {
+        try {
+          const r = await apiRequest("/api/concurrency-status");
+          if (!r) return;
+          const d = await r.json();
+          _concurrencyData = d.tokens || {};
+          const s = d.summary || {};
+          const tc = s.token_count || 0;
+
+          // --- 图片负载统计 ---
+          const imgInflight = s.total_image_inflight || 0;
+          const imgIdle = s.image_idle || 0;
+          const imgBusy = s.image_busy || 0;
+          const imgFull = s.image_saturated || 0;
+          const setTxt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+          setTxt("statLoadImageInflight", imgInflight);
+          setTxt("statLoadImageIdle", imgIdle);
+          setTxt("statLoadImageBusy", imgBusy);
+          setTxt("statLoadImageFull", imgFull);
+
+          // 图片进度条：繁忙+满载 占总 token 比例
+          const imgBarEl = $("statLoadImageBar");
+          if (imgBarEl && tc > 0) {
+            const pct = Math.min(100, Math.round(((imgBusy + imgFull) / tc) * 100));
+            imgBarEl.style.width = pct + "%";
+            imgBarEl.className = "h-1.5 rounded-full transition-all duration-300 " +
+              (pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-orange-400" : "bg-green-500");
+          } else if (imgBarEl) { imgBarEl.style.width = "0%"; }
+
+          // --- 视频负载统计 ---
+          const vidInflight = s.total_video_inflight || 0;
+          const vidIdle = s.video_idle || 0;
+          const vidBusy = s.video_busy || 0;
+          const vidFull = s.video_saturated || 0;
+          setTxt("statLoadVideoInflight", vidInflight);
+          setTxt("statLoadVideoIdle", vidIdle);
+          setTxt("statLoadVideoBusy", vidBusy);
+          setTxt("statLoadVideoFull", vidFull);
+
+          const vidBarEl = $("statLoadVideoBar");
+          if (vidBarEl && tc > 0) {
+            const pct = Math.min(100, Math.round(((vidBusy + vidFull) / tc) * 100));
+            vidBarEl.style.width = pct + "%";
+            vidBarEl.className = "h-1.5 rounded-full transition-all duration-300 " +
+              (pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-orange-400" : "bg-green-500");
+          } else if (vidBarEl) { vidBarEl.style.width = "0%"; }
+        } catch (e) {
+          console.error("加载并发状态失败:", e);
+        }
+      },
+      buildTokenLoadCell = (t) => {
+        const info = _concurrencyData[String(t.id)] || _concurrencyData[Number(t.id)];
+        if (!info) return '<td class="py-2.5 px-3 text-xs text-muted-foreground">-</td>';
+        const fmtPart = (inflight, limit, emoji) => {
+          const limitStr = (limit === null || limit === undefined) ? "∞" : limit;
+          if (inflight === 0) {
+            return `<span class="inline-flex items-center gap-0.5 text-green-600" title="空闲">${emoji}<span class="inline-block w-1.5 h-1.5 rounded-full bg-green-500"></span>${inflight}/${limitStr}</span>`;
+          }
+          if (limit !== null && limit !== undefined && inflight >= limit) {
+            return `<span class="inline-flex items-center gap-0.5 text-red-600 font-semibold" title="满载">${emoji}<span class="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>${inflight}/${limitStr}</span>`;
+          }
+          return `<span class="inline-flex items-center gap-0.5 text-orange-600" title="繁忙">${emoji}<span class="inline-block w-1.5 h-1.5 rounded-full bg-orange-400"></span>${inflight}/${limitStr}</span>`;
+        };
+        const parts = [];
+        if (t.image_enabled) parts.push(fmtPart(info.image_inflight || 0, info.image_limit, "🖼"));
+        if (t.video_enabled) parts.push(fmtPart(info.video_inflight || 0, info.video_limit, "🎬"));
+        if (parts.length === 0) return '<td class="py-2.5 px-3 text-xs text-muted-foreground">-</td>';
+        return `<td class="py-2.5 px-3 text-xs whitespace-nowrap">${parts.join(" ")}</td>`;
       },
       renderProjectVersionBadge = (payload) => {
         const badge = $("projectVersionBadge");
@@ -2160,10 +2755,18 @@
           .replace(/\//g, "-");
       },
       isCookieInvalidNeedReloginToken = (t) =>
-        String(t?.ban_reason || "").trim() === "cookie_invalid_need_relogin",
+        String(t?.disable_reason_code || t?.ban_reason || "").trim() ===
+        "cookie_invalid_need_relogin",
+      isHardBannedReason = (reasonRaw) =>
+        ["429_rate_limit", "permission_denied", "google_account_disabled"].includes(
+          String(reasonRaw || "").trim()
+        ),
       isBannedToken = (t) => {
-        const reason = String(t?.ban_reason || "").trim();
-        return Boolean(reason) && reason !== "cookie_invalid_need_relogin";
+        if (t?.disable_hard_banned === true) return true;
+        const reason = String(
+          t?.disable_reason_code || t?.ban_reason || ""
+        ).trim();
+        return isHardBannedReason(reason);
       },
       getRefreshStatusMeta = (statusRaw, token = null) => {
         let status = String(statusRaw || "").toUpperCase();
@@ -2206,30 +2809,48 @@
         if (reason === "429_rate_limit") return "429频率封禁";
         if (reason === "permission_denied") return "403权限封禁";
         if (reason === "google_account_disabled") return "Google账号封禁";
+        if (reason === "manual_disabled") return "手动禁用";
+        if (reason === "import_disabled") return "导入时设为禁用";
+        if (reason === "token_expired") return "Token已过期";
+        if (reason === "refresh_failed") return "刷新失败后自动禁用";
+        if (reason === "consecutive_error_limit") return "连续错误达到阈值自动禁用";
+        if (reason === "unknown_inactive") return "已禁用(原因未记录)";
         return reason;
       },
       formatBanStatusInfo = (t) => {
-        const reason = String(t?.ban_reason || "").trim();
+        const reason = String(
+          t?.disable_reason_code || t?.ban_reason || ""
+        ).trim();
+        const label = String(t?.disable_reason_label || "").trim() || formatBanReasonLabel(reason);
+        const detail =
+          String(t?.disable_reason_detail || "").trim() ||
+          (label && label !== "未封禁" ? label : "");
+        const time = formatRefreshTime(t?.disable_effective_at || t?.banned_at);
         if (!reason) {
           return {
             isBanned: false,
+            isDisabled: Boolean(!t?.is_active),
             label: "未封禁",
             text: "未封禁",
+            detail: "",
             time: "-",
             badgeClass: "bg-gray-100 text-gray-700",
           };
         }
-        const label = formatBanReasonLabel(reason);
-        const time = formatRefreshTime(t?.banned_at);
+        const text = time && time !== "-" ? `${label} · ${time}` : label;
         return {
           isBanned: true,
+          isDisabled: Boolean(!t?.is_active),
           label,
-          text: time && time !== "-" ? `${label} · ${time}` : label,
+          text,
+          detail,
           time,
           badgeClass:
             reason === "cookie_invalid_need_relogin"
               ? "bg-amber-100 text-amber-800"
-              : "bg-red-100 text-red-800",
+              : isHardBannedReason(reason)
+                ? "bg-red-100 text-red-800"
+                : "bg-gray-100 text-gray-700",
         };
       },
       updateBannedTokensSection = (count) => {
@@ -2355,6 +2976,36 @@
           return `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-purple-50 text-purple-700">会员</span>`;
         }
       },
+      normalizeTokenEmailSearchKeyword = (value) =>
+        String(value || "").trim().toLowerCase(),
+      filterTokensByEmail = (list) => {
+        if (!Array.isArray(list)) return [];
+        const keyword = normalizeTokenEmailSearchKeyword(tokenEmailSearchKeyword);
+        if (!keyword) return list;
+        return list.filter((item) =>
+          String(item?.email || "").toLowerCase().includes(keyword)
+        );
+      },
+      updateTokenSearchSummary = (matchedCount, totalCount) => {
+        const summary = $("tokenSearchSummary");
+        if (!summary) return;
+        const keyword = normalizeTokenEmailSearchKeyword(tokenEmailSearchKeyword);
+        if (!keyword) {
+          summary.textContent = totalCount > 0 ? `共 ${totalCount} 个` : "";
+          return;
+        }
+        summary.textContent = `搜索 "${tokenEmailSearchKeyword}"：${matchedCount}/${totalCount}`;
+      },
+      applyTokenEmailSearch = (value) => {
+        tokenEmailSearchKeyword = String(value || "");
+        renderTokens();
+      },
+      clearTokenEmailSearch = () => {
+        tokenEmailSearchKeyword = "";
+        const input = $("tokenEmailSearchInput");
+        if (input) input.value = "";
+        renderTokens();
+      },
       buildTokenRow = (t, options = {}) => {
         const hardBanned = Boolean(options.hardBanned) || isBannedToken(t);
         const emailRaw = String(t.email || "-");
@@ -2401,13 +3052,21 @@
               ? "bg-green-50 text-green-700"
               : "bg-gray-100 text-gray-700";
         const statusText = hardBanned
-          ? banInfo.label
+          ? "封禁"
           : isCookieInvalidNeedReloginToken(t)
-            ? "Cookie失效(需重新自动登录)"
+            ? "待重登"
             : t.is_active
               ? "活跃"
               : "禁用";
-        const statusCellHtml = `<td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${statusClass}">${statusText}</span></td>`;
+        const statusReasonText =
+          !t.is_active && banInfo.label && banInfo.label !== "未封禁"
+            ? banInfo.text
+            : "";
+        const statusReasonDetail =
+          !t.is_active && banInfo.detail
+            ? banInfo.detail
+            : statusReasonText;
+        const statusCellHtml = `<td class="py-2.5 px-3"><div class="flex flex-col gap-1"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs w-fit ${statusClass}">${statusText}</span>${statusReasonText ? `<div class="max-w-[190px] text-[11px] leading-4 text-muted-foreground whitespace-normal break-words" title="${escapeHtml(statusReasonDetail || statusReasonText)}">${escapeHtml(statusReasonText)}</div>` : ""}</div></td>`;
         const creditsCellHtml = hardBanned
           ? `<span class="text-sm text-muted-foreground">${escapeHtml(creditsDisplay)}</span>`
           : `<button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button>`;
@@ -2428,21 +3087,28 @@
           method: t.last_refresh_method || "-",
           detail: t.last_refresh_detail || "-",
         };
-        return `<tr${hardBanned ? ' class="bg-red-50/30"' : ""}><td class="py-2.5 px-3 email-cell">${emailDisplay}</td><td class="py-2.5 px-3 text-xs cookie-cell">${cookieDisplay}</td><td class="py-2.5 px-3 text-xs cookie-file-cell">${cookieFileDisplay}</td>${statusCellHtml}<td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3 text-xs cookie-refresh-remaining-cell">${cookieRefreshRemainingDisplay}</td><td class="py-2.5 px-3 text-xs refresh-record-cell">${refreshRecordDisplay}</td><td class="py-2.5 px-3">${creditsCellHtml}</td><td class="py-2.5 px-3">${accountTypeDisplay}</td><td class="py-2.5 px-3 text-xs project-name-cell">${projectDisplay}</td><td class="py-2.5 px-3 text-xs project-id-cell">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground max-w-[200px] truncate" title="${escapeHtml(t.remark || "-")}">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right action-cell">${refreshAtBtn}${refreshCookieBtn}<button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button>${toggleBtn}<button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
+        const loadCellHtml = buildTokenLoadCell(t);
+        return `<tr${hardBanned ? ' class="bg-red-50/30"' : ""}><td class="py-2.5 px-3 email-cell">${emailDisplay}</td><td class="py-2.5 px-3 text-xs cookie-cell">${cookieDisplay}</td><td class="py-2.5 px-3 text-xs cookie-file-cell">${cookieFileDisplay}</td>${statusCellHtml}<td class="py-2.5 px-3 text-xs">${expiryDisplay}</td><td class="py-2.5 px-3 text-xs cookie-refresh-remaining-cell">${cookieRefreshRemainingDisplay}</td><td class="py-2.5 px-3 text-xs refresh-record-cell">${refreshRecordDisplay}</td><td class="py-2.5 px-3">${creditsCellHtml}</td><td class="py-2.5 px-3">${accountTypeDisplay}</td>${loadCellHtml}<td class="py-2.5 px-3 text-xs project-name-cell">${projectDisplay}</td><td class="py-2.5 px-3 text-xs project-id-cell">${projectIdDisplay}</td><td class="py-2.5 px-3">${imageDisplay}</td><td class="py-2.5 px-3">${videoDisplay}</td><td class="py-2.5 px-3">${t.error_count || 0}</td><td class="py-2.5 px-3 text-xs text-muted-foreground max-w-[200px] truncate" title="${escapeHtml(t.remark || "-")}">${t.remark || "-"}</td><td class="py-2.5 px-3 text-right action-cell">${refreshAtBtn}${refreshCookieBtn}<button onclick="openEditModal(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button>${toggleBtn}<button onclick="deleteToken(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`;
       },
       renderTokens = () => {
         const tb = $("tokenTableBody");
         const bannedTb = $("bannedTokenTableBody");
         refreshRecordMap = {};
         refreshHistoryCache = {};
-        const visibleTokens = Array.isArray(allTokens)
-          ? allTokens.filter((item) => !isBannedToken(item))
-          : [];
-        const bannedTokens = Array.isArray(allTokens)
-          ? allTokens.filter((item) => isBannedToken(item))
-          : [];
-        tb.innerHTML = visibleTokens.map((t) => buildTokenRow(t)).join("");
-        bannedTb.innerHTML = bannedTokens.map((t) => buildTokenRow(t, { hardBanned: true })).join("");
+        const filteredTokens = filterTokensByEmail(allTokens);
+        const visibleTokens = filteredTokens.filter((item) => !isBannedToken(item));
+        const bannedTokens = filteredTokens.filter((item) => isBannedToken(item));
+        const totalCount = Array.isArray(allTokens) ? allTokens.length : 0;
+        const emptyVisibleText = totalCount === 0
+          ? "暂无 Token"
+          : "未找到匹配的 Token";
+        updateTokenSearchSummary(filteredTokens.length, totalCount);
+        tb.innerHTML = visibleTokens.length
+          ? visibleTokens.map((t) => buildTokenRow(t)).join("")
+          : `<tr><td colspan="17" class="py-8 px-3 text-center text-sm text-muted-foreground">${emptyVisibleText}</td></tr>`;
+        bannedTb.innerHTML = bannedTokens.length
+          ? bannedTokens.map((t) => buildTokenRow(t, { hardBanned: true })).join("")
+          : "";
         updateBannedTokensSection(bannedTokens.length);
         updateCookieRefreshCountdowns();
         ensureCookieRefreshTicker();
@@ -2584,6 +3250,7 @@
         }
       },
       refreshTokens = async () => {
+        await loadConcurrencyStatus();
         await loadTokens();
         await loadStats();
       },
@@ -2864,15 +3531,16 @@
 
         const action = targetActive ? "enable" : "disable";
         const actionText = targetActive ? "启用" : "禁用";
-        const candidates = allTokens.filter(
+        const filteredTokens = filterTokensByEmail(allTokens);
+        const candidates = filteredTokens.filter(
           (t) => t && t.id && t.is_active !== targetActive && (!targetActive || !isBannedToken(t)),
         );
 
         if (candidates.length === 0) {
-          if (targetActive && allTokens.some((t) => t && isBannedToken(t))) {
+          if (targetActive && filteredTokens.some((t) => t && isBannedToken(t))) {
             return showToast("封禁Token不会参与批量启用", "info");
           }
-          return showToast(`所有Token已${actionText}`, "info");
+          return showToast(`当前搜索结果中的Token已${actionText}`, "info");
         }
 
         if (!confirm(`确定要批量${actionText} ${candidates.length} 个Token吗？`)) {
@@ -3914,6 +4582,136 @@
         const enabled = $("cfgMediaProxyEnabled").checked;
         $("mediaProxyUrlInput").classList.toggle("hidden", !enabled);
       },
+      normalizeRpaBitbrowserIdList = (value) => {
+        const raw = Array.isArray(value)
+          ? value
+          : String(value || "")
+            .replace(/\r/g, "\n")
+            .replace(/,/g, "\n")
+            .split("\n");
+        const normalized = [];
+        const seen = new Set();
+        raw.forEach((item) => {
+          const text = String(item || "").trim();
+          if (!text || seen.has(text)) return;
+          seen.add(text);
+          normalized.push(text);
+        });
+        return normalized;
+      },
+      getRpaBitbrowserListContainerId = (scope) =>
+        scope === "server"
+          ? "cfgRpaBitbrowserIdServerList"
+          : "cfgRpaBitbrowserIdLocalList",
+      getRpaBitbrowserSummaryId = (scope) =>
+        scope === "server"
+          ? "cfgRpaBitbrowserIdServerSummary"
+          : "cfgRpaBitbrowserIdLocalSummary",
+      getRpaBitbrowserCountId = (scope) =>
+        scope === "server"
+          ? "cfgRpaBitbrowserIdServerCount"
+          : "cfgRpaBitbrowserIdLocalCount",
+      updateRpaBitbrowserIdSummary = (scope) => {
+        const target = $(getRpaBitbrowserSummaryId(scope));
+        if (!target) return;
+        const values = collectRpaBitbrowserIdList(scope);
+        const countTarget = $(getRpaBitbrowserCountId(scope));
+        if (countTarget) {
+          countTarget.textContent = `${values.length} 个`;
+        }
+        if (!values.length) {
+          target.innerHTML = '<span class="text-muted-foreground">未配置</span>';
+          return;
+        }
+        const preview = values
+          .slice(0, 3)
+          .map((value) => `<div class="font-mono">${escapeHtml(value)}</div>`)
+          .join("");
+        const remain = values.length - 3;
+        const remainText = remain > 0
+          ? `<div class="text-muted-foreground mt-1">另有 ${remain} 个窗口 ID</div>`
+          : "";
+        target.innerHTML = `
+          <div class="text-muted-foreground mb-1">共 ${values.length} 个窗口 ID</div>
+          ${preview}
+          ${remainText}
+        `;
+      },
+      renderRpaBitbrowserIdRows = (scope, values = [], minRows = 5) => {
+        const container = $(getRpaBitbrowserListContainerId(scope));
+        if (!container) return;
+        const normalized = normalizeRpaBitbrowserIdList(values);
+        const rowValues = normalized.slice();
+        const targetCount = Math.max(minRows, rowValues.length || 0);
+        while (rowValues.length < targetCount) rowValues.push("");
+        const labelPrefix = scope === "server" ? "服务器窗口ID" : "本地窗口ID";
+        container.innerHTML = rowValues
+          .map(
+            (value, index) => `
+              <div class="group flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-2 transition-colors hover:border-slate-300" data-rpa-bitbrowser-row="${escapeHtml(scope)}">
+                <div class="inline-flex h-8 min-w-8 items-center justify-center rounded-md bg-slate-100 px-2 text-xs font-medium text-slate-600">
+                  #${index + 1}
+                </div>
+                <input
+                  type="text"
+                  data-rpa-bitbrowser-input="1"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="${escapeHtml(`${labelPrefix} #${index + 1}`)}"
+                  value="${escapeHtml(value)}" />
+                <button
+                  type="button"
+                  onclick="removeRpaBitbrowserIdRow('${scope}', this)"
+                  title="删除这一行"
+                  class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:border-red-200 hover:bg-red-50 hover:text-red-700">
+                  <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                  </svg>
+                </button>
+              </div>
+            `,
+          )
+          .join("");
+        updateRpaBitbrowserIdSummary(scope);
+      },
+      addRpaBitbrowserIdRow = (scope, value = "") => {
+        const container = $(getRpaBitbrowserListContainerId(scope));
+        const rawValues = container
+          ? Array.from(container.querySelectorAll("[data-rpa-bitbrowser-input]")).map(
+            (input) => input.value,
+          )
+          : [];
+        rawValues.push(String(value || "").trim());
+        renderRpaBitbrowserIdRows(scope, rawValues, Math.max(5, rawValues.length));
+      },
+      removeRpaBitbrowserIdRow = (scope, trigger) => {
+        const container = $(getRpaBitbrowserListContainerId(scope));
+        if (!container) return;
+        const row = trigger && trigger.closest("[data-rpa-bitbrowser-row]");
+        if (row) row.remove();
+        const currentValues = collectRpaBitbrowserIdList(scope);
+        renderRpaBitbrowserIdRows(scope, currentValues);
+      },
+      collectRpaBitbrowserIdList = (scope) => {
+        const container = $(getRpaBitbrowserListContainerId(scope));
+        if (!container) return [];
+        const values = Array.from(
+          container.querySelectorAll("[data-rpa-bitbrowser-input]"),
+        ).map((input) => input.value);
+        return normalizeRpaBitbrowserIdList(values);
+      },
+      openRpaBitbrowserPoolModal = () => {
+        $("rpaBitbrowserPoolModal").classList.remove("hidden");
+      },
+      closeRpaBitbrowserPoolModal = () => {
+        $("rpaBitbrowserPoolModal").classList.add("hidden");
+        updateRpaBitbrowserIdSummary("local");
+        updateRpaBitbrowserIdSummary("server");
+      },
       applyServerModePreset = () => {
         const mode = ($("cfgServerMode").value || "server").toLowerCase();
         if (mode === "local") {
@@ -3942,11 +4740,18 @@
               ? `当前检测公网IP: ${detectedIp}，已命中默认服务器公网IP并按服务器模式运行`
               : `当前检测公网IP: ${detectedIp}，未命中默认服务器公网IP`
             : "启动时会检测本机公网IP，命中该值时自动按服务器模式运行";
-          $("cfgRpaBitbrowserIdLocal").value =
+          renderRpaBitbrowserIdRows(
+            "local",
+            d.config.rpa_test_bitbrowser_ids_local ||
             d.config.rpa_test_bitbrowser_id_local ||
-            "f1ef6f8ccb6146988c67a63b92a78971";
-          $("cfgRpaBitbrowserIdServer").value =
-            d.config.rpa_test_bitbrowser_id_server || "";
+            [],
+          );
+          renderRpaBitbrowserIdRows(
+            "server",
+            d.config.rpa_test_bitbrowser_ids_server ||
+            d.config.rpa_test_bitbrowser_id_server ||
+            [],
+          );
           $("cfgBlockGemini25FlashImage").checked =
             d.config.block_gemini_25_flash_image !== false;
         } catch (e) {
@@ -3958,8 +4763,8 @@
         const host = $("cfgServerHost").value.trim();
         const port = parseInt($("cfgServerPort").value, 10) || 8000;
         const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim();
-        const localBitId = $("cfgRpaBitbrowserIdLocal").value.trim();
-        const serverBitId = $("cfgRpaBitbrowserIdServer").value.trim();
+        const localBitIds = collectRpaBitbrowserIdList("local");
+        const serverBitIds = collectRpaBitbrowserIdList("server");
         const blockGemini25FlashImage = $("cfgBlockGemini25FlashImage").checked;
 
         if (!host) return showToast("请输入监听地址", "error");
@@ -3974,8 +4779,8 @@
               host: host,
               port: port,
               default_public_ip: defaultPublicIp || null,
-              rpa_test_bitbrowser_id_local: localBitId || null,
-              rpa_test_bitbrowser_id_server: serverBitId || null,
+              rpa_test_bitbrowser_ids_local: localBitIds,
+              rpa_test_bitbrowser_ids_server: serverBitIds,
               block_gemini_25_flash_image: blockGemini25FlashImage,
             }),
           });
@@ -4643,11 +5448,78 @@
           ? `${Math.max(0, Math.min(100, progress))}%`
           : "-";
       },
-      loadLogs = async () => {
+      renderTodayErrorSummary = (summary) => {
+        const totalEl = $("logsTodayErrorTotal");
+        const uniqueEl = $("logsTodayErrorUnique");
+        const countEl = $("logsTotalCount");
+        const metaEl = $("logsTodayErrorMeta");
+        const body = $("logsTodayErrorBody");
+        const totalErrors = Number(summary?.total_errors || 0);
+        const uniqueErrors = Number(summary?.unique_errors || 0);
+        const dateText = String(summary?.date || "");
+        const timezoneText = String(summary?.timezone || "Asia/Shanghai");
+        if (totalEl) totalEl.textContent = String(totalErrors);
+        if (uniqueEl) uniqueEl.textContent = String(uniqueErrors);
+        if (countEl) countEl.textContent = String(logPaginationMeta.total || 0);
+        if (metaEl) {
+          metaEl.textContent = dateText
+            ? `${dateText} ${timezoneText} 今日错误汇总`
+            : "按北京时间统计";
+        }
+        if (!body) return;
+        const items = Array.isArray(summary?.items) ? summary.items : [];
+        if (!items.length) {
+          body.innerHTML =
+            '<tr><td colspan="5" class="py-6 px-3 text-center text-sm text-muted-foreground">今日暂无错误日志</td></tr>';
+          return;
+        }
+        body.innerHTML = items
+          .map((item) => {
+            const statusCode = Number(item.sample_status_code || 0);
+            const statusCodeClass = statusCode >= 500
+              ? "bg-red-50 text-red-700"
+              : statusCode >= 400
+                ? "bg-amber-50 text-amber-700"
+                : "bg-slate-100 text-slate-700";
+            return `<tr>
+              <td class="py-2.5 px-3 text-xs max-w-[520px]"><div class="line-clamp-2" title="${escapeLogHtml(item.signature || "-")}">${escapeLogHtml(item.signature || "-")}</div></td>
+              <td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-red-50 text-red-700">${escapeLogHtml(item.count ?? 0)}</span></td>
+              <td class="py-2.5 px-3 text-xs">${escapeLogHtml(item.sample_operation || "-")}</td>
+              <td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${statusCodeClass}">${escapeLogHtml(item.sample_status_code ?? "-")}</span></td>
+              <td class="py-2.5 px-3 text-xs ${item.sample_token_email ? "text-blue-600" : "text-muted-foreground"}">${escapeLogHtml(item.sample_token_email || "未知")}</td>
+            </tr>`;
+          })
+          .join("");
+      },
+      updateLogsPagination = () => {
+        const info = $("logsPaginationInfo");
+        const prevBtn = $("logsPrevPageBtn");
+        const nextBtn = $("logsNextPageBtn");
+        const page = Number(logPaginationMeta.page || 1);
+        const totalPages = Number(logPaginationMeta.total_pages || 1);
+        const total = Number(logPaginationMeta.total || 0);
+        if (info) {
+          info.textContent = `第 ${page} 页 / 共 ${totalPages} 页，共 ${total} 条`;
+        }
+        if (prevBtn) prevBtn.disabled = page <= 1;
+        if (nextBtn) nextBtn.disabled = page >= totalPages;
+      },
+      changeLogsPage = async (delta) => {
+        const nextPage = Math.max(1, Number(currentLogsPage || 1) + Number(delta || 0));
+        if (nextPage === currentLogsPage) return;
+        if (nextPage > Number(logPaginationMeta.total_pages || 1)) return;
+        currentLogsPage = nextPage;
+        await loadLogs(currentLogsPage);
+      },
+      loadLogs = async (page = currentLogsPage) => {
         try {
-          const r = await apiRequest("/api/logs?limit=100");
+          currentLogsPage = Math.max(1, Number(page || 1));
+          const r = await apiRequest(`/api/logs?page=${encodeURIComponent(String(currentLogsPage))}&page_size=${encodeURIComponent(String(logsPageSize))}`);
           if (!r) return;
-          const logs = await r.json();
+          const payload = await r.json();
+          const logs = Array.isArray(payload?.items) ? payload.items : [];
+          logPaginationMeta = payload?.pagination || { page: 1, page_size: logsPageSize, total: 0, total_pages: 1 };
+          currentLogsPage = Number(logPaginationMeta.page || currentLogsPage || 1);
           window.allLogs = logs;
           window.logDetailCache = window.logDetailCache || Object.create(null);
           window.logListMeta = Object.create(null);
@@ -4667,6 +5539,8 @@
               delete window.logDetailCache[key];
             }
           });
+          renderTodayErrorSummary(payload?.today_error_summary || {});
+          updateLogsPagination();
           const tb = $("logsTableBody");
           const getProxySourceLabel = (source) => {
             if (source === "system") return "系统";
@@ -4702,7 +5576,7 @@
         }
       },
       refreshLogs = async () => {
-        await loadLogs();
+        await loadLogs(currentLogsPage);
       },
       clearAllLogs = async () => {
         if (!confirm("确定要清空所有日志吗？此操作不可恢复！")) return;
@@ -4715,6 +5589,8 @@
             window.logListMeta = Object.create(null);
             window.activeLogDetailId = null;
             resetLogMediaCache();
+            currentLogsPage = 1;
+            logPaginationMeta = { page: 1, page_size: logsPageSize, total: 0, total_pages: 1 };
             showToast("日志已清空", "success");
             await loadLogs();
           } else {
@@ -4957,7 +5833,7 @@
       },
       switchTab = (t) => {
         const cap = (n) => n.charAt(0).toUpperCase() + n.slice(1);
-        ["tokens", "settings", "logs", "accountPool", "proxyPool"].forEach((n) => {
+        ["tokens", "settings", "logs", "accountPool", "proxyPool", "loadAnalysis"].forEach((n) => {
           const active = n === t;
           $(`panel${cap(n)}`).classList.toggle("hidden", !active);
           $(`tab${cap(n)}`).classList.toggle("border-primary", active);
@@ -4979,6 +5855,10 @@
           loadATAutoRefreshConfig();
         } else if (t === "logs") {
           loadLogs();
+        } else if (t === "loadAnalysis") {
+          loadDiagnostics();
+          startDiagAutoRefresh();
+          loadHistoryDiag(); // 同时加载历史分析
         }
       };
 
@@ -5250,12 +6130,685 @@
       syncLogDetailViewState();
     }
 
+    // ========== 负载分析面板 ==========
+    let _diagAutoRefreshTimer = null;
+    let _diagCharts = {};
+
+    function startDiagAutoRefresh() {
+      stopDiagAutoRefresh();
+      _diagAutoRefreshTimer = setInterval(() => {
+        if (!$("panelLoadAnalysis") || $("panelLoadAnalysis").classList.contains("hidden")) {
+          stopDiagAutoRefresh();
+          return;
+        }
+        loadDiagnostics();
+      }, 5000);
+    }
+
+    function stopDiagAutoRefresh() {
+      if (_diagAutoRefreshTimer) {
+        clearInterval(_diagAutoRefreshTimer);
+        _diagAutoRefreshTimer = null;
+      }
+    }
+
+    async function loadDiagnostics() {
+      try {
+        const resp = await fetch("/api/diagnostics", {
+          headers: { Authorization: `Bearer ${localStorage.getItem("adminToken")}` },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const d = await resp.json();
+        renderDiagnostics(d);
+        $("diagLastUpdate").textContent = "更新于 " + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error("diagnostics fetch failed", e);
+      }
+    }
+
+    function fmtMs(ms) {
+      if (ms == null || ms === 0) return "0";
+      if (ms < 1000) return ms + "";
+      return (ms / 1000).toFixed(1) + "k";
+    }
+
+    function fmtUptime(sec) {
+      if (sec < 60) return sec + "秒";
+      if (sec < 3600) return Math.floor(sec / 60) + "分钟";
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      return h + "小时" + (m > 0 ? m + "分" : "");
+    }
+
+    function fmtKbps(kbps) {
+      const n = Number(kbps || 0);
+      if (n <= 0) return "0 KB/s";
+      if (n >= 1024) return (n / 1024).toFixed(1) + " MB/s";
+      return n.toFixed(0) + " KB/s";
+    }
+
+    function renderDiagnostics(d) {
+      // Uptime
+      $("diagUptime").textContent = "运行 " + fmtUptime(d.uptime_seconds);
+
+      // Core metrics
+      $("diagRpm").textContent = d.window.rpm;
+      $("diagInflight").textContent = d.inflight.count;
+      $("diagSuccessRate").textContent = d.window.success_rate + "%";
+      $("diagSuccessRate").className = "text-2xl font-bold " + (d.window.success_rate >= 95 ? "text-green-500" : d.window.success_rate >= 80 ? "text-yellow-500" : "text-red-500");
+      $("diagSuccessFailed").textContent = `✓${d.window.success} ✗${d.window.failed}`;
+      $("diagAvgDuration").textContent = fmtMs(d.duration.avg);
+      $("diagP95Duration").textContent = fmtMs(d.duration.p95);
+      $("diagP95Duration").className = "text-2xl font-bold " + (d.duration.p95 > 60000 ? "text-red-500" : d.duration.p95 > 30000 ? "text-yellow-500" : "");
+
+      // Event loop
+      $("diagLoopLag").textContent = d.event_loop.avg_lag_ms + " ms";
+      $("diagLoopLag").className = "text-2xl font-bold " + (d.event_loop.avg_lag_ms > 100 ? "text-red-500" : d.event_loop.avg_lag_ms > 30 ? "text-yellow-500" : "");
+      $("diagLoopLagMax").textContent = "最大: " + d.event_loop.max_lag_ms + " ms";
+
+      // System
+      const sys = d.system || {};
+      $("diagMemRss").textContent = sys.memory_rss_mb > 0 ? sys.memory_rss_mb + " MB" : "N/A";
+      $("diagCpu").textContent = sys.cpu_percent >= 0 ? sys.cpu_percent + "%" : "N/A";
+      $("diagThreads").textContent = sys.threads > 0 ? sys.threads : "N/A";
+      $("diagAsyncTasks").textContent = sys.asyncio_tasks >= 0 ? sys.asyncio_tasks : "N/A";
+      $("diagNetSend").textContent = fmtKbps(d.network?.latest_send_kbps || 0);
+      $("diagNetRecv").textContent = fmtKbps(d.network?.latest_recv_kbps || 0);
+      $("diagTotalReqs").textContent = d.totals.requests;
+
+      // In-flight table
+      const inflightBody = $("diagInflightBody");
+      const inflightEmpty = $("diagInflightEmpty");
+      if (d.inflight.requests.length === 0) {
+        inflightBody.innerHTML = "";
+        inflightEmpty.classList.remove("hidden");
+      } else {
+        inflightEmpty.classList.add("hidden");
+        inflightBody.innerHTML = d.inflight.requests.map(r => {
+          const elapsed = r.elapsed_ms;
+          const cls = elapsed > 60000 ? "text-red-500 font-semibold" : elapsed > 30000 ? "text-yellow-600" : "";
+          return `<tr><td class="py-1.5 font-mono text-xs">${r.request_id}</td><td class="py-1.5">${r.operation || "-"}</td><td class="py-1.5">${r.token_id ?? "-"}</td><td class="py-1.5 text-right ${cls}">${(elapsed / 1000).toFixed(1)}s</td></tr>`;
+        }).join("");
+      }
+
+      // Slow requests
+      const slowBody = $("diagSlowBody");
+      const slowEmpty = $("diagSlowEmpty");
+      if (d.slow_requests.length === 0) {
+        slowBody.innerHTML = "";
+        slowEmpty.classList.remove("hidden");
+      } else {
+        slowEmpty.classList.add("hidden");
+        slowBody.innerHTML = d.slow_requests.map(r => {
+          const statusCls = r.status === "success" ? "text-green-500" : "text-red-500";
+          return `<tr>
+            <td class="py-1.5 font-mono text-xs">${r.request_id}</td>
+            <td class="py-1.5">${r.operation || "-"}</td>
+            <td class="py-1.5">${r.token_id ?? "-"}</td>
+            <td class="py-1.5 text-right font-semibold">${fmtMs(r.duration_ms)}</td>
+            <td class="py-1.5 text-right">${fmtMs(r.token_select_ms)}</td>
+            <td class="py-1.5 text-right">${fmtMs(r.ensure_at_ms)}</td>
+            <td class="py-1.5 text-right">${fmtMs(r.ensure_project_ms)}</td>
+            <td class="py-1.5 text-right">${fmtMs(r.generation_pipeline_ms)}</td>
+            <td class="py-1.5 text-right">${fmtMs(r.slot_wait_ms)}</td>
+            <td class="py-1.5 ${statusCls}">${r.status}</td>
+          </tr>`;
+        }).join("");
+      }
+
+      // Bottleneck analysis
+      renderBottlenecks(d);
+
+      // Charts
+      renderDiagCharts(d);
+    }
+
+    function renderBottlenecks(d) {
+      const items = [];
+      const warn = (icon, text) => items.push(`<div class="flex items-start gap-2 p-2 rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800"><span>${icon}</span><span>${text}</span></div>`);
+      const danger = (icon, text) => items.push(`<div class="flex items-start gap-2 p-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800"><span>${icon}</span><span>${text}</span></div>`);
+      const ok = (icon, text) => items.push(`<div class="flex items-start gap-2 p-2 rounded-md bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"><span>${icon}</span><span>${text}</span></div>`);
+
+      // Event loop lag
+      if (d.event_loop.max_lag_ms > 200) {
+        danger("🔴", `Event Loop 最大延迟 ${d.event_loop.max_lag_ms}ms，说明有同步阻塞操作卡住了主线程（如 CPU 密集计算、同步 I/O）。建议检查是否有 blocking call。`);
+      } else if (d.event_loop.avg_lag_ms > 50) {
+        warn("🟡", `Event Loop 平均延迟 ${d.event_loop.avg_lag_ms}ms，略高。在高并发下可能导致请求排队。`);
+      } else {
+        ok("🟢", `Event Loop 延迟正常 (${d.event_loop.avg_lag_ms}ms)，异步调度健康。`);
+      }
+
+      // Token selection time
+      const tsel = d.breakdown.token_select_ms;
+      if (tsel.p95 > 500) {
+        danger("🔴", `Token 选择 P95=${tsel.p95}ms，耗时过长。可能原因：全局锁竞争、Token 可用数不足、数据库查询慢。建议增加 Token 数量或检查 LoadBalancer 锁等待。`);
+      } else if (tsel.avg > 100) {
+        warn("🟡", `Token 选择平均 ${tsel.avg}ms，偏慢。Token 池可能偏小或锁竞争较重。`);
+      }
+
+      // AT validation
+      const at = d.breakdown.ensure_at_ms;
+      if (at.p95 > 3000) {
+        danger("🔴", `AT 验证 P95=${at.p95}ms，说明频繁刷新 AT 或网络到 Google 较慢。建议确保 AT 提前自动刷新，避免请求时即时刷新。`);
+      } else if (at.avg > 1000) {
+        warn("🟡", `AT 验证平均 ${at.avg}ms，部分请求触发了 AT 刷新。`);
+      }
+
+      // Generation pipeline
+      const pipe = d.breakdown.generation_pipeline_ms;
+      if (pipe.p95 > 120000) {
+        warn("🟡", `生成流水线 P95=${fmtMs(pipe.p95)}ms，上游 API 响应较慢。这通常由 Google 侧排队造成，非本地瓶颈。`);
+      }
+
+      // Slot wait
+      const slot = d.breakdown.slot_wait_ms;
+      if (slot.p95 > 5000) {
+        warn("🟡", `槽位等待 P95=${slot.p95}ms，并发槽位不足。建议增大 Token 的 image_concurrency 限制或增加 Token 数。`);
+      }
+
+      // Success rate
+      if (d.window.count > 10 && d.window.success_rate < 80) {
+        danger("🔴", `成功率仅 ${d.window.success_rate}%（5分钟内 ${d.window.failed} 个请求失败）。建议查看慢请求表和日志，确认是 Token 封禁还是上游限流。`);
+      } else if (d.window.count > 10 && d.window.success_rate < 95) {
+        warn("🟡", `成功率 ${d.window.success_rate}%，有少量失败。`);
+      }
+
+      // Memory
+      const sys = d.system || {};
+      if (sys.memory_rss_mb > 1024) {
+        warn("🟡", `内存 RSS ${sys.memory_rss_mb} MB，偏高。如果持续增长可能存在内存泄漏。`);
+      }
+
+      // Network / bandwidth heuristic
+      const net = d.network || {};
+      const latestSend = Number(net.latest_send_kbps || 0);
+      const latestRecv = Number(net.latest_recv_kbps || 0);
+      const totalNetMBps = (latestSend + latestRecv) / 1024;
+      if (totalNetMBps >= 8 && d.event_loop.avg_lag_ms < 30 && (sys.cpu_percent || 0) < 70) {
+        warn("🟡", `当前网络收发约 ${totalNetMBps.toFixed(1)} MB/s，CPU 与 Event Loop 都不高，存在“链路/带宽接近瓶颈”的可能。如果服务器是 100Mbps 线路，这个量级已经接近上限。`);
+      } else if (totalNetMBps >= 15) {
+        warn("🟡", `当前网络收发约 ${totalNetMBps.toFixed(1)} MB/s，网络流量较高。建议结合“图片上传/生成API”历史阶段耗时一起判断是否为带宽瓶颈。`);
+      }
+
+      // Inflight
+      if (d.inflight.count > 50) {
+        warn("🟡", `当前 ${d.inflight.count} 个请求正在处理中，并发压力较大。`);
+      }
+
+      if (items.length === 0) {
+        ok("✅", "当前各项指标正常，未发现明显瓶颈。");
+      }
+
+      $("diagBottlenecks").innerHTML = items.join("");
+    }
+
+    function renderDiagCharts(d) {
+      // Ensure echarts is available
+      if (typeof echarts === "undefined") return;
+
+      // 1. Timeline chart (throughput + avg duration)
+      renderTimelineChart(d.timeline);
+
+      // 2. Breakdown chart (phase averages)
+      renderBreakdownChart(d.breakdown);
+
+      // 3. Event loop lag chart
+      renderLoopLagChart(d.event_loop.lag_samples);
+
+      // 4. Token distribution chart
+      renderTokenDistChart(d.token_distribution);
+
+      // 5. Network throughput chart
+      renderNetworkChart(d.network?.samples || []);
+    }
+
+    function getOrCreateChart(domId) {
+      const dom = $(domId);
+      if (!dom) return null;
+      if (_diagCharts[domId]) {
+        return _diagCharts[domId];
+      }
+      const chart = echarts.init(dom, null, { renderer: "canvas" });
+      _diagCharts[domId] = chart;
+      return chart;
+    }
+
+    function renderTimelineChart(timeline) {
+      const chart = getOrCreateChart("chartTimeline");
+      if (!chart) return;
+      const labels = timeline.map(t => t.label);
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        legend: { data: ["成功", "失败", "平均耗时(s)"], top: 0, textStyle: { fontSize: 11 } },
+        grid: { top: 30, left: 50, right: 50, bottom: 25 },
+        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 10 } },
+        yAxis: [
+          { type: "value", name: "请求数", min: 0, axisLabel: { fontSize: 10 } },
+          { type: "value", name: "秒", min: 0, axisLabel: { fontSize: 10 } },
+        ],
+        series: [
+          { name: "成功", type: "bar", stack: "req", data: timeline.map(t => t.success), itemStyle: { color: "#22c55e" }, barMaxWidth: 30 },
+          { name: "失败", type: "bar", stack: "req", data: timeline.map(t => t.failed), itemStyle: { color: "#ef4444" }, barMaxWidth: 30 },
+          { name: "平均耗时(s)", type: "line", yAxisIndex: 1, data: timeline.map(t => +(t.avg_duration_ms / 1000).toFixed(1)), smooth: true, itemStyle: { color: "#3b82f6" }, lineStyle: { width: 2 } },
+        ],
+      }, true);
+    }
+
+    function renderBreakdownChart(breakdown) {
+      const chart = getOrCreateChart("chartBreakdown");
+      if (!chart) return;
+      const phases = [
+        { key: "token_select_ms", label: "Token选择" },
+        { key: "ensure_at_ms", label: "AT验证" },
+        { key: "ensure_project_ms", label: "Project" },
+        { key: "slot_wait_ms", label: "槽位等待" },
+        { key: "generation_pipeline_ms", label: "生成流水线" },
+      ];
+      const categories = phases.map(p => p.label);
+      const avgData = phases.map(p => breakdown[p.key]?.avg || 0);
+      const p95Data = phases.map(p => breakdown[p.key]?.p95 || 0);
+      chart.setOption({
+        tooltip: { trigger: "axis", formatter: (params) => {
+          let s = params[0].axisValueLabel + "<br/>";
+          params.forEach(p => { s += `${p.marker} ${p.seriesName}: ${p.value} ms<br/>`; });
+          return s;
+        }},
+        legend: { data: ["平均", "P95"], top: 0, textStyle: { fontSize: 11 } },
+        grid: { top: 30, left: 90, right: 20, bottom: 10 },
+        xAxis: { type: "value", axisLabel: { fontSize: 10, formatter: v => v > 1000 ? (v / 1000).toFixed(0) + "k" : v } },
+        yAxis: { type: "category", data: categories, axisLabel: { fontSize: 10 } },
+        series: [
+          { name: "平均", type: "bar", data: avgData, itemStyle: { color: "#3b82f6" }, barMaxWidth: 16 },
+          { name: "P95", type: "bar", data: p95Data, itemStyle: { color: "#f59e0b" }, barMaxWidth: 16 },
+        ],
+      }, true);
+    }
+
+    function renderLoopLagChart(samples) {
+      const chart = getOrCreateChart("chartLoopLag");
+      if (!chart) return;
+      const labels = samples.map((_, i) => `-${samples.length - i}s`);
+      chart.setOption({
+        tooltip: { trigger: "axis", formatter: p => p[0]?.value + " ms" },
+        grid: { top: 10, left: 45, right: 15, bottom: 25 },
+        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(samples.length / 6) - 1) } },
+        yAxis: { type: "value", min: 0, axisLabel: { fontSize: 10 } },
+        series: [{
+          type: "line",
+          data: samples,
+          smooth: true,
+          areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(234,179,8,0.3)" }, { offset: 1, color: "rgba(234,179,8,0.02)" }] } },
+          lineStyle: { color: "#eab308", width: 1.5 },
+          itemStyle: { color: "#eab308" },
+          showSymbol: false,
+          markLine: { silent: true, data: [{ yAxis: 50, lineStyle: { color: "#ef4444", type: "dashed", width: 1 }, label: { formatter: "50ms", fontSize: 9 } }] },
+        }],
+      }, true);
+    }
+
+    function renderTokenDistChart(tokenDist) {
+      const chart = getOrCreateChart("chartTokenDist");
+      if (!chart) return;
+      const entries = Object.entries(tokenDist || {}).sort((a, b) => b[1] - a[1]);
+      if (entries.length === 0) {
+        chart.setOption({ title: { text: "暂无数据", left: "center", top: "center", textStyle: { fontSize: 13, color: "#999" } }, series: [] }, true);
+        return;
+      }
+      chart.setOption({
+        tooltip: { trigger: "item", formatter: "{b}: {c} 次 ({d}%)" },
+        series: [{
+          type: "pie",
+          radius: ["35%", "65%"],
+          center: ["50%", "55%"],
+          data: entries.map(([tid, cnt]) => ({ name: `Token ${tid}`, value: cnt })),
+          label: { fontSize: 10, formatter: "{b}\n{d}%" },
+          itemStyle: { borderRadius: 4, borderColor: "#fff", borderWidth: 1 },
+        }],
+      }, true);
+    }
+
+    function renderNetworkChart(samples) {
+      const chart = getOrCreateChart("chartNetwork");
+      if (!chart) return;
+      const labels = samples.map((_, index) => `-${samples.length - index}s`);
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        legend: { data: ["发送", "接收"], top: 0, textStyle: { fontSize: 11 } },
+        grid: { top: 30, left: 50, right: 20, bottom: 25 },
+        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(samples.length / 6) - 1) } },
+        yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v) => v >= 1024 ? (v / 1024).toFixed(1) + "MB/s" : v + "KB/s" } },
+        series: [
+          {
+            name: "发送",
+            type: "line",
+            smooth: true,
+            data: samples.map((s) => Number(s.send_kbps || 0)),
+            itemStyle: { color: "#3b82f6" },
+            lineStyle: { width: 2 },
+            showSymbol: false,
+          },
+          {
+            name: "接收",
+            type: "line",
+            smooth: true,
+            data: samples.map((s) => Number(s.recv_kbps || 0)),
+            itemStyle: { color: "#10b981" },
+            lineStyle: { width: 2 },
+            showSymbol: false,
+          },
+        ],
+      }, true);
+    }
+
+    async function loadHistoryDiag() {
+      try {
+        const minutes = Number($("historyMinutes")?.value || 60);
+        const resp = await fetch(`/api/diagnostics/history?minutes=${minutes}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("adminToken")}` },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        renderHistoryDiag(data);
+      } catch (error) {
+        console.error("history diagnostics fetch failed", error);
+      }
+    }
+
+    function renderHistoryDiag(data) {
+      const totalStats = data.phase_stats?.total_ms || {};
+      $("histTotal").textContent = data.total_records || 0;
+      $("histSuccFail").textContent = `✓${data.success_count || 0} ✗${data.failed_count || 0}`;
+      $("histAvgTotal").textContent = fmtMs(totalStats.avg || 0);
+      $("histP95Total").textContent = fmtMs(totalStats.p95 || 0);
+      $("histMaxTotal").textContent = fmtMs(totalStats.max || 0);
+
+      renderHistPhaseTable(data.phase_stats || {});
+      renderHistSlowTable(data.slow_requests || []);
+      renderHistBottlenecks(data);
+      renderHistTimelineChart(data.timeline || []);
+      renderHistBreakdownChart(data.phase_stats || {});
+      renderHistPipelineChart(data.phase_stats || {});
+      renderHistTokenPerfChart(data.token_stats || []);
+      renderHistTokenRank(data.token_stats || []);
+    }
+
+    function renderHistTokenRank(items) {
+      const body = $("histTokenRankBody");
+      if (!body) return;
+      const ranked = [...items].sort((a, b) => {
+        const aRate = a.total > 0 ? a.success / a.total : 0;
+        const bRate = b.total > 0 ? b.success / b.total : 0;
+        const aScore = (a.p95_ms || 0) + (1 - aRate) * 120000;
+        const bScore = (b.p95_ms || 0) + (1 - bRate) * 120000;
+        return bScore - aScore;
+      });
+      body.innerHTML = ranked.map((item) => {
+        const successRate = item.total > 0 ? ((item.success / item.total) * 100).toFixed(1) : "0.0";
+        let risk = "正常";
+        let riskClass = "text-green-600";
+        if ((item.p95_ms || 0) > 180000 || Number(successRate) < 80) {
+          risk = "高风险";
+          riskClass = "text-red-500 font-semibold";
+        } else if ((item.p95_ms || 0) > 90000 || Number(successRate) < 95) {
+          risk = "偏慢";
+          riskClass = "text-yellow-600 font-medium";
+        }
+        return `<tr>
+          <td class="py-2 text-xs">${item.email || `Token ${item.token_id}`}</td>
+          <td class="py-2 text-right">${item.total || 0}</td>
+          <td class="py-2 text-right ${Number(successRate) < 90 ? "text-red-500" : ""}">${successRate}%</td>
+          <td class="py-2 text-right">${fmtMs(item.avg_ms || 0)}</td>
+          <td class="py-2 text-right ${(item.p95_ms || 0) > 180000 ? "text-red-500 font-semibold" : ""}">${fmtMs(item.p95_ms || 0)}</td>
+          <td class="py-2 ${riskClass}">${risk}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderHistPhaseTable(phaseStats) {
+      const body = $("histPhaseTableBody");
+      if (!body) return;
+      const phases = [
+        ["total_ms", "总耗时"],
+        ["token_select_ms", "Token选择"],
+        ["ensure_at_ms", "AT验证"],
+        ["ensure_project_ms", "Project准备"],
+        ["generation_pipeline_ms", "生成总流水线"],
+        ["upload_images_ms", "图片上传"],
+        ["generate_api_ms", "生成API"],
+        ["upsample_ms", "图片放大"],
+        ["cache_image_ms", "结果缓存"],
+        ["launch_queue_wait_ms", "上游排队"],
+        ["launch_stagger_wait_ms", "上游错峰"],
+        ["slot_wait_ms", "本地槽位等待"],
+      ];
+      body.innerHTML = phases.map(([key, label]) => {
+        const stats = phaseStats[key] || {};
+        return `<tr>
+          <td class="py-2">${label}</td>
+          <td class="py-2 text-right">${stats.count || 0}</td>
+          <td class="py-2 text-right">${fmtMs(stats.min || 0)}</td>
+          <td class="py-2 text-right font-medium">${fmtMs(stats.avg || 0)}</td>
+          <td class="py-2 text-right">${fmtMs(stats.p50 || 0)}</td>
+          <td class="py-2 text-right ${stats.p95 > 120000 ? "text-red-500 font-semibold" : stats.p95 > 30000 ? "text-yellow-600" : ""}">${fmtMs(stats.p95 || 0)}</td>
+          <td class="py-2 text-right">${fmtMs(stats.p99 || 0)}</td>
+          <td class="py-2 text-right">${fmtMs(stats.max || 0)}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderHistSlowTable(items) {
+      const body = $("histSlowBody");
+      if (!body) return;
+      body.innerHTML = items.map((item) => `
+        <tr>
+          <td class="py-1.5 text-xs">${item.created_at || "-"}</td>
+          <td class="py-1.5 text-xs">${item.token_email || item.token_id || "-"}</td>
+          <td class="py-1.5 text-right font-semibold ${item.total_ms > 300000 ? "text-red-500" : ""}">${fmtMs(item.total_ms || 0)}</td>
+          <td class="py-1.5 text-right">${fmtMs(item.token_select_ms || 0)}</td>
+          <td class="py-1.5 text-right">${fmtMs(item.ensure_at_ms || 0)}</td>
+          <td class="py-1.5 text-right">${fmtMs(item.ensure_project_ms || 0)}</td>
+          <td class="py-1.5 text-right">${fmtMs(item.generate_api_ms || 0)}</td>
+          <td class="py-1.5 text-right">${fmtMs(item.upload_images_ms || 0)}</td>
+          <td class="py-1.5 text-right">${fmtMs(item.upsample_ms || 0)}</td>
+          <td class="py-1.5 text-right">${item.generation_attempts || 0}</td>
+          <td class="py-1.5 text-xs ${item.total_ms > 300000 ? "font-semibold text-red-500" : "text-yellow-600"}">${item.root_cause_label || "-"}</td>
+          <td class="py-1.5 text-xs text-muted-foreground">${item.root_cause_reason || "-"}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderHistBottlenecks(data) {
+      const container = $("histBottlenecks");
+      if (!container) return;
+      const stats = data.phase_stats || {};
+      const tokenSelect = stats.token_select_ms || {};
+      const ensureAt = stats.ensure_at_ms || {};
+      const pipeline = stats.generation_pipeline_ms || {};
+      const generateApi = stats.generate_api_ms || {};
+      const upload = stats.upload_images_ms || {};
+      const upsample = stats.upsample_ms || {};
+      const queueWait = stats.launch_queue_wait_ms || {};
+      const attemptsMax = Math.max(0, ...(data.slow_requests || []).map((x) => x.generation_attempts || 0));
+      const successRate = data.total_records > 0
+        ? Number(((data.success_count || 0) / data.total_records * 100).toFixed(1))
+        : 0;
+      const items = [];
+
+      const pushCard = (tone, icon, text) => {
+        const toneMap = {
+          red: "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800",
+          yellow: "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800",
+          green: "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800",
+        };
+        items.push(`<div class="flex items-start gap-2 rounded-md border p-2 ${toneMap[tone] || toneMap.yellow}"><span>${icon}</span><span>${text}</span></div>`);
+      };
+
+      if ((generateApi.p95 || 0) > 180000) {
+        pushCard("red", "🔴", `历史数据显示“生成API”阶段 P95=${fmtMs(generateApi.p95)}，超出正常 70-90 秒很多。说明主要瓶颈在上游生成/排队，不在本地页面或日志写入。`);
+      } else if ((pipeline.p95 || 0) > 120000) {
+        pushCard("yellow", "🟡", `生成流水线 P95=${fmtMs(pipeline.p95)}，主要慢在生成链路内部。优先看“生成API / 上游排队 / 放大”三项。`);
+      }
+
+      if ((queueWait.p95 || 0) > 30000) {
+        pushCard("red", "🔴", `上游排队 P95=${fmtMs(queueWait.p95)}，很像 Google 侧拥堵或账号侧限流。即使本机负载不高，仍会出现 10+ 分钟慢请求。`);
+      }
+
+      if ((ensureAt.p95 || 0) > 3000) {
+        pushCard("yellow", "🟡", `AT 验证 P95=${fmtMs(ensureAt.p95)}，说明请求期间频繁刷新 AT。建议继续观察账号 AT 自动刷新是否足够提前。`);
+      }
+
+      if ((tokenSelect.p95 || 0) > 1000) {
+        pushCard("yellow", "🟡", `Token 选择 P95=${fmtMs(tokenSelect.p95)}，说明高并发下 Token 池或锁竞争有压力，但这一般不会单独造成 900 秒级慢请求。`);
+      }
+
+      if ((upload.avg || 0) > 10000) {
+        pushCard("yellow", "🟡", `图片上传平均 ${fmtMs(upload.avg)}，如果上传图片很多或体积大，会显著拉长总时长。`);
+      }
+
+      if ((upload.p95 || 0) > 30000 && (generateApi.avg || 0) < 120000) {
+        pushCard("yellow", "🟡", `图片上传 P95=${fmtMs(upload.p95)}，上传阶段已经明显偏慢。如果服务器 CPU/Event Loop 不高，这更像是服务器出口带宽、代理链路或上游网络质量不足。`);
+      }
+
+      if ((upsample.p95 || 0) > 60000) {
+        pushCard("yellow", "🟡", `图片放大 P95=${fmtMs(upsample.p95)}，说明部分慢请求主要耗在 upsample，不是主生成步骤。`);
+      }
+
+      if (attemptsMax >= 2) {
+        pushCard("yellow", "🟡", `历史慢请求里存在最多 ${attemptsMax} 次生成重试。重试会把 70-90 秒放大到数分钟。请重点关注慢请求表中的“重试次数”。`);
+      }
+
+      if (data.total_records > 20 && successRate < 85) {
+        pushCard("red", "🔴", `历史成功率仅 ${successRate}%。这通常意味着上游失败/封禁/限流与超时并存，需要结合请求日志详情确认错误类型。`);
+      }
+
+      const abnormalTokens = (data.token_stats || []).filter((item) => {
+        const rate = item.total > 0 ? (item.success / item.total) * 100 : 0;
+        return (item.p95_ms || 0) > 180000 || rate < 80;
+      }).length;
+      if (abnormalTokens > 0) {
+        pushCard("yellow", "🟡", `检测到 ${abnormalTokens} 个异常 Token（高 P95 或低成功率）。可直接查看下方“异常 Token 排行榜”，判断是否只有个别账号拖慢整体。`);
+      }
+
+      if (items.length === 0) {
+        pushCard("green", "✅", "历史阶段耗时分布未发现明显异常峰值。若仍有个别 900 秒请求，优先检查对应慢请求详情里的上游排队和重试次数。");
+      }
+
+      container.innerHTML = items.join("");
+    }
+
+    function renderHistTimelineChart(timeline) {
+      const chart = getOrCreateChart("chartHistTimeline");
+      if (!chart) return;
+      const labels = timeline.map((item) => item.label);
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        legend: { data: ["成功", "失败", "平均耗时(s)"], top: 0, textStyle: { fontSize: 11 } },
+        grid: { top: 30, left: 50, right: 50, bottom: 25 },
+        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 10 } },
+        yAxis: [
+          { type: "value", name: "请求数", min: 0, axisLabel: { fontSize: 10 } },
+          { type: "value", name: "秒", min: 0, axisLabel: { fontSize: 10 } },
+        ],
+        series: [
+          { name: "成功", type: "bar", stack: "histreq", data: timeline.map((item) => item.success), itemStyle: { color: "#22c55e" }, barMaxWidth: 24 },
+          { name: "失败", type: "bar", stack: "histreq", data: timeline.map((item) => item.failed), itemStyle: { color: "#ef4444" }, barMaxWidth: 24 },
+          { name: "平均耗时(s)", type: "line", yAxisIndex: 1, smooth: true, data: timeline.map((item) => +(Number(item.avg_duration_ms || 0) / 1000).toFixed(1)), itemStyle: { color: "#3b82f6" }, lineStyle: { width: 2 } },
+        ],
+      }, true);
+    }
+
+    function renderHistBreakdownChart(phaseStats) {
+      const chart = getOrCreateChart("chartHistBreakdown");
+      if (!chart) return;
+      const phases = [
+        ["total_ms", "总耗时"],
+        ["token_select_ms", "Token选择"],
+        ["ensure_at_ms", "AT验证"],
+        ["ensure_project_ms", "Project"],
+        ["generation_pipeline_ms", "生成流水线"],
+      ];
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        legend: { data: ["平均", "P95", "P99"], top: 0, textStyle: { fontSize: 11 } },
+        grid: { top: 30, left: 90, right: 20, bottom: 10 },
+        xAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v) => v > 1000 ? (v / 1000).toFixed(0) + "k" : v } },
+        yAxis: { type: "category", data: phases.map((x) => x[1]), axisLabel: { fontSize: 10 } },
+        series: [
+          { name: "平均", type: "bar", data: phases.map((x) => phaseStats[x[0]]?.avg || 0), itemStyle: { color: "#3b82f6" }, barMaxWidth: 14 },
+          { name: "P95", type: "bar", data: phases.map((x) => phaseStats[x[0]]?.p95 || 0), itemStyle: { color: "#f59e0b" }, barMaxWidth: 14 },
+          { name: "P99", type: "bar", data: phases.map((x) => phaseStats[x[0]]?.p99 || 0), itemStyle: { color: "#ef4444" }, barMaxWidth: 14 },
+        ],
+      }, true);
+    }
+
+    function renderHistPipelineChart(phaseStats) {
+      const chart = getOrCreateChart("chartHistPipeline");
+      if (!chart) return;
+      const phases = [
+        ["upload_images_ms", "图片上传"],
+        ["generate_api_ms", "生成API"],
+        ["upsample_ms", "图片放大"],
+        ["cache_image_ms", "结果缓存"],
+        ["launch_queue_wait_ms", "上游排队"],
+        ["launch_stagger_wait_ms", "上游错峰"],
+      ];
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        grid: { top: 20, left: 45, right: 20, bottom: 70 },
+        xAxis: { type: "category", data: phases.map((x) => x[1]), axisLabel: { fontSize: 10, rotate: 20 } },
+        yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v) => v > 1000 ? (v / 1000).toFixed(0) + "k" : v } },
+        series: [{
+          type: "bar",
+          data: phases.map((x) => ({
+            value: phaseStats[x[0]]?.avg || 0,
+            itemStyle: {
+              color: ["#60a5fa", "#f97316", "#a78bfa", "#10b981", "#ef4444", "#eab308"][phases.findIndex((p) => p[0] === x[0])],
+            },
+          })),
+          barMaxWidth: 36,
+        }],
+      }, true);
+    }
+
+    function renderHistTokenPerfChart(tokenStats) {
+      const chart = getOrCreateChart("chartHistTokenPerf");
+      if (!chart) return;
+      const sorted = [...tokenStats].sort((a, b) => (b.avg_ms || 0) - (a.avg_ms || 0));
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        legend: { data: ["平均耗时", "P95耗时", "成功率%"], top: 0, textStyle: { fontSize: 11 } },
+        grid: { top: 30, left: 50, right: 50, bottom: 60 },
+        xAxis: { type: "category", data: sorted.map((x) => `T${x.token_id}`), axisLabel: { fontSize: 10 } },
+        yAxis: [
+          { type: "value", name: "ms", axisLabel: { fontSize: 10, formatter: (v) => v > 1000 ? (v / 1000).toFixed(0) + "k" : v } },
+          { type: "value", name: "%", min: 0, max: 100, axisLabel: { fontSize: 10 } },
+        ],
+        series: [
+          { name: "平均耗时", type: "bar", data: sorted.map((x) => x.avg_ms || 0), itemStyle: { color: "#3b82f6" }, barMaxWidth: 18 },
+          { name: "P95耗时", type: "bar", data: sorted.map((x) => x.p95_ms || 0), itemStyle: { color: "#f97316" }, barMaxWidth: 18 },
+          { name: "成功率%", type: "line", yAxisIndex: 1, smooth: true, data: sorted.map((x) => x.total > 0 ? +((x.success / x.total) * 100).toFixed(1) : 0), itemStyle: { color: "#10b981" }, lineStyle: { width: 2 } },
+        ],
+      }, true);
+    }
+
+    // Resize charts on window resize
+    window.addEventListener("resize", () => {
+      Object.values(_diagCharts).forEach(c => c && c.resize());
+    });
+
     window.addEventListener("DOMContentLoaded", () => {
       checkAuth();
       initBatchImportDropZone();
       refreshTokens();
       loadProjectVersion();
       loadATAutoRefreshConfig();
+      // 每 3 秒自动刷新并发负载状态（适配高并发场景）
+      setInterval(async () => {
+        try {
+          await loadConcurrencyStatus();
+          renderTokens();
+        } catch (_) {}
+      }, 3000);
     });
 
     document.addEventListener("visibilitychange", () => {

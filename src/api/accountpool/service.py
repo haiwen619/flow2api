@@ -8,6 +8,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from ...core.config import config
 from .repository import AccountPoolRepository
 from .rpa_adapter import validate_account_via_rpa
 
@@ -111,6 +112,36 @@ class AccountPoolService:
         to_delete = max(1, len(self.jobs) - self.max_jobs)
         for job_id, _ in ordered[:to_delete]:
             self.jobs.pop(job_id, None)
+
+    @staticmethod
+    def _normalize_bitbrowser_id_list(value: Any) -> List[str]:
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            text = str(value or "").replace("\r", "\n")
+            raw_items = text.replace(",", "\n").split("\n") if text else []
+
+        normalized: List[str] = []
+        seen = set()
+        for item in raw_items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized
+
+    def _select_batch_bitbrowser_ids(
+        self,
+        *,
+        params: Dict[str, Any],
+        concurrency: int,
+    ) -> List[str]:
+        explicit_ids = self._normalize_bitbrowser_id_list((params or {}).get("bitbrowser_id"))
+        candidate_ids = explicit_ids or config.get_active_rpa_test_bitbrowser_ids()
+        if concurrency <= 0 or len(candidate_ids) < concurrency:
+            return []
+        return candidate_ids[:concurrency]
 
     @staticmethod
     def _parse_at_expires(expires: Optional[str]) -> Optional[datetime]:
@@ -1302,6 +1333,21 @@ class AccountPoolService:
         task["status"] = "running"
         task["updated_at"] = time.time()
         sem = asyncio.Semaphore(concurrency)
+        assigned_bitbrowser_ids = self._select_batch_bitbrowser_ids(
+            params=params,
+            concurrency=concurrency,
+        )
+        bitbrowser_id_queue: Optional[asyncio.Queue[str]] = None
+        if assigned_bitbrowser_ids:
+            bitbrowser_id_queue = asyncio.Queue()
+            for bitbrowser_id in assigned_bitbrowser_ids:
+                bitbrowser_id_queue.put_nowait(bitbrowser_id)
+            logger.info(
+                "[AccountPool] batch task using configured bitbrowser ids batch_task_id=%s concurrency=%s ids=%s",
+                batch_task_id,
+                concurrency,
+                assigned_bitbrowser_ids,
+            )
 
         async def run_one(job_info: Dict[str, str], start_delay_sec: float) -> None:
             await asyncio.sleep(max(0.0, float(start_delay_sec)))
@@ -1314,6 +1360,9 @@ class AccountPoolService:
                 t2 = self.batch_tasks.get(batch_task_id)
                 if not t2 or t2.get("cancelled"):
                     return
+                assigned_bitbrowser_id = None
+                if bitbrowser_id_queue is not None:
+                    assigned_bitbrowser_id = await bitbrowser_id_queue.get()
                 try:
                     secret = await self.repo.get_account_secret(account_key=account_key)
                     display_name = (secret.get("display_name") or "").strip()
@@ -1328,6 +1377,17 @@ class AccountPoolService:
                     run_params["is_2fa_enabled"] = is_2fa_enabled
                     if twofa_password:
                         run_params["twofa_password"] = twofa_password
+                    if assigned_bitbrowser_id:
+                        run_params["bitbrowser"] = True
+                        run_params["bitbrowser_id"] = assigned_bitbrowser_id
+                        run_params["reuse_test_bitbrowser_id"] = False
+                        logger.info(
+                            "[AccountPool] assign batch bitbrowser id batch_task_id=%s job_id=%s account_key=%s bitbrowser_id=%s",
+                            batch_task_id,
+                            job_id,
+                            account_key,
+                            assigned_bitbrowser_id,
+                        )
                     if job_id in self.jobs:
                         self.jobs[job_id]["username"] = username
                     await self._run_single_job(
@@ -1344,6 +1404,9 @@ class AccountPoolService:
                         self.jobs[job_id]["error"] = str(e)
                         self.jobs[job_id]["updated_at"] = time.time()
                     self._mark_batch_progress(batch_task_id=batch_task_id, ok=False)
+                finally:
+                    if bitbrowser_id_queue is not None and assigned_bitbrowser_id:
+                        await bitbrowser_id_queue.put(assigned_bitbrowser_id)
 
         tasks = [
             asyncio.create_task(run_one(job, idx * 5.0))

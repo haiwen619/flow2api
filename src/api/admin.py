@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +25,7 @@ from ..core.config import config
 from ..core.database import Database
 from ..core.models import normalize_captcha_priority_order
 from ..services.concurrency_manager import ConcurrencyManager
+from ..services.perf_monitor import perf_monitor
 from ..services.proxy_manager import ProxyManager
 from ..services.token_manager import TokenManager
 
@@ -52,6 +53,104 @@ def _mask_token(token: Optional[str]) -> str:
     if len(token) <= 24:
         return token
     return f"{token[:18]}...{token[-8:]}"
+
+
+HARD_BAN_REASON_CODES = {
+    "429_rate_limit",
+    "permission_denied",
+    "google_account_disabled",
+}
+
+
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _format_disable_reason_label(reason_code: str) -> str:
+    code = str(reason_code or "").strip()
+    reason_map = {
+        "cookie_invalid_need_relogin": "Cookie失效待重登",
+        "429_rate_limit": "429频率封禁",
+        "permission_denied": "403权限封禁",
+        "google_account_disabled": "Google账号封禁",
+        "manual_disabled": "手动禁用",
+        "import_disabled": "导入时设为禁用",
+        "token_expired": "Token已过期",
+        "refresh_failed": "刷新失败后自动禁用",
+        "consecutive_error_limit": "连续错误达到阈值自动禁用",
+        "unknown_inactive": "已禁用(原因未记录)",
+    }
+    return reason_map.get(code, code or "未禁用")
+
+
+def _build_disable_reason_meta(row: Dict[str, Any], error_ban_threshold: int) -> Dict[str, Any]:
+    is_active = bool(row.get("is_active"))
+    reason_code = str(row.get("ban_reason") or "").strip()
+    last_refresh_detail = str(row.get("last_refresh_detail") or "").strip()
+    at_expires = _parse_optional_datetime(row.get("at_expires"))
+    banned_at = _parse_optional_datetime(row.get("banned_at"))
+    last_error_at = _parse_optional_datetime(row.get("last_error_at"))
+    consecutive_error_count = int(row.get("consecutive_error_count") or 0)
+
+    if not is_active and not reason_code:
+        now = datetime.now(timezone.utc)
+        if at_expires:
+            exp_aware = at_expires if at_expires.tzinfo else at_expires.replace(tzinfo=timezone.utc)
+            if exp_aware <= now:
+                reason_code = "token_expired"
+        detail_lower = last_refresh_detail.lower()
+        if not reason_code and ("自动禁用" in detail_lower or "auto-disable" in detail_lower):
+            reason_code = "refresh_failed"
+        if not reason_code and error_ban_threshold > 0 and consecutive_error_count >= error_ban_threshold:
+            reason_code = "consecutive_error_limit"
+        if not reason_code:
+            reason_code = "unknown_inactive"
+
+    label = _format_disable_reason_label(reason_code) if reason_code else ""
+    detail = ""
+    if reason_code == "manual_disabled":
+        detail = "管理员手动禁用了该 Token"
+    elif reason_code == "import_disabled":
+        detail = "导入或更新 Token 时被标记为禁用"
+    elif reason_code == "token_expired":
+        detail = "Token 当前 AT 已过期，因此处于禁用状态"
+    elif reason_code == "refresh_failed":
+        detail = last_refresh_detail or "ST直刷/reAuth/浏览器刷新均失败后自动禁用"
+    elif reason_code == "consecutive_error_limit":
+        if error_ban_threshold > 0:
+            detail = (
+                f"连续错误次数 {consecutive_error_count} 已达到自动禁用阈值 "
+                f"{error_ban_threshold}"
+            )
+        else:
+            detail = "连续错误次数达到自动禁用阈值"
+    elif reason_code == "cookie_invalid_need_relogin":
+        detail = last_refresh_detail or "Cookie 已失效，需要重新自动登录恢复"
+    elif reason_code == "429_rate_limit":
+        detail = "请求触发 429 频率限制，系统已自动停用"
+    elif reason_code == "permission_denied":
+        detail = "请求命中 403 PERMISSION_DENIED，系统判定账号权限被封禁"
+    elif reason_code == "google_account_disabled":
+        detail = last_refresh_detail or "账号池/RPA 检测到 Google 账号已被停用或封禁"
+    elif reason_code == "unknown_inactive":
+        detail = "该 Token 当前处于禁用状态，但历史数据未记录明确原因"
+
+    effective_time = banned_at or last_error_at
+    return {
+        "disable_reason_code": reason_code or None,
+        "disable_reason_label": label or None,
+        "disable_reason_detail": detail or None,
+        "disable_hard_banned": bool(reason_code and reason_code in HARD_BAN_REASON_CODES),
+        "disable_effective_at": effective_time.isoformat() if effective_time else None,
+    }
 
 
 def _guess_client_hints_from_user_agent(user_agent: str) -> Dict[str, str]:
@@ -402,6 +501,8 @@ class ServerConfigRequest(BaseModel):
     default_public_ip: Optional[str] = None
     rpa_test_bitbrowser_id_local: Optional[str] = None
     rpa_test_bitbrowser_id_server: Optional[str] = None
+    rpa_test_bitbrowser_ids_local: Optional[List[str]] = None
+    rpa_test_bitbrowser_ids_server: Optional[List[str]] = None
     block_gemini_25_flash_image: Optional[bool] = None
 
 
@@ -558,6 +659,8 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
     """Get all tokens with statistics"""
     _ = token
     token_rows = await db.get_all_tokens_with_stats()
+    admin_config = await db.get_admin_config()
+    error_ban_threshold = int(getattr(admin_config, "error_ban_threshold", 0) or 0)
     to_iso = lambda value: value.isoformat() if hasattr(value, "isoformat") else value
 
     result = []
@@ -600,6 +703,8 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             except Exception:
                 pass
 
+        disable_reason_meta = _build_disable_reason_meta(row, error_ban_threshold)
+
         result.append({
             "id": row.get("id"),
             "st": row.get("st"),  # Session Token for editing
@@ -633,6 +738,10 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             "image_count": row.get("image_count", 0),
             "video_count": row.get("video_count", 0),
             "error_count": row.get("error_count", 0),
+            "today_error_count": row.get("today_error_count", 0),
+            "consecutive_error_count": row.get("consecutive_error_count", 0),
+            "last_error_at": to_iso(row.get("last_error_at")) if row.get("last_error_at") else None,
+            **disable_reason_meta,
         })
 
     return result  # 直接返回数组,兼容前端
@@ -975,7 +1084,7 @@ async def disable_token(
     token: str = Depends(verify_admin_token)
 ):
     """Disable token"""
-    await token_manager.disable_token(token_id)
+    await token_manager.disable_token(token_id, reason="manual_disabled")
     return {"success": True, "message": "Token已禁用"}
 
 
@@ -1237,10 +1346,10 @@ async def import_tokens(
                         banned_at=None
                     )
                 else:
-                    await token_manager.disable_token(existing.id)
+                    await token_manager.disable_token(existing.id, reason="import_disabled")
 
                 if is_expired:
-                    await token_manager.disable_token(existing.id)
+                    await token_manager.disable_token(existing.id, reason="token_expired")
                     existing.is_active = False
 
                 existing.st = st
@@ -1272,9 +1381,9 @@ async def import_tokens(
                     resolved_name=resolved.get("name"),
                 )
                 if not item.is_active:
-                    await token_manager.disable_token(new_token.id)
+                    await token_manager.disable_token(new_token.id, reason="import_disabled")
                 if is_expired:
-                    await token_manager.disable_token(new_token.id)
+                    await token_manager.disable_token(new_token.id, reason="token_expired")
                     new_token.is_active = False
 
                 _cache_existing_token(email, new_token)
@@ -1313,6 +1422,8 @@ async def get_server_config(token: str = Depends(verify_admin_token)):
             "server_auto_detected": config.server_auto_detected,
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
+            "rpa_test_bitbrowser_ids_local": config.get_rpa_test_bitbrowser_ids_local(),
+            "rpa_test_bitbrowser_ids_server": config.get_rpa_test_bitbrowser_ids_server(),
             "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
             "block_gemini_25_flash_image": bool(config.block_gemini_25_flash_image),
             "restart_required": True,
@@ -1343,15 +1454,23 @@ async def update_server_config(
         default_public_ip=default_public_ip,
     )
     port = request.port if request.port is not None else int(config.server_port)
-    local_bit_id = (
-        str(request.rpa_test_bitbrowser_id_local).strip()
-        if request.rpa_test_bitbrowser_id_local is not None
-        else config.get_rpa_test_bitbrowser_id_local()
+    local_bit_ids = (
+        [str(v or "").strip() for v in (request.rpa_test_bitbrowser_ids_local or [])]
+        if request.rpa_test_bitbrowser_ids_local is not None
+        else (
+            [str(request.rpa_test_bitbrowser_id_local).strip()]
+            if request.rpa_test_bitbrowser_id_local is not None
+            else config.get_rpa_test_bitbrowser_ids_local()
+        )
     )
-    server_bit_id = (
-        str(request.rpa_test_bitbrowser_id_server).strip()
-        if request.rpa_test_bitbrowser_id_server is not None
-        else config.get_rpa_test_bitbrowser_id_server()
+    server_bit_ids = (
+        [str(v or "").strip() for v in (request.rpa_test_bitbrowser_ids_server or [])]
+        if request.rpa_test_bitbrowser_ids_server is not None
+        else (
+            [str(request.rpa_test_bitbrowser_id_server).strip()]
+            if request.rpa_test_bitbrowser_id_server is not None
+            else config.get_rpa_test_bitbrowser_ids_server()
+        )
     )
     block_gemini_25_flash_image = (
         bool(request.block_gemini_25_flash_image)
@@ -1366,8 +1485,8 @@ async def update_server_config(
             default_public_ip=default_public_ip,
         )
         config.update_rpa_test_bitbrowser_ids(
-            local_id=local_bit_id,
-            server_id=server_bit_id,
+            local_ids=local_bit_ids,
+            server_ids=server_bit_ids,
         )
         config.update_flow_switches(
             block_gemini_25_flash_image=block_gemini_25_flash_image,
@@ -1390,6 +1509,8 @@ async def update_server_config(
             "server_auto_detected": config.server_auto_detected,
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
+            "rpa_test_bitbrowser_ids_local": config.get_rpa_test_bitbrowser_ids_local(),
+            "rpa_test_bitbrowser_ids_server": config.get_rpa_test_bitbrowser_ids_server(),
             "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
             "block_gemini_25_flash_image": bool(config.block_gemini_25_flash_image),
             "restart_required": True,
@@ -1588,29 +1709,83 @@ async def get_stats(token: str = Depends(verify_admin_token)):
     return await db.get_dashboard_stats()
 
 
+@router.get("/api/concurrency-status")
+async def get_concurrency_status(token: str = Depends(verify_admin_token)):
+    """Get real-time concurrency / load status for all tokens"""
+    if not concurrency_manager:
+        return {"tokens": {}, "summary": {
+            "total_image_inflight": 0,
+            "total_video_inflight": 0,
+            "total_image_capacity": None,
+            "total_video_capacity": None,
+        }}
+    return await concurrency_manager.get_all_concurrency_status()
+
+
+@router.get("/api/diagnostics")
+async def get_diagnostics(token: str = Depends(verify_admin_token)):
+    """Get comprehensive server performance diagnostics snapshot.
+    
+    Returns in-flight requests, duration percentiles, phase breakdown,
+    throughput timeline, slow requests, event loop lag, and system resource usage.
+    """
+    return await perf_monitor.get_diagnostics()
+
+
+@router.get("/api/diagnostics/history")
+async def get_diagnostics_history(
+    minutes: int = Query(60, ge=5, le=1440, description="分析最近多少分钟的数据"),
+    token: str = Depends(verify_admin_token),
+):
+    """从数据库历史日志分析各阶段性能瓶颈。
+
+    解析 request_logs.response_body 中的 perf_trace，
+    返回分阶段百分位耗时、Per-Token 统计、时间线、慢请求排行。
+    """
+    return await db.get_performance_history(minutes=minutes, limit=1000)
+
+
 @router.get("/api/logs")
 async def get_logs(
-    limit: int = 100,
+    page: int = 1,
+    page_size: int = 10,
     token: str = Depends(verify_admin_token)
 ):
-    """Get lightweight request logs for list view"""
-    limit = max(1, min(limit, 100))
-    logs = await db.get_logs(limit=limit, include_payload=False)
+    """Get paginated lightweight request logs and today's error summary."""
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 10), 100))
+    payload = await db.get_logs_paginated(
+        page=page,
+        page_size=page_size,
+        include_payload=False,
+    )
+    logs = payload.get("items") or []
+    error_summary = await db.get_today_error_summary()
 
-    return [{
-        "id": log.get("id"),
-        "token_id": log.get("token_id"),
-        "token_email": log.get("token_email"),
-        "token_username": log.get("token_username"),
-        "operation": log.get("operation"),
-        "proxy_source": log.get("proxy_source"),
-        "status_code": log.get("status_code"),
-        "duration": log.get("duration"),
-        "status_text": log.get("status_text") or "",
-        "progress": log.get("progress") or 0,
-        "created_at": log.get("created_at"),
-        "updated_at": log.get("updated_at")
-    } for log in logs]
+    return {
+        "success": True,
+        "items": [{
+            "id": log.get("id"),
+            "token_id": log.get("token_id"),
+            "token_email": log.get("token_email"),
+            "token_username": log.get("token_username"),
+            "operation": log.get("operation"),
+            "proxy_source": log.get("proxy_source"),
+            "status_code": log.get("status_code"),
+            "duration": log.get("duration"),
+            "status_text": log.get("status_text") or "",
+            "progress": log.get("progress") or 0,
+            "created_at": log.get("created_at"),
+            "updated_at": log.get("updated_at")
+        } for log in logs],
+        "pagination": {
+            "page": payload.get("page", page),
+            "page_size": payload.get("page_size", page_size),
+            "total": payload.get("total", 0),
+            "total_pages": payload.get("total_pages", 1),
+        },
+        "today_error_summary": error_summary,
+    }
 
 
 @router.get("/api/logs/{log_id}")

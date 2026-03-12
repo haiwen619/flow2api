@@ -1,10 +1,11 @@
 """Configuration management for Flow2API"""
 import ipaddress
+import json
 import tomli
 import re
 from urllib import request as urllib_request
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .models import normalize_captcha_priority_order
 
 class Config:
@@ -703,6 +704,33 @@ class Config:
             + content[section_body_end:]
         )
 
+    @staticmethod
+    def _normalize_string_list(value: Any) -> List[str]:
+        """Normalize config values into a de-duplicated list of non-empty strings."""
+        raw_items: List[Any] = []
+        if isinstance(value, list):
+            raw_items = list(value)
+        elif isinstance(value, str):
+            text = value.replace("\r", "\n")
+            if "\n" in text:
+                raw_items = text.split("\n")
+            elif "," in text:
+                raw_items = text.split(",")
+            else:
+                raw_items = [text]
+        elif value is not None:
+            raw_items = [value]
+
+        normalized: List[str] = []
+        seen = set()
+        for item in raw_items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized
+
     def get_server_mode(self) -> str:
         """Infer runtime mode by host value in [server]."""
         if self._runtime_server_mode_override in {"local", "server"}:
@@ -808,17 +836,38 @@ class Config:
             "detected_public_ip": detected_public_ip,
         }
 
+    def get_rpa_test_bitbrowser_ids_local(self) -> List[str]:
+        rpa_cfg = self._config.get("rpa", {}) or {}
+        values = self._normalize_string_list(rpa_cfg.get("test_bitbrowser_ids_local"))
+        if values:
+            return values
+        return self._normalize_string_list(rpa_cfg.get("test_bitbrowser_id_local", ""))
+
+    def get_rpa_test_bitbrowser_ids_server(self) -> List[str]:
+        rpa_cfg = self._config.get("rpa", {}) or {}
+        values = self._normalize_string_list(rpa_cfg.get("test_bitbrowser_ids_server"))
+        if values:
+            return values
+        return self._normalize_string_list(rpa_cfg.get("test_bitbrowser_id_server", ""))
+
     def get_rpa_test_bitbrowser_id_local(self) -> str:
-        return str(self._config.get("rpa", {}).get("test_bitbrowser_id_local", "") or "").strip()
+        ids = self.get_rpa_test_bitbrowser_ids_local()
+        return ids[0] if ids else ""
 
     def get_rpa_test_bitbrowser_id_server(self) -> str:
-        return str(self._config.get("rpa", {}).get("test_bitbrowser_id_server", "") or "").strip()
+        ids = self.get_rpa_test_bitbrowser_ids_server()
+        return ids[0] if ids else ""
+
+    def get_active_rpa_test_bitbrowser_ids(self) -> List[str]:
+        """Get active RPA test bitbrowser id list based on current server mode."""
+        if self.get_server_mode() == "local":
+            return self.get_rpa_test_bitbrowser_ids_local()
+        return self.get_rpa_test_bitbrowser_ids_server()
 
     def get_active_rpa_test_bitbrowser_id(self) -> str:
         """Get RPA test bitbrowser id based on current server mode."""
-        if self.get_server_mode() == "local":
-            return self.get_rpa_test_bitbrowser_id_local()
-        return self.get_rpa_test_bitbrowser_id_server()
+        ids = self.get_active_rpa_test_bitbrowser_ids()
+        return ids[0] if ids else ""
 
     def update_server_config(self, host: str, port: int, default_public_ip: Optional[str] = None):
         """Persist [server].host/port/default_public_ip into setting.toml, then reload memory config."""
@@ -862,10 +911,12 @@ class Config:
         self._config_path.write_text(content, encoding="utf-8")
         self.reload_config()
 
-    def update_rpa_test_bitbrowser_ids(self, *, local_id: str, server_id: str):
+    def update_rpa_test_bitbrowser_ids(self, *, local_ids: List[str], server_ids: List[str]):
         """Persist [rpa] test bitbrowser id values into setting.toml."""
-        local_value = str(local_id or "").strip()
-        server_value = str(server_id or "").strip()
+        normalized_local_ids = self._normalize_string_list(local_ids)
+        normalized_server_ids = self._normalize_string_list(server_ids)
+        local_value = normalized_local_ids[0] if normalized_local_ids else ""
+        server_value = normalized_server_ids[0] if normalized_server_ids else ""
 
         content = self._config_path.read_text(encoding="utf-8")
         content = self._upsert_toml_key_in_section(
@@ -879,6 +930,18 @@ class Config:
             section="rpa",
             key="test_bitbrowser_id_server",
             value_literal=f"\"{server_value}\"",
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="rpa",
+            key="test_bitbrowser_ids_local",
+            value_literal=json.dumps(normalized_local_ids, ensure_ascii=False),
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="rpa",
+            key="test_bitbrowser_ids_server",
+            value_literal=json.dumps(normalized_server_ids, ensure_ascii=False),
         )
         self._config_path.write_text(content, encoding="utf-8")
         self.reload_config()

@@ -90,8 +90,8 @@ class Token(BaseModel):
     # 打码代理（token 级，可覆盖全局浏览器打码代理）
     captcha_proxy_url: Optional[str] = None
 
-    # 429禁用相关
-    ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" / "permission_denied" / "google_account_disabled" 或 None
+    # Token 禁用/封禁相关
+    ban_reason: Optional[str] = None  # 禁用原因编码，如 429_rate_limit / permission_denied / google_account_disabled / manual_disabled 等
     banned_at: Optional[datetime] = None  # 禁用时间
 
     @model_validator(mode="before")

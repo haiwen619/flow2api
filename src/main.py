@@ -20,6 +20,7 @@ from .services.token_manager import TokenManager
 from .services.load_balancer import LoadBalancer
 from .services.concurrency_manager import ConcurrencyManager
 from .services.generation_handler import GenerationHandler
+from .services.perf_monitor import perf_monitor
 from .api import routes, admin
 from .api.accountpool import (
     AccountPoolRepository,
@@ -193,6 +194,9 @@ async def lifespan(app: FastAPI):
     tokens = await token_manager.get_all_tokens()
 
     await concurrency_manager.initialize(tokens)
+
+    # Start performance monitor loop-lag tracker
+    perf_monitor.start_loop_lag_monitor()
 
     # Start file cache cleanup task
     await generation_handler.file_cache.start_cleanup_task()
