@@ -842,6 +842,9 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       if (st === 'queued' || st === 'running') {
         return { text: '验证中', dot: 'bg-blue-500', cls: 'text-blue-600' };
       }
+      if (st === 'banned') {
+        return { text: '已封禁', dot: 'bg-amber-500', cls: 'text-amber-600' };
+      }
       if (ok === 1 || st === 'success') {
         return { text: '验证成功', dot: 'bg-emerald-500', cls: 'text-emerald-600' };
       }
@@ -861,7 +864,10 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       const total = Number.isFinite(Number(totalOverride)) ? Number(totalOverride) : list.length;
 
       const okCount = list.filter(i => (i?.last_validate_ok === 1) || (String(i?.last_validate_status || '').toLowerCase() === 'success')).length;
-      const failedCount = list.filter(i => ((i?.last_validate_ok === 0) || (String(i?.last_validate_status || '').toLowerCase() === 'failed')) && i?.last_validate_at).length;
+      const failedCount = list.filter(i => {
+        const st = String(i?.last_validate_status || '').toLowerCase();
+        return ((i?.last_validate_ok === 0) || st === 'failed' || st === 'banned') && i?.last_validate_at;
+      }).length;
 
       const start = new Date();
       start.setHours(0, 0, 0, 0);
@@ -1389,6 +1395,13 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
             const m = apStatusMetaBySafeKey[safeKey] || {};
             m.lastMessage = String(job.message || '').trim();
             apStatusMetaBySafeKey[safeKey] = m;
+          } else if (st === 'banned') {
+            setAccountStatus(safeKey, '已封禁', 'bg-amber-500');
+            setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
+            const errMsg = String(job.error || (job.result && job.result.error) || '').trim() || '账号已被判定为封禁';
+            setAccountValidateError(safeKey, errMsg, { jobId, message: job.message || '' });
+            if (job.error) showToast(`账号已封禁: ${job.error}`, 'material-symbols:block');
+            return;
           } else if (st === 'success') {
             setAccountStatus(safeKey, '验证成功', 'bg-emerald-500');
             setAccountLastValidate(safeKey, Math.floor(Date.now() / 1000));
@@ -1943,6 +1956,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
                     'queued': 'bg-gray-500',
                     'running': 'bg-blue-500',
                     'success': 'bg-emerald-500',
+                    'banned': 'bg-amber-500',
                     'failed': 'bg-red-500',
                     'cancelled': 'bg-orange-500'
                   };
@@ -1950,6 +1964,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
                     'queued': '排队中',
                     'running': '验证中',
                     'success': '成功',
+                    'banned': '已封禁',
                     'failed': '失败',
                     'cancelled': '已取消'
                   };

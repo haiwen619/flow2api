@@ -24,6 +24,58 @@ class TokenManager:
         self._refresh_futures: dict[int, asyncio.Task] = {}
         self._project_pool_size = 4
 
+    def _sort_projects(self, projects: List[Project]) -> List[Project]:
+        """Sort projects in a stable order for round-robin selection."""
+        return sorted(projects, key=lambda project: (project.id or 0, project.project_id))
+
+    def _normalize_project_name_base(self, project_name: Optional[str] = None) -> str:
+        """Normalize a project base name for pooled creation."""
+        raw_name = (project_name or "").strip()
+        if raw_name:
+            parts = raw_name.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1].startswith("P") and parts[1][1:].isdigit():
+                return parts[0]
+            return raw_name
+        return datetime.now().strftime("%b %d - %H:%M")
+
+    def _build_project_name(self, pool_index: int, base_name: Optional[str] = None) -> str:
+        """Build a project name for the pool."""
+        normalized_base = self._normalize_project_name_base(base_name)
+        return f"{normalized_base} P{pool_index}"
+
+    async def _create_project_for_token(
+        self,
+        token: Token,
+        pool_index: int,
+        base_name: Optional[str] = None,
+    ) -> Project:
+        """Create a new pooled project for a token and persist it."""
+        project_name = self._build_project_name(pool_index, base_name)
+        project_id = await self.flow_client.create_project(token.st, project_name)
+        debug_logger.log_info(
+            f"[PROJECT] Created pooled project for token {token.id}: {project_name} ({project_id})"
+        )
+        project = Project(
+            project_id=project_id,
+            token_id=token.id,
+            project_name=project_name,
+        )
+        project.id = await self.db.add_project(project)
+        return project
+
+    def _select_next_project(self, token: Token, projects: List[Project]) -> Project:
+        """Select the next project from the pool in round-robin order."""
+        ordered_projects = self._sort_projects(projects)
+        if not ordered_projects:
+            raise ValueError("No available projects for token")
+
+        if token.current_project_id:
+            for index, project in enumerate(ordered_projects):
+                if project.project_id == token.current_project_id:
+                    return ordered_projects[(index + 1) % len(ordered_projects)]
+
+        return ordered_projects[0]
+
     def _parse_expiry_datetime(
         self,
         expires: Optional[str],
@@ -677,13 +729,34 @@ class TokenManager:
         skip_reauth_fallback: bool = False,
         refresh_source: str = "MANUAL_AT",
     ) -> bool:
-        """内部方法: 刷新AT
+        """Coalesce concurrent AT refresh calls for the same token."""
+        existing_task = self._refresh_futures.get(token_id)
+        if existing_task:
+            return await existing_task
 
-        如果 AT 刷新失败（ST 可能过期），会尝试通过浏览器自动刷新 ST，
-        然后重试 AT 刷新。
+        async def runner() -> bool:
+            try:
+                return await self._refresh_at_inner(
+                    token_id,
+                    skip_reauth_fallback=skip_reauth_fallback,
+                    refresh_source=refresh_source,
+                )
+            finally:
+                current = self._refresh_futures.get(token_id)
+                if current is task:
+                    self._refresh_futures.pop(token_id, None)
 
-    async def _refresh_at_inner(self, token_id: int) -> bool:
-        """Perform exactly one real AT refresh attempt."""
+        task = asyncio.create_task(runner())
+        self._refresh_futures[token_id] = task
+        return await task
+
+    async def _refresh_at_inner(
+        self,
+        token_id: int,
+        skip_reauth_fallback: bool = False,
+        refresh_source: str = "MANUAL_AT",
+    ) -> bool:
+        """执行一次真实的 AT 刷新流程。"""
         async with self._lock:
             token = await self.db.get_token(token_id)
             if not token:
@@ -1357,6 +1430,22 @@ class TokenManager:
             token_id,
             is_active=False,
             ban_reason="429_rate_limit",
+            banned_at=datetime.now(timezone.utc)
+        )
+
+    async def ban_token_for_permission_denied(self, token_id: int):
+        """因403 PERMISSION_DENIED错误禁用token（账号被封禁）
+
+        此封禁不会被自动解禁，需要管理员手动处理。
+
+        Args:
+            token_id: Token ID
+        """
+        debug_logger.log_warning(f"[PERMISSION_DENIED_BAN] 禁用Token {token_id} (原因: 403 PERMISSION_DENIED 账号封禁)")
+        await self.db.update_token(
+            token_id,
+            is_active=False,
+            ban_reason="permission_denied",
             banned_at=datetime.now(timezone.utc)
         )
 

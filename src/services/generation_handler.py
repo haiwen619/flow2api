@@ -781,16 +781,17 @@ class GenerationHandler:
                 f"✨ {'视频' if generation_type == 'video' else '图片'}生成任务已启动\n",
                 role="assistant"
             )
-            request_log_state["id"] = await self._log_request(
-                token_id=None,
-                operation=request_operation,
-                request_data=request_payload,
-                response_data={"status": "processing", "status_text": "started", "progress": 0, "request_id": request_id},
-                status_code=102,
-                duration=0,
-                status_text="started",
-                progress=0,
-            )
+        # 创建初始请求日志（102 Processing）
+        request_log_state["id"] = await self._log_request(
+            token_id=None,
+            operation=request_operation,
+            request_data=request_payload,
+            response_data={"status": "processing", "status_text": "started", "progress": 0, "request_id": request_id},
+            status_code=102,
+            duration=0,
+            status_text="started",
+            progress=0,
+        )
 
         # 2. 选择Token
         debug_logger.log_info(f"[GENERATION] 正在选择可用Token...")
@@ -1007,8 +1008,20 @@ class GenerationHandler:
             if stream:
                 yield self._create_stream_chunk(f"❌ {error_msg}\n")
             if token:
-                # 记录错误（所有错误统一处理，不再特殊处理429）
-                await self.token_manager.record_error(token.id)
+                # 检查是否是 PERMISSION_DENIED 错误，如果是则封禁账号
+                error_lower = str(e).lower()
+                if "permission_denied" in error_lower or "does not have permission" in error_lower:
+                    await self.token_manager.ban_token_for_permission_denied(token.id)
+                    debug_logger.log_warning(
+                        f"[GENERATION] Token {token.id} 因 PERMISSION_DENIED 已被停用并标记为封禁"
+                    )
+                    if stream:
+                        yield self._create_stream_chunk(
+                            f"⚠️ 账号已被标记为封禁状态 (PERMISSION_DENIED)\n"
+                        )
+                else:
+                    # 记录错误（所有错误统一处理）
+                    await self.token_manager.record_error(token.id)
             yield self._create_error_response(error_msg)
 
             # 记录失败日志
@@ -1894,7 +1907,7 @@ class GenerationHandler:
         status_text: Optional[str] = None,
         progress: Optional[int] = None,
     ):
-        """???????????? log_id ????????"""
+        """记录请求日志，如果 log_id 存在则更新已有记录"""
         try:
             effective_status_text = status_text or (
                 "completed" if status_code == 200 else "failed" if status_code >= 400 else "processing"
@@ -1908,10 +1921,14 @@ class GenerationHandler:
             response_body = json.dumps(response_data, ensure_ascii=False)
 
             if log_id:
+                proxy_source = "direct"
+                if hasattr(self.flow_client, "get_request_proxy_source"):
+                    proxy_source = self.flow_client.get_request_proxy_source()
                 await self.db.update_request_log(
                     log_id,
                     token_id=token_id,
                     operation=operation,
+                    proxy_source=proxy_source,
                     request_body=request_body,
                     response_body=response_body,
                     status_code=status_code,

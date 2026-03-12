@@ -1364,6 +1364,13 @@ async def validate_antigravity_account(
                 delay_s = random.uniform(2.0, 6.0)
                 _print_and_log(f"[RPA] 进入目标页后停留 {delay_s:.1f}s 再继续...")
                 await asyncio.sleep(delay_s)
+                await _raise_if_flow_access_denied(
+                    page,
+                    stage="post_onboarding_delay",
+                    timeout_ms=1_500,
+                )
+            except AccountInvalidError:
+                raise
             except Exception:
                 pass
 
@@ -2556,6 +2563,98 @@ async def _detect_google_labs_onboarding_modal(page) -> Optional[dict]:
     return None
 
 
+async def _detect_flow_access_denied_reason(page) -> Optional[dict]:
+    """检测 Flow 页面上的无权限/封禁提示。"""
+    try:
+        raw_url = str(page.url or "").strip()
+    except Exception:
+        raw_url = ""
+    url = raw_url.lower()
+    if "labs.google/fx/tools/flow" not in url:
+        return None
+
+    selectors = [
+        "h1",
+        "div[role='heading']",
+        "main",
+        "body",
+    ]
+    text_markers = [
+        "you don't have access to flow",
+        "review flow access requirements",
+        "contact google support",
+        "visit help center",
+        "无权访问 flow",
+        "无法访问 flow",
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            cnt = await loc.count()
+            if cnt <= 0:
+                continue
+            for idx in range(min(cnt, 3)):
+                item = loc.nth(idx)
+                text = ""
+                try:
+                    text = await item.inner_text(timeout=500)
+                except Exception:
+                    try:
+                        text = await item.text_content(timeout=500)
+                    except Exception:
+                        text = ""
+                clean = str(text or "").strip().replace("\r", " ").replace("\n", " ")
+                norm = clean.lower()
+                if not norm:
+                    continue
+                matched = [marker for marker in text_markers if marker in norm]
+                if not matched:
+                    continue
+                primary_markers = [
+                    marker for marker in matched
+                    if marker in {"you don't have access to flow", "无权访问 flow", "无法访问 flow"}
+                ]
+                if not primary_markers and "flow" not in norm:
+                    continue
+                return {
+                    "reason": f"text_marker:{sel}",
+                    "marker": primary_markers[0] if primary_markers else matched[0],
+                    "url": raw_url,
+                    "snippet": clean[:260],
+                }
+        except Exception:
+            continue
+    return None
+
+
+async def _raise_if_flow_access_denied(
+    page, *, stage: str = "", timeout_ms: int = 4000
+) -> None:
+    """在进入 Flow 页面后快速检测账号是否被拒绝访问。"""
+    deadline = time.time() + (max(200, int(timeout_ms)) / 1000.0)
+    while time.time() < deadline:
+        denied_info = await _detect_flow_access_denied_reason(page)
+        if denied_info:
+            marker = str(denied_info.get("marker") or "").strip() or "you don't have access to flow"
+            snippet = str(denied_info.get("snippet") or "").strip()
+            stage_msg = f"（阶段: {stage}）" if stage else ""
+            snippet_msg = f" 页面片段: {snippet}" if snippet else ""
+            raise AccountInvalidError(
+                "检测到 Google 账号已被停用/封禁（Flow access denied / You don't have access to Flow），"
+                f"终止本次任务：{marker}.{snippet_msg}{stage_msg}"
+            )
+        try:
+            if "labs.google/fx/tools/flow" not in str(page.url or "").lower():
+                return
+        except Exception:
+            pass
+        try:
+            await page.wait_for_timeout(220)
+        except Exception:
+            pass
+
+
 async def _click_google_labs_dialog_button(
     page,
     *,
@@ -2833,6 +2932,11 @@ async def _best_effort_google_labs_onboarding_modal(
 
     while time.time() < deadline:
         try:
+            await _raise_if_flow_access_denied(
+                page,
+                stage="google_labs_onboarding",
+                timeout_ms=min(800, max(250, int((deadline - time.time()) * 1000))),
+            )
             detected_info = await _detect_google_labs_onboarding_modal(page)
             if not detected_info:
                 if handled_any:

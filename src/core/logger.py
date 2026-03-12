@@ -1,6 +1,7 @@
 """Debug logger module for detailed API request/response logging"""
 import json
 import logging
+import logging.handlers
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -14,7 +15,7 @@ class DebugLogger:
         self._setup_logger()
 
     def _setup_logger(self):
-        """Setup file logger"""
+        """Setup file logger with rotation support"""
         # Create logger
         self.logger = logging.getLogger("debug_logger")
         self.logger.setLevel(logging.DEBUG)
@@ -22,10 +23,24 @@ class DebugLogger:
         # Remove existing handlers
         self.logger.handlers.clear()
 
-        # Create file handler
-        file_handler = logging.FileHandler(
+        # Create rotating file handler: 50MB per file, keep 3 backups
+        import os
+        max_bytes = 50 * 1024 * 1024  # 50 MB
+        backup_count = 3
+        try:
+            max_bytes = int(os.getenv("LOG_MAX_SIZE_MB", "50")) * 1024 * 1024
+        except (ValueError, TypeError):
+            pass
+        try:
+            backup_count = int(os.getenv("LOG_MAX_BACKUPS", "3"))
+        except (ValueError, TypeError):
+            pass
+
+        file_handler = logging.handlers.RotatingFileHandler(
             self.log_file,
             mode='a',
+            maxBytes=max_bytes,
+            backupCount=backup_count,
             encoding='utf-8'
         )
         file_handler.setLevel(logging.DEBUG)

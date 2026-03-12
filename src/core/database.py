@@ -748,7 +748,7 @@ class Database:
                     )
                 """)
                 await db.execute("""
-                    INSERT INTO request_logs (token_id, operation, proxy_source, request_body, status_code, duration,, status_text, progress, created_at, updated_at)
+                    INSERT INTO request_logs (token_id, operation, proxy_source, request_body, status_code, duration, status_text, progress, created_at, updated_at)
                     SELECT
                         token_id,
                         model as operation,
@@ -1372,11 +1372,12 @@ class Database:
         """Add request log and return log id"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
-                INSERT INTO request_logs (token_id, operation, request_body, response_body, status_code, duration, status_text, progress)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO request_logs (token_id, operation, proxy_source, request_body, response_body, status_code, duration, status_text, progress)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 log.token_id,
                 log.operation,
+                log.proxy_source,
                 log.request_body,
                 log.response_body,
                 log.status_code,
@@ -1395,6 +1396,7 @@ class Database:
         allowed_fields = {
             "token_id",
             "operation",
+            "proxy_source",
             "request_body",
             "response_body",
             "status_code",
@@ -1415,11 +1417,6 @@ class Database:
         values.append(log_id)
 
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO request_logs (token_id, operation, proxy_source, request_body, response_body, status_code, duration)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (log.token_id, log.operation, log.proxy_source, log.request_body, log.response_body,
-                  log.status_code, log.duration))
             await db.execute(
                 f"UPDATE request_logs SET {', '.join(clauses)} WHERE id = ?",
                 values,

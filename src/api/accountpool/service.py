@@ -180,6 +180,11 @@ class AccountPoolService:
         markers = [
             "检测到 google 账号已被停用/封禁",
             "google 账号已被停用/封禁",
+            "flow access denied",
+            "you don't have access to flow",
+            "review flow access requirements",
+            "无权访问 flow",
+            "无法访问 flow",
             "账号已被停用",
             "账号已被禁用",
             "此账号已被停用",
@@ -341,6 +346,7 @@ class AccountPoolService:
         status: str,
         detail: str,
         refresh_method: str,
+        require_job_id_match: bool = True,
     ) -> Dict[str, Any]:
         try:
             from .. import admin as admin_api
@@ -387,7 +393,7 @@ class AccountPoolService:
             return {"recorded": False, "reason": "token_not_found", "email_hints": email_hints}
 
         current_detail = str(getattr(token, "last_refresh_detail", "") or "")
-        if job_id and current_detail and job_id not in current_detail:
+        if require_job_id_match and job_id and current_detail and job_id not in current_detail:
             return {
                 "recorded": False,
                 "reason": "job_id_mismatch",
@@ -420,6 +426,27 @@ class AccountPoolService:
             detail_text,
         )
         return {"recorded": True, "token_id": int(token.id), "email": str(getattr(token, "email", "") or "")}
+
+    async def _sync_banned_token_outcome(
+        self,
+        *,
+        account_key: str,
+        username: Optional[str],
+        payload_email: Optional[str],
+        job_id: str,
+        detail: str,
+        refresh_method: str,
+    ) -> Dict[str, Any]:
+        return await self._record_auto_login_refresh_outcome(
+            account_key=account_key,
+            username=username,
+            payload_email=payload_email,
+            job_id=job_id,
+            status="BANNED",
+            detail=detail,
+            refresh_method=refresh_method,
+            require_job_id_match=False,
+        )
 
     async def _st_to_at_with_retry(self, *, tm: Any, st: str, job_id: str) -> Dict[str, Any]:
         max_attempts = 3
@@ -948,7 +975,7 @@ class AccountPoolService:
             (params or {}).get("auto_enable_token_on_sync"),
             default=False,
         )
-        refresh_method = "ACCOUNTPOOL_AUTO_LOGIN"
+        refresh_method = "ACCOUNTPOOL_AUTO_LOGIN" if auto_enable_token_on_sync else "ACCOUNTPOOL_VALIDATE"
         payload_email = str(username or "").strip()
         job["status"] = "running"
         job["updated_at"] = time.time()
@@ -1087,7 +1114,24 @@ class AccountPoolService:
                     token_refresh_finalized = True
             duration_ms = int((time.time() - started) * 1000)
             job["result"] = result
-            job["status"] = "success" if ok else "failed"
+            classified_detail = self._classify_rpa_failure_detail(
+                (result.get("error") if isinstance(result, dict) else None),
+                (result.get("message") if isinstance(result, dict) else None),
+            )
+            validation_status = "success" if ok else "failed"
+            if (not ok) and self._is_google_account_disabled_detail(classified_detail):
+                validation_status = "banned"
+                banned_sync_res = await self._sync_banned_token_outcome(
+                    account_key=account_key,
+                    username=username,
+                    payload_email=payload_email,
+                    job_id=job_id,
+                    detail=classified_detail,
+                    refresh_method=refresh_method,
+                )
+                if isinstance(result, dict):
+                    result["token_ban_sync"] = banned_sync_res
+            job["status"] = validation_status
             job["error"] = None if ok else (result.get("error") or "unknown error")
             job["updated_at"] = time.time()
             logger.info(
@@ -1102,30 +1146,31 @@ class AccountPoolService:
 
             await self.repo.set_validation(
                 account_key=account_key,
-                status="success" if ok else "failed",
+                status=validation_status,
                 ok=ok,
                 error=(None if ok else job["error"]),
                 job_id=job_id,
                 message=(result.get("message") if isinstance(result, dict) else None),
                 set_validate_at=True,
             )
-            if auto_enable_token_on_sync and (not ok):
+            if auto_enable_token_on_sync and (not ok) and validation_status != "banned":
                 await self._record_auto_login_refresh_outcome(
                     account_key=account_key,
                     username=username,
                     payload_email=payload_email,
                     job_id=job_id,
                     status="FAILED",
-                    detail=self._classify_rpa_failure_detail(
-                        (result.get("error") if isinstance(result, dict) else None),
-                        (result.get("message") if isinstance(result, dict) else None),
-                    ),
+                    detail=classified_detail,
                     refresh_method=refresh_method,
                 )
             self._mark_batch_progress(batch_task_id=batch_task_id, ok=ok)
         except Exception as e:
             duration_ms = int((time.time() - started) * 1000)
-            job["status"] = "failed"
+            classified_detail = self._classify_rpa_failure_detail(str(e))
+            validation_status = (
+                "banned" if self._is_google_account_disabled_detail(classified_detail) else "failed"
+            )
+            job["status"] = validation_status
             job["error"] = str(e)
             job["updated_at"] = time.time()
             logger.exception(
@@ -1135,23 +1180,32 @@ class AccountPoolService:
                 duration_ms,
                 str(e),
             )
+            if validation_status == "banned":
+                await self._sync_banned_token_outcome(
+                    account_key=account_key,
+                    username=username,
+                    payload_email=payload_email,
+                    job_id=job_id,
+                    detail=classified_detail,
+                    refresh_method=refresh_method,
+                )
             await self.repo.set_validation(
                 account_key=account_key,
-                status="failed",
+                status=validation_status,
                 ok=False,
                 error=str(e),
                 job_id=job_id,
                 message=None,
                 set_validate_at=True,
             )
-            if auto_enable_token_on_sync:
+            if auto_enable_token_on_sync and validation_status != "banned":
                 await self._record_auto_login_refresh_outcome(
                     account_key=account_key,
                     username=username,
                     payload_email=payload_email,
                     job_id=job_id,
                     status="FAILED",
-                    detail=self._classify_rpa_failure_detail(str(e)),
+                    detail=classified_detail,
                     refresh_method=refresh_method,
                 )
             self._mark_batch_progress(batch_task_id=batch_task_id, ok=False)

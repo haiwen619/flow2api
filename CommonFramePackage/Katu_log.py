@@ -1,6 +1,5 @@
 """
-日志模块 - 使用环境变量配置，支持日志轮转
-基于 Katu_log.py，增加按大小自动轮转防止单文件过大。
+日志模块 - 使用环境变量配置
 """
 
 import os
@@ -38,30 +37,14 @@ _cached_log_file: str = "log.txt"
 # ENABLE_LOG=0/false/no/off 时彻底关闭日志
 _log_enabled: bool = True
 
-# -----------------------------------------------------------------
-# 日志轮转配置
-# -----------------------------------------------------------------
-_LOG_MAX_SIZE: int = 50 * 1024 * 1024    # 单文件最大 50 MB
-_LOG_MAX_BACKUPS: int = 3                 # 保留最近 3 个备份
-_current_file_size: int = 0               # 当前文件已写入字节数（近似值）
-
 
 def _refresh_config():
     """从环境变量刷新缓存配置（模块加载时及需要时调用）"""
-    global _cached_log_level, _cached_log_file, _log_enabled, _LOG_MAX_SIZE, _LOG_MAX_BACKUPS
+    global _cached_log_level, _cached_log_file, _log_enabled
     level = os.getenv("LOG_LEVEL", "info").lower()
     _cached_log_level = LOG_LEVELS.get(level, LOG_LEVELS["info"])
     _cached_log_file = os.getenv("LOG_FILE", "log.txt")
     _log_enabled = os.getenv("ENABLE_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
-    # 允许通过环境变量自定义轮转大小（单位 MB，默认 50）
-    try:
-        _LOG_MAX_SIZE = int(os.getenv("LOG_MAX_SIZE_MB", "50")) * 1024 * 1024
-    except (ValueError, TypeError):
-        _LOG_MAX_SIZE = 50 * 1024 * 1024
-    try:
-        _LOG_MAX_BACKUPS = int(os.getenv("LOG_MAX_BACKUPS", "3"))
-    except (ValueError, TypeError):
-        _LOG_MAX_BACKUPS = 3
 
 
 def _get_current_log_level() -> int:
@@ -89,19 +72,11 @@ def _close_log_file():
 
 
 def _open_log_file(mode: str = "a") -> bool:
-    global _log_file_handle, _file_writing_disabled, _disable_reason, _current_file_size
+    global _log_file_handle, _file_writing_disabled, _disable_reason
     _close_log_file()
     try:
         # 使用较大缓冲区（64 KB），由 writer 线程定期 flush，减少系统调用
         _log_file_handle = open(_cached_log_file, mode, encoding="utf-8", buffering=65536)
-        # 初始化当前文件大小（追加模式时读取实际大小）
-        if mode == "a":
-            try:
-                _current_file_size = os.path.getsize(_cached_log_file)
-            except OSError:
-                _current_file_size = 0
-        else:
-            _current_file_size = 0
         return True
     except (PermissionError, OSError, IOError) as e:
         _file_writing_disabled = True
@@ -116,11 +91,10 @@ def _open_log_file(mode: str = "a") -> bool:
 
 def _clear_log_file():
     """清空日志文件（启动时调用，此时 writer 线程尚未启动，直接操作安全）"""
-    global _file_writing_disabled, _disable_reason, _current_file_size
+    global _file_writing_disabled, _disable_reason
     try:
         with open(_cached_log_file, "w", encoding="utf-8") as f:
             pass  # 覆盖清空
-        _current_file_size = 0
         _open_log_file("a")
     except (PermissionError, OSError, IOError) as e:
         _file_writing_disabled = True
@@ -135,50 +109,6 @@ def _clear_log_file():
         print(f"Warning: Failed to clear log file: {e}", file=sys.stderr)
 
 
-def _rotate_log_file():
-    """日志轮转：当前日志文件超过 _LOG_MAX_SIZE 时，
-    将其重命名为 log.1.txt, 旧备份依次递增编号，超出 _LOG_MAX_BACKUPS 的删除。
-    仅在 writer 线程中调用，无需额外锁。
-    """
-    global _current_file_size
-    _close_log_file()
-
-    base = _cached_log_file                          # e.g. "log.txt"
-    dot_pos = base.rfind(".")
-    if dot_pos > 0:
-        stem, ext = base[:dot_pos], base[dot_pos:]   # "log", ".txt"
-    else:
-        stem, ext = base, ""
-
-    try:
-        # 从最大编号往前挪：log.3.txt → 删, log.2.txt → log.3.txt, ...
-        for i in range(_LOG_MAX_BACKUPS, 0, -1):
-            src = f"{stem}.{i}{ext}"
-            if i >= _LOG_MAX_BACKUPS:
-                # 超出保留数量，直接删除
-                if os.path.exists(src):
-                    os.remove(src)
-            else:
-                dst = f"{stem}.{i + 1}{ext}"
-                if os.path.exists(src):
-                    if os.path.exists(dst):
-                        os.remove(dst)
-                    os.rename(src, dst)
-
-        # 当前文件 → log.1.txt
-        first_backup = f"{stem}.1{ext}"
-        if os.path.exists(base):
-            if os.path.exists(first_backup):
-                os.remove(first_backup)
-            os.rename(base, first_backup)
-
-    except Exception as e:
-        print(f"Warning: Log rotation failed: {e}", file=sys.stderr)
-
-    _current_file_size = 0
-    _open_log_file("a")
-
-
 # -----------------------------------------------------------------
 # Writer 线程：批量从 deque 取出并写入，减少系统调用次数
 # -----------------------------------------------------------------
@@ -187,7 +117,7 @@ _FLUSH_INTERVAL = 2      # 秒：无新消息时强制 flush 周期
 
 
 def _log_writer_worker():
-    global _writer_running, _current_file_size
+    global _writer_running
 
     last_flush_time = 0.0
 
@@ -208,13 +138,11 @@ def _log_writer_worker():
         if batch and not _file_writing_disabled:
             # 一次 write 调用搞定整批，最大化减少系统调用
             chunk = "\n".join(batch) + "\n"
-            chunk_bytes = len(chunk.encode("utf-8", errors="replace"))
             try:
                 if _log_file_handle is None:
                     _open_log_file("a")
                 if _log_file_handle is not None:
                     _log_file_handle.write(chunk)
-                    _current_file_size += chunk_bytes
             except Exception as e:
                 print(f"Warning: Failed to write log batch: {e}", file=sys.stderr)
                 _close_log_file()
@@ -222,15 +150,6 @@ def _log_writer_worker():
                     _open_log_file("a")
                 except Exception:
                     pass
-
-            # 检查是否需要轮转
-            if _current_file_size >= _LOG_MAX_SIZE:
-                try:
-                    if _log_file_handle is not None:
-                        _log_file_handle.flush()
-                    _rotate_log_file()
-                except Exception as e:
-                    print(f"Warning: Log rotation failed: {e}", file=sys.stderr)
 
         # 定时 flush
         now = _now_ts()
@@ -401,10 +320,8 @@ atexit.register(_stop_writer_thread)
 # 1. 设置日志级别: export LOG_LEVEL=debug  (或在 .env 中设置)
 # 2. 设置日志文件: export LOG_FILE=log.txt (或在 .env 中设置)
 # 3. 日志级别已缓存，热路径零 os.getenv 调用
-# 4. 写入线程批量处理（最多 1000 条/次），64 KB 缓冲区，每 2 s flush 一次
+# 4. 写入线程批量处理（最多 200 条/次），64 KB 缓冲区，每 0.5 s flush 一次
 # 5. 队列上限 5000 条，超出时丢弃新日志（过载保护，不阻塞主线程）
 # 6. 动态调整级别：set_log_level('debug') 立即生效
 # 7. 彻底关闭日志（最高性能）：export ENABLE_LOG=0  (或 false/no/off)
 #    关闭后不会启动 writer 线程、不写文件、不打印控制台，_log 直接 return
-# 8. 日志轮转: 单文件超过 50MB 自动轮转，保留 3 个备份
-#    可通过 LOG_MAX_SIZE_MB=50 和 LOG_MAX_BACKUPS=3 环境变量自定义

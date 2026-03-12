@@ -91,7 +91,7 @@ class Token(BaseModel):
     captcha_proxy_url: Optional[str] = None
 
     # 429禁用相关
-    ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" 或 None
+    ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" / "permission_denied" / "google_account_disabled" 或 None
     banned_at: Optional[datetime] = None  # 禁用时间
 
     @model_validator(mode="before")

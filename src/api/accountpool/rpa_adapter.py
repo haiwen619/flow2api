@@ -97,12 +97,15 @@ async def validate_account_via_rpa(
             "auto_detected_project": None,
         }
 
+    account_invalid_error_cls = None
     try:
         from Rpa.BrowserAutomation.main import (
+            AccountInvalidError,
             DEFAULT_PANEL_VALIDATE_OPTIONS,
             ValidateOptions,
             validate_antigravity_account,
         )
+        account_invalid_error_cls = AccountInvalidError
 
         opts = ValidateOptions(
             headless=bool(params.get("headless", DEFAULT_PANEL_VALIDATE_OPTIONS.headless)),
@@ -176,6 +179,19 @@ async def validate_account_via_rpa(
             "payload_email": (str(result.get("payload_email") or "").strip() or None),
         }
     except Exception as e:
+        if account_invalid_error_cls is not None and isinstance(e, account_invalid_error_cls):
+            logger.warning(
+                "[AccountPool][RPA] job_id=%s browser_automation rejected by business rule: %s",
+                job_id,
+                str(e),
+            )
+            return {
+                "success": False,
+                "message": "rpa_browser_automation_account_invalid",
+                "error": str(e),
+                "file_path": None,
+                "auto_detected_project": None,
+            }
         logger.exception("[AccountPool][RPA] job_id=%s browser_automation failed: %s", job_id, str(e))
         return {
             "success": False,
