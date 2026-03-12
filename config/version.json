@@ -1,7 +1,7 @@
 {
-  "version": "v1.0.0",
-  "build": "2026.03.06",
-  "release_date": "2026-03-06",
+  "version": "v1.1.9",
+  "build": "2026.03.11",
+  "release_date": "2026-03-11",
   "channel": "stable",
-  "notes": "初始版本标识文件，用于发布迭代、回退识别与界面展示。"
+  "notes": "更新自动刷新防重试、打码优先级回退、Token 全部删除、RPA projectId 补建与诊断日志。"
 }

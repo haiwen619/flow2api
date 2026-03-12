@@ -1824,7 +1824,34 @@
             localStorage.removeItem("gcli2api_auth_token"),
             (location.href = "/login"),
             null)
-          : r;
+          : (() => {
+            let cachedBodyText;
+            const readBodyText = async () => {
+              if (cachedBodyText !== undefined) return cachedBodyText;
+              cachedBodyText = await r.clone().text();
+              return cachedBodyText;
+            };
+            r.json = async () => {
+              const text = (await readBodyText()).trim();
+              if (!text) {
+                return r.ok
+                  ? {}
+                  : {
+                    success: false,
+                    detail: `HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ""}`,
+                  };
+              }
+              try {
+                return JSON.parse(text);
+              } catch (_) {
+                return {
+                  success: false,
+                  detail: text || `HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ""}`,
+                };
+              }
+            };
+            return r;
+          })();
       },
       loadStats = async () => {
         try {
