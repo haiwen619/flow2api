@@ -402,6 +402,7 @@ class ServerConfigRequest(BaseModel):
     default_public_ip: Optional[str] = None
     rpa_test_bitbrowser_id_local: Optional[str] = None
     rpa_test_bitbrowser_id_server: Optional[str] = None
+    block_gemini_25_flash_image: Optional[bool] = None
 
 
 class GenerationConfigRequest(BaseModel):
@@ -1313,6 +1314,7 @@ async def get_server_config(token: str = Depends(verify_admin_token)):
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
             "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
+            "block_gemini_25_flash_image": bool(config.block_gemini_25_flash_image),
             "restart_required": True,
         },
     }
@@ -1351,6 +1353,11 @@ async def update_server_config(
         if request.rpa_test_bitbrowser_id_server is not None
         else config.get_rpa_test_bitbrowser_id_server()
     )
+    block_gemini_25_flash_image = (
+        bool(request.block_gemini_25_flash_image)
+        if request.block_gemini_25_flash_image is not None
+        else bool(config.block_gemini_25_flash_image)
+    )
 
     try:
         config.update_server_config(
@@ -1362,14 +1369,17 @@ async def update_server_config(
             local_id=local_bit_id,
             server_id=server_bit_id,
         )
+        config.update_flow_switches(
+            block_gemini_25_flash_image=block_gemini_25_flash_image,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"保存服务器配置失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
     return {
         "success": True,
-        "message": "服务器配置已保存，重启服务后生效",
+        "message": "系统配置已保存，模型拦截开关立即生效；监听地址/端口修改需重启服务",
         "config": {
             "mode": config.get_server_mode(),
             "host": config.server_host,
@@ -1381,6 +1391,7 @@ async def update_server_config(
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
             "rpa_test_bitbrowser_id_active": config.get_active_rpa_test_bitbrowser_id(),
+            "block_gemini_25_flash_image": bool(config.block_gemini_25_flash_image),
             "restart_required": True,
         },
     }

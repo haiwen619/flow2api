@@ -247,16 +247,34 @@ class Config:
             self._config["flow"] = {}
         self._config["flow"]["reauth_cookie_invalid_auto_login_enabled"] = bool(enabled)
 
+    @property
+    def block_gemini_25_flash_image(self) -> bool:
+        """Whether the gemini-2.5-flash-image family should be rejected at request entry."""
+        return bool(
+            self._config.get("flow", {}).get(
+                "block_gemini_25_flash_image",
+                True,
+            )
+        )
+
+    def set_block_gemini_25_flash_image(self, enabled: bool):
+        """Set request blocking switch for gemini-2.5-flash-image family."""
+        if "flow" not in self._config:
+            self._config["flow"] = {}
+        self._config["flow"]["block_gemini_25_flash_image"] = bool(enabled)
+
     def update_flow_switches(
         self,
         *,
         reauth_cookie_invalid_auto_login_enabled: Optional[bool] = None,
         enable_reauth_refresh: Optional[bool] = None,
+        block_gemini_25_flash_image: Optional[bool] = None,
     ):
         """Persist mutable flow switches into setting.toml and reload memory config."""
         if (
             reauth_cookie_invalid_auto_login_enabled is None
             and enable_reauth_refresh is None
+            and block_gemini_25_flash_image is None
         ):
             return
 
@@ -278,6 +296,14 @@ class Config:
                 section="flow",
                 key="enable_reauth_refresh",
                 value_literal=("true" if bool(enable_reauth_refresh) else "false"),
+            )
+
+        if block_gemini_25_flash_image is not None:
+            content = self._upsert_toml_key_in_section(
+                content=content,
+                section="flow",
+                key="block_gemini_25_flash_image",
+                value_literal=("true" if bool(block_gemini_25_flash_image) else "false"),
             )
 
         self._config_path.write_text(content, encoding="utf-8")

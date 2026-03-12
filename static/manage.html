@@ -749,6 +749,15 @@
                 服务器模式默认指纹浏览器窗口ID（host=0.0.0.0 时使用）
               </p>
             </div>
+            <div class="pt-2 border-t border-border">
+              <label class="inline-flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="cfgBlockGemini25FlashImage" class="h-4 w-4 rounded border-input" />
+                <span class="text-sm font-medium">拦截 gemini-2.5-flash-image</span>
+              </label>
+              <p class="text-xs text-muted-foreground mt-2">
+                启用后，<code>gemini-2.5-flash-image</code> 及其横竖屏变体请求会直接返回“暂不支持该模型”
+              </p>
+            </div>
           </div>
           <button onclick="saveServerConfig()"
             class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 w-full mt-4">
@@ -3938,6 +3947,8 @@
             "f1ef6f8ccb6146988c67a63b92a78971";
           $("cfgRpaBitbrowserIdServer").value =
             d.config.rpa_test_bitbrowser_id_server || "";
+          $("cfgBlockGemini25FlashImage").checked =
+            d.config.block_gemini_25_flash_image !== false;
         } catch (e) {
           console.error("加载服务器配置失败:", e);
         }
@@ -3949,6 +3960,7 @@
         const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim();
         const localBitId = $("cfgRpaBitbrowserIdLocal").value.trim();
         const serverBitId = $("cfgRpaBitbrowserIdServer").value.trim();
+        const blockGemini25FlashImage = $("cfgBlockGemini25FlashImage").checked;
 
         if (!host) return showToast("请输入监听地址", "error");
         if (port < 1 || port > 65535)
@@ -3964,12 +3976,16 @@
               default_public_ip: defaultPublicIp || null,
               rpa_test_bitbrowser_id_local: localBitId || null,
               rpa_test_bitbrowser_id_server: serverBitId || null,
+              block_gemini_25_flash_image: blockGemini25FlashImage,
             }),
           });
           if (!r) return;
           const d = await r.json();
           if (d.success) {
-            showToast("服务器配置已保存，重启服务后生效", "success");
+            showToast(
+              d.message || "系统配置已保存，监听地址/端口修改需重启服务后生效",
+              "success",
+            );
             await loadServerConfig();
           } else {
             showToast("保存失败: " + (d.detail || d.message || "未知错误"), "error");

@@ -9,6 +9,7 @@ import time
 from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 from ..core.auth import verify_api_key_header
+from ..core.config import config
 from ..core.models import ChatCompletionRequest
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 from ..core.logger import debug_logger
@@ -51,6 +52,7 @@ def _build_image_model_families() -> Set[str]:
 
 
 IMAGE_MODEL_FAMILIES = _build_image_model_families()
+BLOCKED_IMAGE_MODEL_FAMILIES = {"gemini-2.5-flash-image"}
 
 
 def _truncate_for_log(value: Any, limit: int = 200) -> Any:
@@ -105,6 +107,17 @@ def _build_request_summary_for_log(request: ChatCompletionRequest) -> Dict[str, 
             summary["contents_preview"] = "\n".join(first_parts_preview)[:120]
 
     return _truncate_for_log(summary)
+
+
+def _is_temporarily_blocked_image_model(model_id: str) -> bool:
+    """Check whether the requested image model family is currently blocked by runtime config."""
+    normalized = str(model_id or "").strip().lower()
+    if not normalized or not bool(config.block_gemini_25_flash_image):
+        return False
+    if normalized in BLOCKED_IMAGE_MODEL_FAMILIES:
+        return True
+    family, _, _ = _split_image_model_id(normalized)
+    return bool(family and family in BLOCKED_IMAGE_MODEL_FAMILIES)
 
 
 def _is_unsupported_ultrawide_ratio(value: Optional[str]) -> bool:
@@ -702,6 +715,11 @@ async def create_chat_completion(
 
         # 先兼容模型别名（如 -4k-16x9 / -4x3）
         alias_normalized_model = _normalize_image_model_alias(model)
+        if _is_temporarily_blocked_image_model(alias_normalized_model):
+            raise HTTPException(
+                status_code=400,
+                detail=f"暂不支持该模型: {model}",
+            )
 
         # 根据 imageConfig 自动映射模型（如 gemini-3.0-pro-image + 4:3 -> gemini-3.0-pro-image-four-three）
         resolved_model = _resolve_model_from_image_config(alias_normalized_model, request.generationConfig)
