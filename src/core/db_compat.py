@@ -187,6 +187,12 @@ class _MySQLCursorAdapter:
         rows = self._result.fetchall()
         return [self._convert_row(row) for row in rows]
 
+    async def fetchmany(self, size: Optional[int] = None) -> Any:
+        if self._result is None:
+            return []
+        rows = self._result.fetchmany(size)
+        return [self._convert_row(row) for row in rows]
+
 
 class _MySQLConnectionAdapter:
     def __init__(self, target: str):
@@ -244,6 +250,28 @@ class _MySQLConnectionAdapter:
             await self._conn.commit()
 
 
+class _SQLiteConnectContext:
+    def __init__(self, target: str):
+        self._target = target
+        self._conn = None
+
+    async def __aenter__(self):
+        self._conn = await sqlite_aiosqlite.connect(self._target, timeout=30)
+        try:
+            await self._conn.execute("PRAGMA foreign_keys=ON")
+            await self._conn.execute("PRAGMA busy_timeout=30000")
+            await self._conn.execute("PRAGMA synchronous=NORMAL")
+            await self._conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+
+
 class _DBAPICompat:
     Row = Row
 
@@ -251,7 +279,7 @@ class _DBAPICompat:
     def connect(target: str):
         if is_mysql_target(target):
             return _MySQLConnectionAdapter(target)
-        return sqlite_aiosqlite.connect(target)
+        return _SQLiteConnectContext(target)
 
 
 dbapi = _DBAPICompat()

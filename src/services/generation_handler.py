@@ -692,6 +692,32 @@ class GenerationHandler:
         """????????????????"""
         return dict(success=False, error_message=None, error_emitted=False)
 
+    def _sanitize_log_payload(self, payload: Any) -> Any:
+        """瘦身日志载荷，避免把大块 base64 / data URL 写入 request_logs。"""
+        if payload is None:
+            return None
+        if isinstance(payload, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, value in payload.items():
+                key_text = str(key or "").lower()
+                if key_text == "base64" and isinstance(value, str):
+                    sanitized[key] = f"[omitted base64 length={len(value)}]"
+                    continue
+                if key_text in {"request_body", "response_body"} and isinstance(value, str) and len(value) > 4000:
+                    sanitized[key] = value[:4000] + "...(truncated)"
+                    continue
+                sanitized[key] = self._sanitize_log_payload(value)
+            return sanitized
+        if isinstance(payload, list):
+            return [self._sanitize_log_payload(item) for item in payload[:20]]
+        if isinstance(payload, str):
+            if payload.startswith("data:image/") or payload.startswith("data:video/"):
+                return f"[omitted data-url length={len(payload)}]"
+            if len(payload) > 4000:
+                return payload[:4000] + "...(truncated)"
+            return payload
+        return payload
+
     def _mark_generation_failed(self, generation_result: Optional[Dict[str, Any]], error_message: str):
         """????????????????????"""
         if isinstance(generation_result, dict):
@@ -841,6 +867,8 @@ class GenerationHandler:
             return
 
         debug_logger.log_info(f"[GENERATION] 已选择Token: {token.id} ({token.email})")
+        if self.load_balancer:
+            pending_token_state["active"] = True
         await self._update_request_log_progress(
             request_log_state,
             token_id=token.id,
@@ -1936,8 +1964,10 @@ class GenerationHandler:
                 effective_progress = 100 if status_code == 200 else 0 if status_code >= 400 else 0
             effective_progress = max(0, min(100, int(effective_progress)))
 
-            request_body = json.dumps(request_data, ensure_ascii=False)
-            response_body = json.dumps(response_data, ensure_ascii=False)
+            safe_request_data = self._sanitize_log_payload(request_data)
+            safe_response_data = self._sanitize_log_payload(response_data)
+            request_body = json.dumps(safe_request_data, ensure_ascii=False)
+            response_body = json.dumps(safe_response_data, ensure_ascii=False)
 
             if log_id:
                 proxy_source = "direct"

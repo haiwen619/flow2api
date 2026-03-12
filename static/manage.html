@@ -488,6 +488,17 @@
             </svg>
             <span class="text-sm font-medium">导出</span>
           </button>
+          <button onclick="exportCodeServiceProjectActions()"
+            class="inline-flex items-center justify-center rounded-md bg-slate-700 text-white hover:bg-slate-800 h-8 px-3"
+            title="导出代码服务 project_id/action 配置">
+            <svg class="h-4 w-4 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span class="text-sm font-medium">导出代码服务配置</span>
+          </button>
           <button onclick="openImportModal()"
             class="inline-flex items-center justify-center rounded-md bg-green-600 text-white hover:bg-green-700 h-8 px-3"
             title="导入Token">
@@ -1371,7 +1382,7 @@
           </div>
         </div>
         <div class="border-b border-border p-4 space-y-4">
-          <div class="grid gap-3 md:grid-cols-3">
+          <div class="grid gap-3 md:grid-cols-5">
             <div class="rounded-lg border border-border bg-muted/20 p-4">
               <div class="text-xs text-muted-foreground">今日错误总数</div>
               <div id="logsTodayErrorTotal" class="mt-2 text-2xl font-semibold text-red-600">0</div>
@@ -1384,15 +1395,57 @@
               <div class="text-xs text-muted-foreground">日志总条数</div>
               <div id="logsTotalCount" class="mt-2 text-2xl font-semibold text-foreground">0</div>
             </div>
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="text-xs text-muted-foreground">数据库占用</div>
+              <div id="logsDbSize" class="mt-2 text-2xl font-semibold text-foreground">-</div>
+            </div>
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="text-xs text-muted-foreground">日志时间范围</div>
+              <div id="logsTimeRange" class="mt-2 text-sm font-medium text-foreground">-</div>
+            </div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-4">
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div class="text-sm font-medium">日志清理</div>
+                <div class="text-xs text-muted-foreground mt-1">按天数删除旧日志，并额外只保留最近 N 条；SQLite 会尝试回收磁盘空间</div>
+              </div>
+              <div class="flex flex-wrap items-end gap-2">
+                <label class="text-xs text-muted-foreground">删除多少天前
+                  <input id="logsCleanupDays" type="number" min="1" value="7" class="mt-1 w-24 rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground" />
+                </label>
+                <label class="text-xs text-muted-foreground">保留最近条数
+                  <input id="logsCleanupKeep" type="number" min="0" value="5000" class="mt-1 w-32 rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground" />
+                </label>
+                <label class="inline-flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                  <input id="logsCleanupTrim" type="checkbox" checked class="rounded border-border" />
+                  瘦身现有大日志
+                </label>
+                <label class="inline-flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                  <input id="logsCleanupVacuum" type="checkbox" checked class="rounded border-border" />
+                  回收空间
+                </label>
+                <button onclick="cleanupLogs()"
+                  class="inline-flex items-center justify-center rounded-md bg-amber-600 text-white hover:bg-amber-700 h-9 px-3 text-sm"
+                  title="清理旧日志并压缩数据库">
+                  清理旧日志
+                </button>
+              </div>
+            </div>
           </div>
           <div class="rounded-lg border border-border overflow-hidden">
             <div class="flex items-center justify-between gap-3 px-4 py-3 bg-muted/20 border-b border-border">
               <div>
                 <div class="text-sm font-medium">今日错误分析</div>
-                <div id="logsTodayErrorMeta" class="text-xs text-muted-foreground mt-1">按北京时间统计</div>
+                <div id="logsTodayErrorMeta" class="text-xs text-muted-foreground mt-1">按北京时间统计，默认折叠</div>
               </div>
+              <button onclick="toggleLogsTodayErrorSection()"
+                class="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs hover:bg-accent">
+                <span id="logsTodayErrorToggleLabel">展开</span>
+                <span id="logsTodayErrorToggleIcon">▼</span>
+              </button>
             </div>
-            <div class="relative w-full overflow-auto">
+            <div id="logsTodayErrorSection" class="relative hidden w-full overflow-auto">
               <table class="w-full text-sm">
                 <thead class="bg-background">
                   <tr class="border-b border-border">
@@ -2331,6 +2384,7 @@
     let refreshRecordMap = {};
     let refreshHistoryCache = {};
     let bannedTokensExpanded = false;
+    let logsTodayErrorExpanded = false;
     let autoLoginRecoveryWatchers = {};
     let readmeDocCache = null;
     let projectVersionCache = null;
@@ -2881,6 +2935,32 @@
           ? allTokens.filter((item) => isBannedToken(item)).length
           : 0;
         updateBannedTokensSection(bannedCount);
+      },
+      updateLogsTodayErrorSection = (count = null) => {
+        const section = $("logsTodayErrorSection");
+        const label = $("logsTodayErrorToggleLabel");
+        const icon = $("logsTodayErrorToggleIcon");
+        const meta = $("logsTodayErrorMeta");
+        const total = count === null ? Number($("logsTodayErrorTotal")?.textContent || 0) : Math.max(0, Number(count || 0));
+        if (section) {
+          section.classList.toggle("hidden", !logsTodayErrorExpanded || total <= 0);
+        }
+        if (label) {
+          label.textContent = total <= 0 ? "展开" : logsTodayErrorExpanded ? "收起" : "展开";
+        }
+        if (icon) {
+          icon.textContent = total <= 0 ? "▼" : logsTodayErrorExpanded ? "▲" : "▼";
+        }
+        if (meta) {
+          const base = meta.textContent || "按北京时间统计";
+          if (!base.includes("默认折叠")) {
+            meta.textContent = `${base}，默认折叠`;
+          }
+        }
+      },
+      toggleLogsTodayErrorSection = () => {
+        logsTodayErrorExpanded = !logsTodayErrorExpanded;
+        updateLogsTodayErrorSection();
       },
       parseServerUtcTimestamp = (ts) => {
         if (!ts) return null;
@@ -4031,6 +4111,31 @@
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
         showToast(`已导出 ${allTokens.length} 个Token`, "success");
+      },
+      exportCodeServiceProjectActions = async () => {
+        try {
+          const r = await apiRequest("/api/tokens/project-actions/export");
+          if (!r) return;
+          const data = await r.json();
+          const items = Array.isArray(data?.items) ? data.items : [];
+          if (items.length === 0) {
+            showToast("当前没有可导出的 project_id 配置", "info");
+            return;
+          }
+          const dataStr = JSON.stringify(data, null, 2);
+          const dataBlob = new Blob([dataStr], { type: "application/json" });
+          const url = URL.createObjectURL(dataBlob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `code_service_project_actions_${new Date().toISOString().split("T")[0]}.json`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          showToast(`已导出 ${items.length} 条代码服务配置`, "success");
+        } catch (e) {
+          showToast("导出代码服务配置失败: " + e.message, "error");
+        }
       },
       formatInternalExportFileSize = (size) => {
         const v = Number(size || 0);
@@ -5448,6 +5553,35 @@
           ? `${Math.max(0, Math.min(100, progress))}%`
           : "-";
       },
+      formatBytes = (value) => {
+        const size = Number(value || 0);
+        if (!Number.isFinite(size) || size <= 0) return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let idx = 0;
+        let current = size;
+        while (current >= 1024 && idx < units.length - 1) {
+          current /= 1024;
+          idx += 1;
+        }
+        return `${current.toFixed(current >= 100 || idx === 0 ? 0 : current >= 10 ? 1 : 2)} ${units[idx]}`;
+      },
+      loadLogStorageStats = async () => {
+        try {
+          const r = await apiRequest("/api/logs/storage");
+          if (!r) return;
+          const d = await r.json();
+          if ($("logsDbSize")) {
+            $("logsDbSize").textContent = d.db_size_bytes != null ? formatBytes(d.db_size_bytes) : "-";
+          }
+          if ($("logsTimeRange")) {
+            const oldest = d.oldest_at ? formatLogTimeBeijing(d.oldest_at) : "-";
+            const newest = d.newest_at ? formatLogTimeBeijing(d.newest_at) : "-";
+            $("logsTimeRange").textContent = `${oldest} ~ ${newest}`;
+          }
+        } catch (e) {
+          console.error("加载日志存储统计失败:", e);
+        }
+      },
       renderTodayErrorSummary = (summary) => {
         const totalEl = $("logsTodayErrorTotal");
         const uniqueEl = $("logsTodayErrorUnique");
@@ -5463,14 +5597,15 @@
         if (countEl) countEl.textContent = String(logPaginationMeta.total || 0);
         if (metaEl) {
           metaEl.textContent = dateText
-            ? `${dateText} ${timezoneText} 今日错误汇总`
-            : "按北京时间统计";
+            ? `${dateText} ${timezoneText} 今日错误汇总，默认折叠`
+            : "按北京时间统计，默认折叠";
         }
         if (!body) return;
         const items = Array.isArray(summary?.items) ? summary.items : [];
         if (!items.length) {
           body.innerHTML =
             '<tr><td colspan="5" class="py-6 px-3 text-center text-sm text-muted-foreground">今日暂无错误日志</td></tr>';
+          updateLogsTodayErrorSection(0);
           return;
         }
         body.innerHTML = items
@@ -5490,6 +5625,7 @@
             </tr>`;
           })
           .join("");
+        updateLogsTodayErrorSection(totalErrors);
       },
       updateLogsPagination = () => {
         const info = $("logsPaginationInfo");
@@ -5539,6 +5675,7 @@
               delete window.logDetailCache[key];
             }
           });
+          await loadLogStorageStats();
           renderTodayErrorSummary(payload?.today_error_summary || {});
           updateLogsPagination();
           const tb = $("logsTableBody");
@@ -5591,13 +5728,46 @@
             resetLogMediaCache();
             currentLogsPage = 1;
             logPaginationMeta = { page: 1, page_size: logsPageSize, total: 0, total_pages: 1 };
-            showToast("日志已清空", "success");
+            showToast(`日志已清空，释放 ${formatBytes(d.freed_bytes || 0)}`, "success");
             await loadLogs();
           } else {
             showToast("清空失败: " + (d.message || "未知错误"), "error");
           }
         } catch (e) {
           showToast("清空失败: " + e.message, "error");
+        }
+      },
+      cleanupLogs = async () => {
+        const olderThanDays = Number($("logsCleanupDays")?.value || 0);
+        const keepLatest = Number($("logsCleanupKeep")?.value || 0);
+        const trimPayloads = Boolean($("logsCleanupTrim")?.checked);
+        const vacuum = Boolean($("logsCleanupVacuum")?.checked);
+        if (olderThanDays <= 0 && keepLatest < 0) {
+          showToast("请输入有效的清理条件", "error");
+          return;
+        }
+        if (!confirm(`确定清理日志吗？\n- 删除 ${olderThanDays} 天前日志\n- 保留最近 ${keepLatest} 条\n- ${trimPayloads ? "瘦身现有大日志" : "不瘦身现有日志"}\n- ${vacuum ? "执行回收空间" : "不回收空间"}`)) return;
+        try {
+          const r = await apiRequest("/api/logs/cleanup", {
+            method: "POST",
+            body: JSON.stringify({
+              older_than_days: olderThanDays > 0 ? olderThanDays : null,
+              keep_latest: keepLatest >= 0 ? keepLatest : null,
+              trim_payloads: trimPayloads,
+              vacuum,
+            }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (d.success) {
+            showToast(`清理完成：删除 ${d.deleted || 0} 条，瘦身 ${d.compacted_rows || 0} 条，释放 ${formatBytes(d.freed_bytes || 0)}`, "success");
+            currentLogsPage = 1;
+            await loadLogs();
+          } else {
+            showToast("清理失败: " + (d.detail || d.message || "未知错误"), "error");
+          }
+        } catch (e) {
+          showToast("清理失败: " + e.message, "error");
         }
       },
       showRefreshRecordDetail = async (tokenId) => {

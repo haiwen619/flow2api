@@ -25,6 +25,7 @@ from ..core.config import config
 from ..core.database import Database
 from ..core.models import normalize_captcha_priority_order
 from ..services.concurrency_manager import ConcurrencyManager
+from ..services.load_balancer import LoadBalancer
 from ..services.perf_monitor import perf_monitor
 from ..services.proxy_manager import ProxyManager
 from ..services.token_manager import TokenManager
@@ -36,6 +37,7 @@ token_manager: TokenManager = None
 proxy_manager: ProxyManager = None
 db: Database = None
 concurrency_manager: Optional[ConcurrencyManager] = None
+load_balancer: Optional[LoadBalancer] = None
 
 # Store active admin session tokens (in production, use Redis or database)
 active_admin_tokens = set()
@@ -151,6 +153,54 @@ def _build_disable_reason_meta(row: Dict[str, Any], error_ban_threshold: int) ->
         "disable_hard_banned": bool(reason_code and reason_code in HARD_BAN_REASON_CODES),
         "disable_effective_at": effective_time.isoformat() if effective_time else None,
     }
+
+
+def _normalize_project_action_weight(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = 1
+    return max(1, parsed)
+
+
+def _build_code_service_project_items(token_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for row in token_rows:
+        project_id = str(row.get("current_project_id") or "").strip()
+        if not project_id:
+            continue
+
+        token_id_raw = row.get("id")
+        try:
+            token_id = int(token_id_raw) if token_id_raw is not None else None
+        except Exception:
+            token_id = None
+
+        is_token_enabled = bool(row.get("is_active"))
+
+        if bool(row.get("video_enabled")):
+            items.append(
+                {
+                    "project_id": project_id,
+                    "action": "VIDEO_GENERATION",
+                    "token_id": token_id,
+                    "weight": _normalize_project_action_weight(row.get("video_concurrency")),
+                    "enabled": is_token_enabled,
+                }
+            )
+
+        if bool(row.get("image_enabled")):
+            items.append(
+                {
+                    "project_id": project_id,
+                    "action": "IMAGE_GENERATION",
+                    "token_id": token_id,
+                    "weight": _normalize_project_action_weight(row.get("image_concurrency")),
+                    "enabled": is_token_enabled,
+                }
+            )
+
+    return items
 
 
 def _guess_client_hints_from_user_agent(user_agent: str) -> Dict[str, str]:
@@ -429,13 +479,20 @@ async def _score_test_with_remote_browser_service(
     return response_payload
 
 
-def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database, cm: Optional[ConcurrencyManager] = None):
+def set_dependencies(
+    tm: TokenManager,
+    pm: ProxyManager,
+    database: Database,
+    cm: Optional[ConcurrencyManager] = None,
+    lb: Optional[LoadBalancer] = None,
+):
     """Set service instances"""
-    global token_manager, proxy_manager, db, concurrency_manager
+    global token_manager, proxy_manager, db, concurrency_manager, load_balancer
     token_manager = tm
     proxy_manager = pm
     db = database
     concurrency_manager = cm
+    load_balancer = lb
 
 
 # ========== Request Models ==========
@@ -509,6 +566,13 @@ class ServerConfigRequest(BaseModel):
 class GenerationConfigRequest(BaseModel):
     image_timeout: int
     video_timeout: int
+
+
+class LogCleanupRequest(BaseModel):
+    older_than_days: Optional[int] = 7
+    keep_latest: Optional[int] = 5000
+    trim_payloads: bool = True
+    vacuum: bool = True
 
 
 class ChangePasswordRequest(BaseModel):
@@ -778,6 +842,19 @@ async def get_token_refresh_history(
         "email": getattr(target, "email", None),
         "count": len(history),
         "history": history,
+    }
+
+
+@router.get("/api/tokens/project-actions/export")
+async def export_code_service_project_actions(token: str = Depends(verify_admin_token)):
+    """导出代码服务可直接消费的 project_id/action 列表。"""
+    _ = token
+    token_rows = await db.get_all_tokens_with_stats()
+    items = _build_code_service_project_items(token_rows)
+    return {
+        "replace_existing": True,
+        "force_refill": True,
+        "items": items,
     }
 
 
@@ -1712,6 +1789,8 @@ async def get_stats(token: str = Depends(verify_admin_token)):
 @router.get("/api/concurrency-status")
 async def get_concurrency_status(token: str = Depends(verify_admin_token)):
     """Get real-time concurrency / load status for all tokens"""
+    if load_balancer:
+        return await load_balancer.get_all_load_status()
     if not concurrency_manager:
         return {"tokens": {}, "summary": {
             "total_image_inflight": 0,
@@ -1878,12 +1957,36 @@ async def get_project_version(token: str = Depends(verify_admin_token)):
     }
 
 
+@router.get("/api/logs/storage")
+async def get_log_storage(token: str = Depends(verify_admin_token)):
+    """Get request log storage stats."""
+    return await db.get_log_storage_stats()
+
+
+@router.post("/api/logs/cleanup")
+async def cleanup_logs(
+    request: LogCleanupRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """Cleanup request logs by retention policy and reclaim space."""
+    try:
+        result = await db.cleanup_request_logs(
+            older_than_days=request.older_than_days,
+            keep_latest=request.keep_latest,
+            trim_payloads=request.trim_payloads,
+            vacuum=request.vacuum,
+        )
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/api/logs")
 async def clear_logs(token: str = Depends(verify_admin_token)):
     """Clear all logs"""
     try:
-        await db.clear_all_logs()
-        return {"success": True, "message": "所有日志已清空"}
+        result = await db.clear_all_logs()
+        return {"success": True, "message": "所有日志已清空", **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

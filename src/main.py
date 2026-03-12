@@ -290,7 +290,7 @@ proxy_manager.set_proxy_pool_service(proxy_pool_service)
 
 # Set dependencies
 routes.set_generation_handler(generation_handler)
-admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager)
+admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager, load_balancer)
 
 # Create FastAPI app
 app = FastAPI(

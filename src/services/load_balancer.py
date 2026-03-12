@@ -53,6 +53,112 @@ class LoadBalancer:
                 else:
                     self._video_pending[token_id] = current - 1
 
+    async def get_all_load_status(self) -> dict:
+        """返回合并硬并发与 pending 的实时负载快照。"""
+        if self.concurrency_manager:
+            base_status = await self.concurrency_manager.get_all_concurrency_status()
+        else:
+            base_status = {
+                "tokens": {},
+                "summary": {
+                    "total_image_inflight": 0,
+                    "total_video_inflight": 0,
+                    "total_image_capacity": None,
+                    "total_video_capacity": None,
+                    "token_count": 0,
+                    "image_idle": 0,
+                    "image_busy": 0,
+                    "image_saturated": 0,
+                    "video_idle": 0,
+                    "video_busy": 0,
+                    "video_saturated": 0,
+                },
+            }
+
+        async with self._pending_lock:
+            image_pending = {int(k): max(0, int(v)) for k, v in self._image_pending.items()}
+            video_pending = {int(k): max(0, int(v)) for k, v in self._video_pending.items()}
+
+        raw_tokens = base_status.get("tokens") or {}
+        base_summary = base_status.get("summary") or {}
+        all_token_ids = {
+            int(tid) for tid in raw_tokens.keys()
+        } | set(image_pending.keys()) | set(video_pending.keys())
+
+        tokens_status = {}
+        total_image_inflight = 0
+        total_video_inflight = 0
+        image_idle = 0
+        image_busy = 0
+        image_saturated = 0
+        video_idle = 0
+        video_busy = 0
+        video_saturated = 0
+
+        for tid in all_token_ids:
+            token_status = raw_tokens.get(tid) or raw_tokens.get(str(tid)) or {}
+            hard_img_inflight = max(0, int(token_status.get("image_inflight") or 0))
+            hard_vid_inflight = max(0, int(token_status.get("video_inflight") or 0))
+            img_pending = image_pending.get(tid, 0)
+            vid_pending = video_pending.get(tid, 0)
+            img_limit = token_status.get("image_limit")
+            vid_limit = token_status.get("video_limit")
+            effective_img_inflight = hard_img_inflight + img_pending
+            effective_vid_inflight = hard_vid_inflight + vid_pending
+            img_remaining = max(0, img_limit - effective_img_inflight) if img_limit is not None else None
+            vid_remaining = max(0, vid_limit - effective_vid_inflight) if vid_limit is not None else None
+
+            tokens_status[tid] = {
+                "image_inflight": effective_img_inflight,
+                "image_hard_inflight": hard_img_inflight,
+                "image_pending": img_pending,
+                "image_limit": img_limit,
+                "image_remaining": img_remaining,
+                "video_inflight": effective_vid_inflight,
+                "video_hard_inflight": hard_vid_inflight,
+                "video_pending": vid_pending,
+                "video_limit": vid_limit,
+                "video_remaining": vid_remaining,
+            }
+
+            total_image_inflight += effective_img_inflight
+            total_video_inflight += effective_vid_inflight
+
+            if effective_img_inflight == 0:
+                image_idle += 1
+            elif img_limit is not None and effective_img_inflight >= img_limit:
+                image_saturated += 1
+            else:
+                image_busy += 1
+
+            if effective_vid_inflight == 0:
+                video_idle += 1
+            elif vid_limit is not None and effective_vid_inflight >= vid_limit:
+                video_saturated += 1
+            else:
+                video_busy += 1
+
+        return {
+            "tokens": tokens_status,
+            "summary": {
+                "total_image_inflight": total_image_inflight,
+                "total_video_inflight": total_video_inflight,
+                "total_image_hard_inflight": int(base_summary.get("total_image_inflight") or 0),
+                "total_video_hard_inflight": int(base_summary.get("total_video_inflight") or 0),
+                "total_image_pending": sum(image_pending.values()),
+                "total_video_pending": sum(video_pending.values()),
+                "total_image_capacity": base_summary.get("total_image_capacity"),
+                "total_video_capacity": base_summary.get("total_video_capacity"),
+                "token_count": len(all_token_ids),
+                "image_idle": image_idle,
+                "image_busy": image_busy,
+                "image_saturated": image_saturated,
+                "video_idle": video_idle,
+                "video_busy": video_busy,
+                "video_saturated": video_saturated,
+            },
+        }
+
     async def _get_token_load(self, token_id: int, for_image_generation: bool, for_video_generation: bool) -> tuple[int, Optional[int]]:
         """获取 token 当前负载。
 
@@ -224,6 +330,9 @@ class LoadBalancer:
             if reserve and not await self._reserve_slot(token.id, for_image_generation, for_video_generation):
                 debug_logger.log_info(f"[LOAD_BALANCER] 跳过 Token {token.id}: 预占槽位失败")
                 continue
+
+            if track_pending and not reserve:
+                await self._add_pending(token.id, for_image_generation, for_video_generation)
 
             debug_logger.log_info(
                 f"[LOAD_BALANCER] ✅ 已选择Token {token.id} ({token.email}) - "

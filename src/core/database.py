@@ -1,4 +1,5 @@
 """Database storage layer for Flow2API"""
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,11 @@ class Database:
                 return timezone(timedelta(hours=8), name="Asia/Shanghai")
             return timezone.utc
 
+    @staticmethod
+    def _is_sqlite_locked_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return "database is locked" in text or "database table is locked" in text
+
     async def _table_exists(self, db, table_name: str) -> bool:
         """Check if a table exists in the database"""
         cursor = await db.execute(
@@ -65,6 +71,156 @@ class Database:
             return any(col[1] == column_name for col in columns)
         except:
             return False
+
+    async def _create_request_logs_table(self, db, table_name: str = "request_logs", *, if_not_exists: bool = True):
+        exists_clause = "IF NOT EXISTS " if if_not_exists else ""
+        await db.execute(
+            f"""
+                CREATE TABLE {exists_clause}{table_name} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER,
+                    operation TEXT NOT NULL,
+                    proxy_source TEXT,
+                    request_body TEXT,
+                    response_body TEXT,
+                    status_code INTEGER NOT NULL,
+                    duration FLOAT NOT NULL,
+                    status_text TEXT DEFAULT '',
+                    progress INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """
+        )
+
+    async def _create_request_logs_indexes(self, db):
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_token_id_created_at ON request_logs(token_id, created_at DESC)")
+
+    async def _rebuild_request_logs_sqlite(
+        self,
+        *,
+        older_than_days: Optional[int] = None,
+        keep_latest: Optional[int] = None,
+    ) -> Dict[str, int]:
+        cutoff = None
+        deleted_by_age = 0
+        deleted_by_count = 0
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA busy_timeout = 30000")
+
+            total_cursor = await db.execute("SELECT COUNT(1) FROM request_logs")
+            total_row = await total_cursor.fetchone()
+            total_logs = int((total_row[0] if total_row else 0) or 0)
+
+            if older_than_days is not None and int(older_than_days) > 0:
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=int(older_than_days))).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                age_cursor = await db.execute(
+                    "SELECT COUNT(1) FROM request_logs WHERE created_at < ?",
+                    (cutoff,),
+                )
+                age_row = await age_cursor.fetchone()
+                deleted_by_age = int((age_row[0] if age_row else 0) or 0)
+
+            remaining_after_age = max(0, total_logs - deleted_by_age)
+            normalized_keep_latest = None if keep_latest is None else max(0, int(keep_latest))
+            if normalized_keep_latest is not None:
+                deleted_by_count = max(0, remaining_after_age - normalized_keep_latest)
+
+            await db.execute("DROP TABLE IF EXISTS request_logs_rebuilt")
+            await self._create_request_logs_table(db, table_name="request_logs_rebuilt", if_not_exists=False)
+
+            if normalized_keep_latest is None:
+                if cutoff:
+                    await db.execute(
+                        """
+                        INSERT INTO request_logs_rebuilt (
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        )
+                        SELECT
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        FROM request_logs
+                        WHERE created_at >= ?
+                        ORDER BY created_at ASC, id ASC
+                        """,
+                        (cutoff,),
+                    )
+                else:
+                    await db.execute(
+                        """
+                        INSERT INTO request_logs_rebuilt (
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        )
+                        SELECT
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        FROM request_logs
+                        ORDER BY created_at ASC, id ASC
+                        """
+                    )
+            elif normalized_keep_latest > 0:
+                if cutoff:
+                    await db.execute(
+                        """
+                        INSERT INTO request_logs_rebuilt (
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        )
+                        SELECT
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        FROM (
+                            SELECT
+                                id, token_id, operation, proxy_source, request_body, response_body,
+                                status_code, duration, status_text, progress, created_at, updated_at
+                            FROM request_logs
+                            WHERE created_at >= ?
+                            ORDER BY created_at DESC, id DESC
+                            LIMIT ?
+                        ) AS kept_logs
+                        ORDER BY created_at ASC, id ASC
+                        """,
+                        (cutoff, normalized_keep_latest),
+                    )
+                else:
+                    await db.execute(
+                        """
+                        INSERT INTO request_logs_rebuilt (
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        )
+                        SELECT
+                            id, token_id, operation, proxy_source, request_body, response_body,
+                            status_code, duration, status_text, progress, created_at, updated_at
+                        FROM (
+                            SELECT
+                                id, token_id, operation, proxy_source, request_body, response_body,
+                                status_code, duration, status_text, progress, created_at, updated_at
+                            FROM request_logs
+                            ORDER BY created_at DESC, id DESC
+                            LIMIT ?
+                        ) AS kept_logs
+                        ORDER BY created_at ASC, id ASC
+                        """,
+                        (normalized_keep_latest,),
+                    )
+
+            await db.execute("DROP TABLE request_logs")
+            await db.execute("ALTER TABLE request_logs_rebuilt RENAME TO request_logs")
+            await self._create_request_logs_indexes(db)
+            await db.commit()
+
+        return {
+            "deleted_by_age": deleted_by_age,
+            "deleted_by_count": deleted_by_count,
+        }
 
     async def _ensure_config_rows(self, db, config_dict: dict = None):
         """Ensure all config tables have their default rows
@@ -582,23 +738,7 @@ class Database:
             """)
 
             # Request logs table
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS request_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    token_id INTEGER,
-                    operation TEXT NOT NULL,
-                    proxy_source TEXT,
-                    request_body TEXT,
-                    response_body TEXT,
-                    status_code INTEGER NOT NULL,
-                    duration FLOAT NOT NULL,
-                    status_text TEXT DEFAULT '',
-                    progress INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (token_id) REFERENCES tokens(id)
-                )
-            """)
+            await self._create_request_logs_table(db)
 
             # Token refresh history table
             await db.execute("""
@@ -723,8 +863,7 @@ class Database:
             await self._migrate_request_logs(db)
 
             # Request logs query indexes (列表按 created_at 排序 / token 过滤)
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_token_id_created_at ON request_logs(token_id, created_at DESC)")
+            await self._create_request_logs_indexes(db)
 
             # Token stats lookup index
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_token_id ON token_stats(token_id)")
@@ -973,19 +1112,35 @@ class Database:
 
     async def update_token(self, token_id: int, **kwargs):
         """Update token fields"""
-        async with aiosqlite.connect(self.db_path) as db:
-            updates = []
-            params = []
+        updates = []
+        params = []
 
-            for key, value in kwargs.items():
-                updates.append(f"{key} = ?")
-                params.append(value)
+        for key, value in kwargs.items():
+            updates.append(f"{key} = ?")
+            params.append(value)
 
-            if updates:
-                params.append(token_id)
-                query = f"UPDATE tokens SET {', '.join(updates)} WHERE id = ?"
-                await db.execute(query, params)
-                await db.commit()
+        if not updates:
+            return
+
+        params.append(token_id)
+        query = f"UPDATE tokens SET {', '.join(updates)} WHERE id = ?"
+
+        attempts = 4 if self.backend == "sqlite" else 1
+        for attempt in range(attempts):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute(query, params)
+                    await db.commit()
+                    return
+            except Exception as exc:
+                if (
+                    self.backend == "sqlite"
+                    and self._is_sqlite_locked_error(exc)
+                    and attempt < attempts - 1
+                ):
+                    await asyncio.sleep(0.15 * (attempt + 1))
+                    continue
+                raise
 
     async def add_token_refresh_history(
         self,
@@ -1067,14 +1222,26 @@ class Database:
     # Project operations
     async def add_project(self, project: Project) -> int:
         """Add a new project"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                INSERT INTO projects (project_id, token_id, project_name, tool_name, is_active)
-                VALUES (?, ?, ?, ?, ?)
-            """, (project.project_id, project.token_id, project.project_name,
-                  project.tool_name, project.is_active))
-            await db.commit()
-            return cursor.lastrowid
+        attempts = 4 if self.backend == "sqlite" else 1
+        for attempt in range(attempts):
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    cursor = await db.execute("""
+                        INSERT INTO projects (project_id, token_id, project_name, tool_name, is_active)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (project.project_id, project.token_id, project.project_name,
+                          project.tool_name, project.is_active))
+                    await db.commit()
+                    return cursor.lastrowid
+            except Exception as exc:
+                if (
+                    self.backend == "sqlite"
+                    and self._is_sqlite_locked_error(exc)
+                    and attempt < attempts - 1
+                ):
+                    await asyncio.sleep(0.15 * (attempt + 1))
+                    continue
+                raise
 
     async def get_project_by_id(self, project_id: str) -> Optional[Project]:
         """Get project by UUID"""
@@ -1641,6 +1808,11 @@ class Database:
             has_updated_at = await self._column_exists(db, "request_logs", "updated_at")
             status_text_column = "rl.status_text," if has_status_text else "'' as status_text,"
             updated_at_column = "rl.updated_at," if has_updated_at else "rl.created_at as updated_at,"
+            failed_status_filter = (
+                " OR LOWER(COALESCE(rl.status_text, '')) IN ('failed', 'error', 'cancelled', 'timeout', 'banned')"
+                if has_status_text
+                else ""
+            )
             cursor = await db.execute(
                 f"""
                 SELECT
@@ -1655,33 +1827,37 @@ class Database:
                 FROM request_logs rl
                 LEFT JOIN tokens t ON rl.token_id = t.id
                 WHERE rl.created_at >= ? AND rl.created_at < ?
+                  AND (COALESCE(rl.status_code, 0) >= 400{failed_status_filter})
                 ORDER BY rl.created_at DESC
                 """,
                 (start_utc, end_utc),
             )
-            rows = [dict(row) for row in await cursor.fetchall()]
-
-        grouped: Dict[str, Dict[str, Any]] = {}
-        total_errors = 0
-        for row in rows:
-            summary = self._summarize_error_log(row)
-            if not summary:
-                continue
-            total_errors += 1
-            signature = summary["signature"]
-            bucket = grouped.get(signature)
-            if bucket is None:
-                grouped[signature] = {
-                    "signature": signature,
-                    "count": 1,
-                    "latest_at": summary.get("created_at"),
-                    "sample_operation": summary.get("operation"),
-                    "sample_status_code": summary.get("status_code"),
-                    "sample_status_text": summary.get("status_text"),
-                    "sample_token_email": summary.get("token_email"),
-                }
-            else:
-                bucket["count"] += 1
+            grouped: Dict[str, Dict[str, Any]] = {}
+            total_errors = 0
+            while True:
+                batch = await cursor.fetchmany(500)
+                if not batch:
+                    break
+                for raw_row in batch:
+                    row = dict(raw_row)
+                    summary = self._summarize_error_log(row)
+                    if not summary:
+                        continue
+                    total_errors += 1
+                    signature = summary["signature"]
+                    bucket = grouped.get(signature)
+                    if bucket is None:
+                        grouped[signature] = {
+                            "signature": signature,
+                            "count": 1,
+                            "latest_at": summary.get("created_at"),
+                            "sample_operation": summary.get("operation"),
+                            "sample_status_code": summary.get("status_code"),
+                            "sample_status_text": summary.get("status_text"),
+                            "sample_token_email": summary.get("token_email"),
+                        }
+                    else:
+                        bucket["count"] += 1
 
         items = sorted(
             grouped.values(),
@@ -1729,11 +1905,215 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    def _get_sqlite_storage_size_bytes(self) -> int:
+        if self.backend != "sqlite":
+            return 0
+        total = 0
+        base = Path(self.db_path)
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(str(base) + suffix)
+            try:
+                if path.exists() and path.is_file():
+                    total += path.stat().st_size
+            except Exception:
+                continue
+        return total
+
+    async def get_log_storage_stats(self) -> Dict[str, Any]:
+        """Return lightweight storage stats for request logs."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            count_cursor = await db.execute("SELECT COUNT(1) FROM request_logs")
+            count_row = await count_cursor.fetchone()
+            total_logs = int((count_row[0] if count_row else 0) or 0)
+
+            time_cursor = await db.execute(
+                "SELECT MIN(created_at) AS oldest_at, MAX(created_at) AS newest_at FROM request_logs"
+            )
+            time_row = await time_cursor.fetchone()
+
+        return {
+            "backend": self.backend,
+            "total_logs": total_logs,
+            "oldest_at": (time_row["oldest_at"] if time_row else None),
+            "newest_at": (time_row["newest_at"] if time_row else None),
+            "db_size_bytes": self._get_sqlite_storage_size_bytes() if self.backend == "sqlite" else None,
+            "supports_vacuum": self.backend == "sqlite",
+        }
+
+    @classmethod
+    def _shrink_log_payload_value(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            result: Dict[str, Any] = {}
+            for key, item in value.items():
+                key_text = str(key or "").lower()
+                if key_text == "base64" and isinstance(item, str):
+                    result[key] = f"[omitted base64 length={len(item)}]"
+                    continue
+                result[key] = cls._shrink_log_payload_value(item)
+            return result
+        if isinstance(value, list):
+            return [cls._shrink_log_payload_value(item) for item in value[:20]]
+        if isinstance(value, str):
+            if value.startswith("data:image/") or value.startswith("data:video/"):
+                return f"[omitted data-url length={len(value)}]"
+            if len(value) > 4000:
+                return value[:4000] + "...(truncated)"
+            return value
+        return value
+
+    @classmethod
+    def _sanitize_log_blob(cls, raw: Any) -> tuple[Any, bool]:
+        text = str(raw or "")
+        if not text:
+            return raw, False
+        try:
+            decoded = json.loads(text)
+        except Exception:
+            if len(text) > 4000:
+                shrunk = text[:4000] + "...(truncated)"
+                return shrunk, shrunk != text
+            return raw, False
+        shrunk_obj = cls._shrink_log_payload_value(decoded)
+        shrunk_text = json.dumps(shrunk_obj, ensure_ascii=False)
+        return shrunk_text, shrunk_text != text
+
+    async def cleanup_request_logs(
+        self,
+        *,
+        older_than_days: Optional[int] = None,
+        keep_latest: Optional[int] = None,
+        trim_payloads: bool = True,
+        vacuum: bool = True,
+    ) -> Dict[str, Any]:
+        """Cleanup request logs by age and/or row count, optionally reclaim SQLite space."""
+        before_stats = await self.get_log_storage_stats()
+        deleted_by_age = 0
+        deleted_by_count = 0
+        compacted_rows = 0
+
+        if self.backend == "sqlite" and (older_than_days is not None or keep_latest is not None):
+            cleanup_result = await self._rebuild_request_logs_sqlite(
+                older_than_days=older_than_days,
+                keep_latest=keep_latest,
+            )
+            deleted_by_age = int(cleanup_result.get("deleted_by_age") or 0)
+            deleted_by_count = int(cleanup_result.get("deleted_by_count") or 0)
+        else:
+            async with aiosqlite.connect(self.db_path) as db:
+                if older_than_days is not None and int(older_than_days) > 0:
+                    cutoff = (datetime.now(timezone.utc) - timedelta(days=int(older_than_days))).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    before_cursor = await db.execute(
+                        "SELECT COUNT(1) FROM request_logs WHERE created_at < ?",
+                        (cutoff,),
+                    )
+                    before_row = await before_cursor.fetchone()
+                    deleted_by_age = int((before_row[0] if before_row else 0) or 0)
+                    await db.execute(
+                        "DELETE FROM request_logs WHERE created_at < ?",
+                        (cutoff,),
+                    )
+
+                if keep_latest is not None:
+                    keep_latest = max(0, int(keep_latest))
+                    if keep_latest == 0:
+                        count_cursor = await db.execute("SELECT COUNT(1) FROM request_logs")
+                        count_row = await count_cursor.fetchone()
+                        deleted_by_count = int((count_row[0] if count_row else 0) or 0)
+                        await db.execute("DELETE FROM request_logs")
+                    else:
+                        count_cursor = await db.execute("SELECT COUNT(1) FROM request_logs")
+                        count_row = await count_cursor.fetchone()
+                        total_after_age = int((count_row[0] if count_row else 0) or 0)
+                        if total_after_age > keep_latest:
+                            deleted_by_count = total_after_age - keep_latest
+                            await db.execute(
+                                """
+                                DELETE FROM request_logs
+                                WHERE id NOT IN (
+                                    SELECT id FROM (
+                                        SELECT id
+                                        FROM request_logs
+                                        ORDER BY created_at DESC, id DESC
+                                        LIMIT ?
+                                    ) AS keep_rows
+                                )
+                                """,
+                                (keep_latest,),
+                            )
+
+                await db.commit()
+
+        if trim_payloads:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    """
+                    SELECT id, request_body, response_body
+                    FROM request_logs
+                    WHERE COALESCE(request_body, '') LIKE '%base64%'
+                       OR COALESCE(response_body, '') LIKE '%base64%'
+                       OR COALESCE(request_body, '') LIKE '%data:image/%'
+                       OR COALESCE(response_body, '') LIKE '%data:image/%'
+                    ORDER BY id DESC
+                    """
+                )
+                while True:
+                    batch = await cursor.fetchmany(200)
+                    if not batch:
+                        break
+                    for row in batch:
+                        item = dict(row)
+                        new_request_body, request_changed = self._sanitize_log_blob(item.get("request_body"))
+                        new_response_body, response_changed = self._sanitize_log_blob(item.get("response_body"))
+                        if not request_changed and not response_changed:
+                            continue
+                        compacted_rows += 1
+                        await db.execute(
+                            "UPDATE request_logs SET request_body = ?, response_body = ? WHERE id = ?",
+                            (new_request_body, new_response_body, item["id"]),
+                        )
+                    await db.commit()
+
+        if vacuum:
+            try:
+                if self.backend == "sqlite":
+                    async with aiosqlite.connect(self.db_path) as db:
+                        try:
+                            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            await db.commit()
+                        except Exception:
+                            pass
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("VACUUM")
+                        await db.commit()
+                else:
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("OPTIMIZE TABLE request_logs")
+                        await db.commit()
+            except Exception:
+                pass
+
+        after_stats = await self.get_log_storage_stats()
+        return {
+            "before": before_stats,
+            "after": after_stats,
+            "deleted": max(0, int(before_stats.get("total_logs") or 0) - int(after_stats.get("total_logs") or 0)),
+            "deleted_by_age": deleted_by_age,
+            "deleted_by_count": deleted_by_count,
+            "compacted_rows": compacted_rows,
+            "freed_bytes": max(0, int(before_stats.get("db_size_bytes") or 0) - int(after_stats.get("db_size_bytes") or 0)),
+            "trim_payloads": bool(trim_payloads),
+            "vacuum": bool(vacuum),
+        }
+
     async def clear_all_logs(self):
         """Clear all request logs"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM request_logs")
-            await db.commit()
+        return await self.cleanup_request_logs(keep_latest=0, vacuum=True)
 
     async def init_config_from_toml(self, config_dict: dict, is_first_startup: bool = True):
         """

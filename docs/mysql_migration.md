@@ -26,6 +26,9 @@ python scripts/migrate_sqlite_to_mysql.py ^
   --sqlite-main data/flow.db ^
   --sqlite-accountpool data/accountpool.db
 ```
+PowerShell 推荐直接一行：
+python scripts/migrate_sqlite_to_mysql.py --mysql-url "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4" --sqlite-main data/flow.db --sqlite-accountpool data/accountpool.db
+
 
 ## 当前已处理的 SQLite 差异
 
