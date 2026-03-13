@@ -1,9 +1,11 @@
 """Configuration management for Flow2API"""
 import ipaddress
 import json
+import secrets
 import tomli
 import re
 from urllib import request as urllib_request
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from .models import normalize_captcha_priority_order
@@ -345,6 +347,117 @@ class Config:
         return bool(self._server_auto_detected)
 
     @property
+    def cluster_role(self) -> str:
+        role = str(self._config.get("cluster", {}).get("role", "standalone") or "").strip().lower()
+        return role if role in {"standalone", "master", "worker"} else "standalone"
+
+    @property
+    def cluster_enabled(self) -> bool:
+        return self.cluster_role in {"master", "worker"}
+
+    @property
+    def cluster_node_name(self) -> str:
+        value = str(self._config.get("cluster", {}).get("node_name", "") or "").strip()
+        if value:
+            return value
+        if self.cluster_role == "master":
+            return "master-node"
+        if self.cluster_role == "worker":
+            return "worker-node"
+        return "standalone-node"
+
+    @property
+    def cluster_node_id(self) -> str:
+        explicit = str(self._config.get("cluster", {}).get("node_id", "") or "").strip()
+        if explicit:
+            return explicit
+        base_url = self.cluster_effective_node_public_base_url
+        if base_url:
+            return f"{self.cluster_node_name}@{base_url}"
+        return self.cluster_node_name
+
+    @property
+    def cluster_master_base_url(self) -> str:
+        value = str(self._config.get("cluster", {}).get("master_base_url", "") or "").strip().rstrip("/")
+        return value
+
+    @property
+    def cluster_node_public_base_url(self) -> str:
+        value = str(self._config.get("cluster", {}).get("node_public_base_url", "") or "").strip().rstrip("/")
+        return value
+
+    @property
+    def cluster_effective_node_public_base_url(self) -> str:
+        explicit = self.cluster_node_public_base_url
+        if explicit:
+            return explicit
+
+        host = str(self.configured_server_host or self.server_host or "").strip()
+        if host.lower() in {"", "0.0.0.0", "::", "[::]"}:
+            host = self.default_server_public_ip or self.detected_public_ip
+        if host.lower() in {"localhost", "127.0.0.1"} and self.default_server_public_ip:
+            host = self.default_server_public_ip
+        if not host:
+            return ""
+        return f"http://{host}:{int(self.server_port)}"
+
+    @property
+    def cluster_key(self) -> str:
+        return str(self._config.get("cluster", {}).get("cluster_key", "") or "").strip()
+
+    @property
+    def cluster_node_weight(self) -> int:
+        value = self._config.get("cluster", {}).get("node_weight", 100)
+        try:
+            return max(1, min(10000, int(value)))
+        except Exception:
+            return 100
+
+    @property
+    def cluster_node_max_concurrency(self) -> int:
+        value = self._config.get("cluster", {}).get("node_max_concurrency", 5)
+        try:
+            return max(0, min(1000, int(value)))
+        except Exception:
+            return 5
+
+    @property
+    def cluster_heartbeat_interval_seconds(self) -> int:
+        value = self._config.get("cluster", {}).get("heartbeat_interval_seconds", 10)
+        try:
+            return max(3, min(300, int(value)))
+        except Exception:
+            return 10
+
+    @property
+    def cluster_heartbeat_timeout_seconds(self) -> int:
+        value = self._config.get("cluster", {}).get("heartbeat_timeout_seconds", 30)
+        try:
+            return max(5, min(600, int(value)))
+        except Exception:
+            return 30
+
+    @property
+    def cluster_dispatch_timeout_seconds(self) -> int:
+        value = self._config.get("cluster", {}).get("dispatch_timeout_seconds", 1800)
+        try:
+            return max(10, min(7200, int(value)))
+        except Exception:
+            return 1800
+
+    @property
+    def cluster_prefer_local(self) -> bool:
+        return bool(self._config.get("cluster", {}).get("prefer_local", True))
+
+    def mask_cluster_key(self) -> str:
+        value = self.cluster_key
+        if not value:
+            return ""
+        if len(value) <= 16:
+            return value
+        return f"{value[:8]}...{value[-6:]}"
+
+    @property
     def debug_enabled(self) -> bool:
         return self._config.get("debug", {}).get("enabled", False)
 
@@ -390,6 +503,97 @@ class Config:
         if "debug" not in self._config:
             self._config["debug"] = {}
         self._config["debug"]["enabled"] = enabled
+
+    def _normalize_cluster_url(self, value: Optional[str], field_name: str) -> str:
+        text = str(value or "").strip().rstrip("/")
+        if not text:
+            return ""
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"{field_name} 必须是 http(s)://host[:port] 格式")
+        return text
+
+    def update_cluster_config(
+        self,
+        *,
+        role: Optional[str] = None,
+        node_id: Optional[str] = None,
+        node_name: Optional[str] = None,
+        master_base_url: Optional[str] = None,
+        node_public_base_url: Optional[str] = None,
+        cluster_key: Optional[str] = None,
+        node_weight: Optional[int] = None,
+        node_max_concurrency: Optional[int] = None,
+        heartbeat_interval_seconds: Optional[int] = None,
+        heartbeat_timeout_seconds: Optional[int] = None,
+        dispatch_timeout_seconds: Optional[int] = None,
+        prefer_local: Optional[bool] = None,
+    ):
+        updates: Dict[str, str] = {}
+
+        if role is not None:
+            normalized_role = str(role or "").strip().lower()
+            if normalized_role not in {"standalone", "master", "worker"}:
+                raise ValueError("cluster role 必须是 standalone/master/worker")
+            updates["role"] = json.dumps(normalized_role, ensure_ascii=False)
+
+        if node_id is not None:
+            updates["node_id"] = json.dumps(str(node_id or "").strip(), ensure_ascii=False)
+
+        if node_name is not None:
+            updates["node_name"] = json.dumps(str(node_name or "").strip(), ensure_ascii=False)
+
+        if master_base_url is not None:
+            updates["master_base_url"] = json.dumps(
+                self._normalize_cluster_url(master_base_url, "master_base_url"),
+                ensure_ascii=False,
+            )
+
+        if node_public_base_url is not None:
+            updates["node_public_base_url"] = json.dumps(
+                self._normalize_cluster_url(node_public_base_url, "node_public_base_url"),
+                ensure_ascii=False,
+            )
+
+        if cluster_key is not None:
+            updates["cluster_key"] = json.dumps(str(cluster_key or "").strip(), ensure_ascii=False)
+
+        if node_weight is not None:
+            updates["node_weight"] = str(max(1, min(10000, int(node_weight))))
+
+        if node_max_concurrency is not None:
+            updates["node_max_concurrency"] = str(max(0, min(1000, int(node_max_concurrency))))
+
+        if heartbeat_interval_seconds is not None:
+            updates["heartbeat_interval_seconds"] = str(max(3, min(300, int(heartbeat_interval_seconds))))
+
+        if heartbeat_timeout_seconds is not None:
+            updates["heartbeat_timeout_seconds"] = str(max(5, min(600, int(heartbeat_timeout_seconds))))
+
+        if dispatch_timeout_seconds is not None:
+            updates["dispatch_timeout_seconds"] = str(max(10, min(7200, int(dispatch_timeout_seconds))))
+
+        if prefer_local is not None:
+            updates["prefer_local"] = "true" if bool(prefer_local) else "false"
+
+        if not updates:
+            return
+
+        content = self._config_path.read_text(encoding="utf-8")
+        for key, value_literal in updates.items():
+            content = self._upsert_toml_key_in_section(
+                content=content,
+                section="cluster",
+                key=key,
+                value_literal=value_literal,
+            )
+        self._config_path.write_text(content, encoding="utf-8")
+        self.reload_config()
+
+    def rotate_cluster_key(self) -> str:
+        new_key = f"fcs_cluster_{secrets.token_urlsafe(24)}"
+        self.update_cluster_config(cluster_key=new_key)
+        return new_key
 
     @property
     def image_timeout(self) -> int:

@@ -303,6 +303,11 @@
           title="代理池管理">
           代理池
         </button>
+        <button onclick="switchTab('cluster')" id="tabCluster"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 text-muted-foreground"
+          title="主从集群诊断">
+          集群诊断
+        </button>
         <button onclick="switchTab('loadAnalysis')" id="tabLoadAnalysis"
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 text-muted-foreground"
           title="服务负载分析">
@@ -1531,6 +1536,212 @@
       </div>
     </div>
 
+    <!-- 集群诊断面板 -->
+    <div id="panelCluster" class="hidden">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">主从集群诊断</h2>
+          <p class="text-xs text-muted-foreground mt-1">主节点统一分配请求，子节点定时心跳上报本机容量与健康状态。</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="clusterLastUpdate" class="text-xs text-muted-foreground"></span>
+          <button onclick="rotateClusterKey()"
+            class="inline-flex items-center justify-center rounded-md bg-amber-600 text-white hover:bg-amber-700 h-9 px-4 text-sm">
+            轮换 Cluster Key
+          </button>
+          <button onclick="refreshClusterDiagnostics()"
+            class="inline-flex items-center justify-center rounded-md border border-border bg-background hover:bg-accent h-9 px-4 text-sm">
+            刷新节点列表
+          </button>
+        </div>
+      </div>
+
+      <div class="grid gap-3 grid-cols-2 md:grid-cols-6 mb-4">
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-xs text-muted-foreground mb-2">当前角色</p>
+          <div class="text-xl font-bold" id="clusterRoleBadge">-</div>
+          <div class="text-xs text-muted-foreground mt-1" id="clusterNodeNameText">-</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-xs text-muted-foreground mb-2">节点总数</p>
+          <div class="text-xl font-bold" id="clusterTotalNodes">0</div>
+          <div class="text-xs text-muted-foreground mt-1">含当前节点</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-xs text-muted-foreground mb-2">健康节点</p>
+          <div class="text-xl font-bold text-green-600" id="clusterHealthyNodes">0</div>
+          <div class="text-xs text-muted-foreground mt-1" id="clusterAvgHeartbeat">心跳 -</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-xs text-muted-foreground mb-2">有效容量</p>
+          <div class="text-xl font-bold text-blue-600" id="clusterEffectiveCapacity">0</div>
+          <div class="text-xs text-muted-foreground mt-1">节点级并发总和</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-xs text-muted-foreground mb-2">空闲容量</p>
+          <div class="text-xl font-bold text-emerald-600" id="clusterAvailableCapacity">0</div>
+          <div class="text-xs text-muted-foreground mt-1">可继续分配请求</div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-4">
+          <p class="text-xs text-muted-foreground mb-2">累计分流</p>
+          <div class="text-xl font-bold text-indigo-600" id="clusterRemoteDispatchTotal">0</div>
+          <div class="text-xs text-muted-foreground mt-1" id="clusterRemoteDispatchMeta">成功 0 / 失败 0</div>
+        </div>
+      </div>
+
+      <div class="grid gap-6 lg:grid-cols-2 mb-4">
+        <div class="rounded-lg border border-border bg-background p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">集群配置</h3>
+            <span id="clusterConfigHint" class="text-xs text-muted-foreground">配置保存后立即热更新</span>
+          </div>
+          <div class="space-y-4">
+            <div>
+              <label class="text-sm font-medium mb-2 block">节点角色</label>
+              <select id="cfgClusterRole" onchange="toggleClusterRoleFields()"
+                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                <option value="standalone">单机 standalone</option>
+                <option value="master">主节点 master</option>
+                <option value="worker">子节点 worker</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="text-sm font-medium mb-2 block">节点标识</label>
+                <input id="cfgClusterNodeId"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="留空自动生成" />
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">节点名称</label>
+                <input id="cfgClusterNodeName"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="master-node / worker-01" />
+              </div>
+            </div>
+            <div id="clusterMasterBaseUrlWrap">
+              <label class="text-sm font-medium mb-2 block">主节点地址</label>
+              <input id="cfgClusterMasterBaseUrl"
+                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                placeholder="http://1.2.3.4:8000" />
+            </div>
+            <div id="clusterNodePublicBaseUrlWrap">
+              <label class="text-sm font-medium mb-2 block">当前节点对外地址</label>
+              <input id="cfgClusterNodePublicBaseUrl"
+                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                placeholder="http://1.2.3.4:8000" />
+            </div>
+            <div>
+              <label class="text-sm font-medium mb-2 block">Cluster Key</label>
+              <input id="cfgClusterKey"
+                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                placeholder="主从共享密钥" />
+              <p class="text-xs text-muted-foreground mt-1" id="clusterKeyMaskedText">-</p>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <label class="text-sm font-medium mb-2 block">节点权重</label>
+                <input id="cfgClusterWeight" type="number" min="1" max="10000"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">节点并发上限</label>
+                <input id="cfgClusterMaxConcurrency" type="number" min="0" max="1000"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">心跳间隔</label>
+                <input id="cfgClusterHeartbeatInterval" type="number" min="3" max="300"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">心跳超时</label>
+                <input id="cfgClusterHeartbeatTimeout" type="number" min="5" max="600"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="text-sm font-medium mb-2 block">分发超时(秒)</label>
+                <input id="cfgClusterDispatchTimeout" type="number" min="10" max="7200"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </div>
+              <div class="flex items-center pt-7">
+                <label class="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" id="cfgClusterPreferLocal" class="h-4 w-4 rounded border-input" />
+                  <span class="text-sm font-medium">主节点优先本机</span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <button onclick="saveClusterConfig()"
+            class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 w-full mt-4">
+            保存集群配置
+          </button>
+        </div>
+
+        <div class="rounded-lg border border-border bg-background p-6">
+          <h3 class="text-lg font-semibold mb-4">当前节点信息</h3>
+          <div class="space-y-3 text-sm">
+            <div class="rounded-md border border-border p-3">
+              <div class="text-xs text-muted-foreground">当前节点 ID</div>
+              <div id="clusterCurrentNodeId" class="font-medium break-all">-</div>
+            </div>
+            <div class="rounded-md border border-border p-3">
+              <div class="text-xs text-muted-foreground">当前节点对外地址</div>
+              <div id="clusterCurrentBaseUrl" class="font-medium break-all">-</div>
+            </div>
+            <div class="rounded-md border border-border p-3">
+              <div class="text-xs text-muted-foreground">主节点同步状态</div>
+              <div id="clusterMasterSyncStatus" class="font-medium">-</div>
+              <div id="clusterMasterSyncMeta" class="text-xs text-muted-foreground mt-1">-</div>
+            </div>
+            <div class="rounded-md border border-border p-3">
+              <div class="text-xs text-muted-foreground">节点说明</div>
+              <div class="text-sm text-muted-foreground leading-6">
+                主节点会按节点级并发上限与权重分配请求；子节点只负责执行本地生成并上报心跳。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-border bg-background p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-medium">节点列表</h3>
+          <span id="clusterNodeSummary" class="text-xs text-muted-foreground">-</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-[1640px] w-full text-sm">
+            <thead class="text-xs text-muted-foreground border-b border-border">
+              <tr>
+                <th class="py-2 text-left">节点ID</th>
+                <th class="py-2 text-left">节点名</th>
+                <th class="py-2 text-left">角色</th>
+                <th class="py-2 text-left">地址</th>
+                <th class="py-2 text-left">健康</th>
+                <th class="py-2 text-right">活跃请求</th>
+                <th class="py-2 text-right">节点并发上限</th>
+                <th class="py-2 text-right">空闲槽位</th>
+                <th class="py-2 text-right">权重</th>
+                <th class="py-2 text-right">累计分流</th>
+                <th class="py-2 text-right">成功/失败</th>
+                <th class="py-2 text-right">分流占比</th>
+                <th class="py-2 text-right">平均耗时(ms)</th>
+                <th class="py-2 text-right">心跳(ms)</th>
+                <th class="py-2 text-left">最近分流</th>
+                <th class="py-2 text-left">最近更新</th>
+                <th class="py-2 text-left">状态</th>
+                <th class="py-2 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="clusterNodeTableBody" class="divide-y divide-border"></tbody>
+          </table>
+        </div>
+        <div id="clusterNodeEmpty" class="hidden text-center text-muted-foreground text-sm py-6">当前没有已上报节点</div>
+      </div>
+    </div>
+
     <!-- 服务负载分析面板 -->
     <div id="panelLoadAnalysis" class="hidden">
       <!-- 顶部操作栏 -->
@@ -2299,6 +2510,61 @@
     </div>
   </div>
 
+  <div id="tokenExportModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="bg-background rounded-lg border border-border w-full max-w-3xl shadow-xl max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between gap-3 p-5 border-b border-border">
+        <h3 class="text-lg font-semibold">导出 Token</h3>
+        <button onclick="closeTokenExportModal()" class="text-muted-foreground hover:text-foreground" title="关闭">
+          <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div class="p-5 space-y-4 overflow-y-auto">
+        <div class="rounded-md border border-blue-200 bg-blue-50/70 p-3 text-sm text-blue-900">
+          <div id="tokenExportSummary">加载中...</div>
+          <div id="tokenExportHint" class="mt-1 text-xs text-blue-800/90"></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <label class="space-y-2 text-sm">
+            <span class="font-medium">导出账号数量</span>
+            <input id="tokenExportCountInput" type="number" min="1" max="200" value="5" oninput="updateTokenExportSummary()"
+              class="w-full rounded-md border border-input bg-background h-10 px-3" />
+          </label>
+          <label class="space-y-2 text-sm">
+            <span class="font-medium">绑定子节点</span>
+            <select id="tokenExportNodeSelect" onchange="updateTokenExportSummary()"
+              class="w-full rounded-md border border-input bg-background h-10 px-3"></select>
+          </label>
+        </div>
+        <div class="rounded-md border border-border overflow-hidden">
+          <div class="px-4 py-3 border-b border-border bg-muted/30 text-sm font-medium">最近导出记录</div>
+          <div id="tokenExportHistoryList" class="divide-y divide-border text-sm"></div>
+          <div id="tokenExportHistoryEmpty" class="hidden p-4 text-sm text-muted-foreground">暂无导出记录</div>
+        </div>
+      </div>
+      <div class="flex items-center justify-end gap-3 p-5 border-t border-border">
+        <button onclick="closeTokenExportModal()"
+          class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5">
+          取消
+        </button>
+        <button id="tokenExportBtn" onclick="submitTokenExport()"
+          class="inline-flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 h-9 px-5">
+          <span id="tokenExportBtnText">开始导出</span>
+          <svg id="tokenExportBtnSpinner" class="hidden animate-spin h-4 w-4 ml-2" xmlns="http://www.w3.org/2000/svg"
+            fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+            </path>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- 内部Token导出选择模态框 -->
   <div id="internalExportModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
     <div class="bg-background rounded-lg border border-border w-full max-w-5xl shadow-xl max-h-[85vh] flex flex-col">
@@ -2375,6 +2641,7 @@
     let allTokens = [];
     let tokenEmailSearchKeyword = "";
     let batchImportSelectedFile = null;
+    let tokenExportOptions = {};
     let internalExportFiles = [];
     let internalExportMeta = {};
     let internalExportSelectedNames = new Set();
@@ -4083,34 +4350,176 @@
         $("importFile").value = "";
         $("importConfirmReplace").checked = false;
       },
-      exportTokens = () => {
-        if (allTokens.length === 0) {
-          showToast("没有Token可导出", "error");
+      renderTokenExportNodeOptions = () => {
+        const select = $("tokenExportNodeSelect");
+        if (!select) return;
+        const workerNodes = Array.isArray(tokenExportOptions.worker_nodes)
+          ? tokenExportOptions.worker_nodes
+          : [];
+        const defaultNode = workerNodes.find((item) => item.default_selected) || workerNodes[0] || null;
+        const currentValue = select.value || (defaultNode ? String(defaultNode.node_id || "") : "");
+        const optionHtml = [
+          '<option value="">不绑定子节点（本地/临时导出）</option>',
+          ...workerNodes.map((node) => {
+            const nodeId = String(node.node_id || "");
+            const nodeName = String(node.node_name || nodeId || "未命名节点");
+            const healthyText = node.healthy ? "健康" : "异常";
+            const boundCount = Number(node.bound_token_count || 0);
+            return `<option value="${escapeHtml(nodeId)}">${escapeHtml(nodeName)} · ${healthyText} · 已绑 ${boundCount}</option>`;
+          }),
+        ];
+        select.innerHTML = optionHtml.join("");
+        const hasCurrent = workerNodes.some((node) => String(node.node_id || "") === currentValue);
+        select.value = hasCurrent ? currentValue : (defaultNode ? String(defaultNode.node_id || "") : "");
+      },
+      renderTokenExportHistory = () => {
+        const list = $("tokenExportHistoryList");
+        const empty = $("tokenExportHistoryEmpty");
+        if (!list || !empty) return;
+        const items = Array.isArray(tokenExportOptions.history) ? tokenExportOptions.history : [];
+        if (!items.length) {
+          list.innerHTML = "";
+          empty.classList.remove("hidden");
           return;
         }
-        const exportData = allTokens.map((t) => ({
-          email: t.email,
-          access_token: t.token,
-          session_token: t.st || null,
-          cookie: t.cookie || null,
-          cookie_file: t.cookieFile || t.cookie_file || null,
-          is_active: t.is_active,
-          image_enabled: t.image_enabled !== false,
-          video_enabled: t.video_enabled !== false,
-          image_concurrency: t.image_concurrency || -1,
-          video_concurrency: t.video_concurrency || -1,
-        }));
-        const dataStr = JSON.stringify(exportData, null, 2);
-        const dataBlob = new Blob([dataStr], { type: "application/json" });
-        const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `tokens_${new Date().toISOString().split("T")[0]}.json`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-        showToast(`已导出 ${allTokens.length} 个Token`, "success");
+        empty.classList.add("hidden");
+        list.innerHTML = items.map((item) => {
+          const nodeName = item.node_name || item.node_id || "未绑定子节点";
+          const createdAt = formatInternalExportDateTime(item.created_at);
+          const exportedCount = Number(item.exported_count || 0);
+          const requestedCount = Number(item.requested_count || 0);
+          const emails = Array.isArray(item.token_emails) ? item.token_emails.slice(0, 3) : [];
+          const emailText = emails.length ? emails.join("、") : "-";
+          const moreText = Array.isArray(item.token_emails) && item.token_emails.length > 3
+            ? ` 等 ${item.token_emails.length} 个`
+            : "";
+          return `<div class="p-4 space-y-1"><div class="flex items-center justify-between gap-3"><span class="font-medium">${escapeHtml(nodeName)}</span><span class="text-xs text-muted-foreground">${escapeHtml(createdAt)}</span></div><div class="text-xs text-muted-foreground">导出 ${exportedCount}/${requestedCount} 个账号</div><div class="text-xs break-all">${escapeHtml(emailText + moreText)}</div></div>`;
+        }).join("");
+      },
+      updateTokenExportSummary = () => {
+        const summary = $("tokenExportSummary");
+        const hint = $("tokenExportHint");
+        if (!summary || !hint) return;
+        const activeCount = Number(tokenExportOptions.active_token_count || 0);
+        const unboundCount = Number(tokenExportOptions.unbound_token_count || 0);
+        const boundCount = Number(tokenExportOptions.bound_token_count || 0);
+        const selectedCount = Math.max(1, Number($("tokenExportCountInput")?.value || tokenExportOptions.default_count || 5));
+        const selectedNodeId = String($("tokenExportNodeSelect")?.value || "").trim();
+        const workerNodes = Array.isArray(tokenExportOptions.worker_nodes) ? tokenExportOptions.worker_nodes : [];
+        const selectedNode = workerNodes.find((item) => String(item.node_id || "") === selectedNodeId) || null;
+        summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；本次计划导出 ${selectedCount} 个账号。`;
+        if (selectedNode) {
+          hint.textContent = `默认绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，会优先复用该节点已绑定账号，再补充未绑定账号，避免不同子节点重复使用。`;
+        } else if (workerNodes.length) {
+          hint.textContent = "当前未选择子节点，本次导出不会写入绑定记录；如用于集群部署，建议选择一个子节点。";
+        } else {
+          hint.textContent = "当前没有可选子节点，本地环境可直接导出；上线后有子节点时再绑定即可。";
+        }
+      },
+      closeTokenExportModal = () => {
+        $("tokenExportModal").classList.add("hidden");
+      },
+      openTokenExportModal = async () => {
+        $("tokenExportModal").classList.remove("hidden");
+        $("tokenExportSummary").textContent = "正在加载导出配置...";
+        $("tokenExportHint").textContent = "";
+        $("tokenExportHistoryList").innerHTML = "";
+        $("tokenExportHistoryEmpty").classList.add("hidden");
+        tokenExportOptions = {};
+        $("tokenExportCountInput").value = 5;
+        $("tokenExportNodeSelect").innerHTML = '<option value="">加载中...</option>';
+
+        try {
+          const r = await apiRequest("/api/tokens/export/options");
+          if (!r) return;
+          const d = await r.json();
+          tokenExportOptions = d || {};
+          $("tokenExportCountInput").value = Number(d?.default_count || 5);
+          renderTokenExportNodeOptions();
+          renderTokenExportHistory();
+          updateTokenExportSummary();
+        } catch (e) {
+          $("tokenExportSummary").textContent = `加载失败：${e.message || "未知错误"}`;
+          $("tokenExportHint").textContent = "";
+          showToast("加载导出配置失败: " + (e.message || "未知错误"), "error");
+        }
+      },
+      submitTokenExport = async () => {
+        const btn = $("tokenExportBtn");
+        const btnText = $("tokenExportBtnText");
+        const btnSpinner = $("tokenExportBtnSpinner");
+        const requestedCount = Math.max(1, Math.min(200, Number($("tokenExportCountInput")?.value || 5)));
+        const nodeId = String($("tokenExportNodeSelect")?.value || "").trim();
+        const selectedNode = (Array.isArray(tokenExportOptions.worker_nodes) ? tokenExportOptions.worker_nodes : []).find(
+          (item) => String(item.node_id || "") === nodeId,
+        );
+
+        btn.disabled = true;
+        btnText.textContent = "导出中...";
+        btnSpinner.classList.remove("hidden");
+
+        try {
+          const t = checkAuth();
+          if (!t) return;
+
+          const r = await fetch("/api/tokens/export", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${t}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              count: requestedCount,
+              node_id: nodeId || null,
+              node_name: selectedNode?.node_name || null,
+            }),
+          });
+
+          if (r.status === 401) {
+            localStorage.removeItem("adminToken");
+            localStorage.removeItem("gcli2api_auth_token");
+            location.href = "/login";
+            return;
+          }
+
+          if (!r.ok) {
+            let msg = "导出失败";
+            try {
+              const d = await r.json();
+              if (d && d.detail) msg += `: ${d.detail}`;
+            } catch (_) { }
+            showToast(msg, "error");
+            return;
+          }
+
+          const blob = await r.blob();
+          const cd = r.headers.get("content-disposition") || r.headers.get("Content-Disposition") || "";
+          const exportedCount = Number(r.headers.get("X-Exported-Count") || requestedCount);
+          let filename = `tokens_${new Date().toISOString().replace(/[:]/g, "").replace("T", "_").slice(0, 15)}.json`;
+          const m = cd.match(/filename=\"?([^\";]+)\"?/i);
+          if (m && m[1]) filename = m[1];
+
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+
+          closeTokenExportModal();
+          showToast(`已导出 ${exportedCount} 个Token`, "success");
+        } catch (e) {
+          showToast("导出失败: " + e.message, "error");
+        } finally {
+          btn.disabled = false;
+          btnText.textContent = "开始导出";
+          btnSpinner.classList.add("hidden");
+        }
+      },
+      exportTokens = async () => {
+        await openTokenExportModal();
       },
       exportCodeServiceProjectActions = async () => {
         try {
@@ -6003,7 +6412,7 @@
       },
       switchTab = (t) => {
         const cap = (n) => n.charAt(0).toUpperCase() + n.slice(1);
-        ["tokens", "settings", "logs", "accountPool", "proxyPool", "loadAnalysis"].forEach((n) => {
+        ["tokens", "settings", "logs", "accountPool", "proxyPool", "cluster", "loadAnalysis"].forEach((n) => {
           const active = n === t;
           $(`panel${cap(n)}`).classList.toggle("hidden", !active);
           $(`tab${cap(n)}`).classList.toggle("border-primary", active);
@@ -6014,6 +6423,8 @@
             !active,
           );
         });
+        if (t !== "cluster") stopClusterAutoRefresh();
+        if (t !== "loadAnalysis") stopDiagAutoRefresh();
         if (t === "settings") {
           loadAdminConfig();
           loadServerConfig();
@@ -6025,6 +6436,10 @@
           loadATAutoRefreshConfig();
         } else if (t === "logs") {
           loadLogs();
+        } else if (t === "cluster") {
+          loadClusterConfig();
+          refreshClusterDiagnostics();
+          startClusterAutoRefresh();
         } else if (t === "loadAnalysis") {
           loadDiagnostics();
           startDiagAutoRefresh();
@@ -6298,6 +6713,245 @@
       detailContent.dataset.logId = toggleLogId;
       detailContent.innerHTML = detailHtml;
       syncLogDetailViewState();
+    }
+
+    // ========== 集群诊断面板 ==========
+    let _clusterAutoRefreshTimer = null;
+
+    function toggleClusterRoleFields() {
+      const role = $("cfgClusterRole")?.value || "standalone";
+      $("clusterMasterBaseUrlWrap")?.classList.toggle("hidden", role !== "worker");
+      $("clusterNodePublicBaseUrlWrap")?.classList.toggle("hidden", role === "standalone");
+    }
+
+    function startClusterAutoRefresh() {
+      stopClusterAutoRefresh();
+      _clusterAutoRefreshTimer = setInterval(() => {
+        if (!$("panelCluster") || $("panelCluster").classList.contains("hidden")) {
+          stopClusterAutoRefresh();
+          return;
+        }
+        refreshClusterDiagnostics();
+      }, 5000);
+    }
+
+    function stopClusterAutoRefresh() {
+      if (_clusterAutoRefreshTimer) {
+        clearInterval(_clusterAutoRefreshTimer);
+        _clusterAutoRefreshTimer = null;
+      }
+    }
+
+    function clusterRoleLabel(role) {
+      if (role === "master") return "主节点 master";
+      if (role === "worker") return "子节点 worker";
+      return "单机 standalone";
+    }
+
+    function fmtClusterTime(value) {
+      if (!value) return "-";
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return String(value);
+      return dt.toLocaleString();
+    }
+
+    async function loadClusterConfig() {
+      try {
+        const resp = await fetch("/api/cluster/config", {
+          headers: { Authorization: `Bearer ${localStorage.getItem("adminToken")}` },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const cfg = data.config || {};
+        $("cfgClusterRole").value = cfg.role || "standalone";
+        $("cfgClusterNodeId").value = cfg.node_id || "";
+        $("cfgClusterNodeName").value = cfg.node_name || "";
+        $("cfgClusterMasterBaseUrl").value = cfg.master_base_url || "";
+        $("cfgClusterNodePublicBaseUrl").value = cfg.node_public_base_url || "";
+        $("cfgClusterKey").value = cfg.cluster_key || "";
+        $("cfgClusterWeight").value = cfg.node_weight ?? 100;
+        $("cfgClusterMaxConcurrency").value = cfg.node_max_concurrency ?? 5;
+        $("cfgClusterHeartbeatInterval").value = cfg.heartbeat_interval_seconds ?? 10;
+        $("cfgClusterHeartbeatTimeout").value = cfg.heartbeat_timeout_seconds ?? 30;
+        $("cfgClusterDispatchTimeout").value = cfg.dispatch_timeout_seconds ?? 1800;
+        $("cfgClusterPreferLocal").checked = !!cfg.prefer_local;
+        $("clusterKeyMaskedText").textContent = cfg.cluster_key_masked ? `当前展示: ${cfg.cluster_key_masked}` : "当前未配置 Cluster Key";
+        $("clusterCurrentNodeId").textContent = cfg.node_id || "-";
+        $("clusterCurrentBaseUrl").textContent = cfg.effective_node_public_base_url || "-";
+        toggleClusterRoleFields();
+      } catch (e) {
+        console.error("loadClusterConfig failed", e);
+        showToast("加载集群配置失败: " + (e.message || "未知错误"), "error");
+      }
+    }
+
+    async function saveClusterConfig() {
+      try {
+        const payload = {
+          role: $("cfgClusterRole").value,
+          node_id: $("cfgClusterNodeId").value.trim(),
+          node_name: $("cfgClusterNodeName").value.trim(),
+          master_base_url: $("cfgClusterMasterBaseUrl").value.trim(),
+          node_public_base_url: $("cfgClusterNodePublicBaseUrl").value.trim(),
+          cluster_key: $("cfgClusterKey").value.trim(),
+          node_weight: parseInt($("cfgClusterWeight").value || "100", 10),
+          node_max_concurrency: parseInt($("cfgClusterMaxConcurrency").value || "5", 10),
+          heartbeat_interval_seconds: parseInt($("cfgClusterHeartbeatInterval").value || "10", 10),
+          heartbeat_timeout_seconds: parseInt($("cfgClusterHeartbeatTimeout").value || "30", 10),
+          dispatch_timeout_seconds: parseInt($("cfgClusterDispatchTimeout").value || "1800", 10),
+          prefer_local: $("cfgClusterPreferLocal").checked,
+        };
+        const resp = await fetch("/api/cluster/config", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("adminToken")}`,
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        showToast("集群配置已保存", "success");
+        await loadClusterConfig();
+        await refreshClusterDiagnostics();
+      } catch (e) {
+        console.error("saveClusterConfig failed", e);
+        showToast("保存集群配置失败: " + (e.message || "未知错误"), "error");
+      }
+    }
+
+    async function rotateClusterKey() {
+      if (!confirm("轮换后所有子节点都需要更新 Cluster Key，是否继续？")) return;
+      try {
+        const resp = await fetch("/api/cluster/rotate-key", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${localStorage.getItem("adminToken")}` },
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        $("cfgClusterKey").value = data.cluster_key || "";
+        $("clusterKeyMaskedText").textContent = data.cluster_key_masked
+          ? `当前展示: ${data.cluster_key_masked}`
+          : "当前未配置 Cluster Key";
+        showToast("Cluster Key 已轮换", "success");
+      } catch (e) {
+        console.error("rotateClusterKey failed", e);
+        showToast("轮换 Cluster Key 失败: " + (e.message || "未知错误"), "error");
+      }
+    }
+
+    async function refreshClusterDiagnostics() {
+      try {
+        const resp = await fetch("/api/cluster/diagnostics", {
+          headers: { Authorization: `Bearer ${localStorage.getItem("adminToken")}` },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        renderClusterDiagnostics(data.snapshot || {});
+        $("clusterLastUpdate").textContent = "更新于 " + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error("refreshClusterDiagnostics failed", e);
+      }
+    }
+
+    async function deleteClusterNode(nodeId) {
+      const target = String(nodeId || "").trim();
+      if (!target) return;
+      if (!confirm(`确定删除节点记录？\n\n${target}\n\n如果该子节点仍在线，下一次心跳后会重新出现。`)) return;
+      try {
+        const resp = await fetch("/api/cluster/delete-node", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("adminToken")}`,
+          },
+          body: JSON.stringify({ node_id: target }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        showToast(data.message || "节点记录已删除", "success");
+        renderClusterDiagnostics(data.snapshot || {});
+        $("clusterLastUpdate").textContent = "更新于 " + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error("deleteClusterNode failed", e);
+        showToast("删除节点失败: " + (e.message || "未知错误"), "error");
+      }
+    }
+
+    function renderClusterDiagnostics(snapshot) {
+      $("clusterRoleBadge").textContent = clusterRoleLabel(snapshot.role || "standalone");
+      $("clusterNodeNameText").textContent = snapshot.node_name || "-";
+      $("clusterTotalNodes").textContent = snapshot.total_nodes ?? 0;
+      $("clusterHealthyNodes").textContent = snapshot.healthy_nodes ?? 0;
+      $("clusterEffectiveCapacity").textContent = snapshot.effective_capacity ?? 0;
+      $("clusterAvailableCapacity").textContent = snapshot.available_capacity ?? 0;
+      $("clusterRemoteDispatchTotal").textContent = snapshot.remote_dispatch_total ?? 0;
+      $("clusterRemoteDispatchMeta").textContent = `成功 ${snapshot.remote_dispatch_success ?? 0} / 失败 ${snapshot.remote_dispatch_failure ?? 0}`;
+      $("clusterAvgHeartbeat").textContent = snapshot.average_heartbeat_ms != null
+        ? `平均心跳 ${snapshot.average_heartbeat_ms} ms`
+        : "心跳 -";
+      $("clusterCurrentNodeId").textContent = snapshot.node_id || "-";
+      $("clusterCurrentBaseUrl").textContent = snapshot.node_public_base_url || "-";
+      $("clusterNodeSummary").textContent = `健康 ${snapshot.healthy_nodes || 0} / 总计 ${snapshot.total_nodes || 0} · 累计分流 ${snapshot.remote_dispatch_total || 0}`;
+
+      const masterSync = snapshot.master_sync || {};
+      if (snapshot.role === "worker") {
+        $("clusterMasterSyncStatus").textContent = masterSync.success ? "最近心跳成功" : "最近心跳失败";
+        $("clusterMasterSyncMeta").textContent = masterSync.success
+          ? `成功时间: ${fmtClusterTime(masterSync.last_success_at)}${masterSync.roundtrip_ms != null ? `，往返 ${masterSync.roundtrip_ms} ms` : ""}`
+          : (masterSync.last_error || "尚未与主节点建立连接");
+      } else {
+        $("clusterMasterSyncStatus").textContent = "当前节点负责接收子节点心跳";
+        $("clusterMasterSyncMeta").textContent = "主节点通过子节点上报的心跳刷新节点健康状态";
+      }
+
+      const tbody = $("clusterNodeTableBody");
+      const empty = $("clusterNodeEmpty");
+      const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+      tbody.innerHTML = "";
+      empty.classList.toggle("hidden", nodes.length > 0);
+
+      nodes.forEach((node) => {
+        const healthy = !!node.healthy;
+        const isLocalNode = String(node.node_id || "") === String(snapshot.node_id || "");
+        const dispatchStats = node.dispatch_stats || {};
+        const dispatchCount = Number(dispatchStats.dispatch_count || 0);
+        const successCount = Number(dispatchStats.success_count || 0);
+        const failureCount = Number(dispatchStats.failure_count || 0);
+        const trafficShare = Number(dispatchStats.traffic_share || 0);
+        const avgDuration = dispatchStats.avg_duration_ms != null ? dispatchStats.avg_duration_ms : "-";
+        const recentDispatch = dispatchStats.last_dispatch_at ? fmtClusterTime(dispatchStats.last_dispatch_at) : "-";
+        const safeNodeIdAttr = escapeLogHtml(String(node.node_id || ""));
+        const actionHtml = isLocalNode
+          ? `<span class="text-xs text-muted-foreground">当前节点</span>`
+          : `<button data-node-id="${safeNodeIdAttr}" onclick="deleteClusterNode(this.dataset.nodeId)" class="inline-flex items-center justify-center rounded-md bg-red-600 text-white hover:bg-red-700 h-8 px-3 text-xs">删除</button>`;
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td class="py-2 pr-3 font-mono text-xs break-all">${escapeLogHtml(node.node_id || "-")}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(node.node_name || "-")}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(clusterRoleLabel(node.role || "standalone"))}</td>
+          <td class="py-2 pr-3 break-all">${escapeLogHtml(node.base_url || "-")}</td>
+          <td class="py-2 pr-3">
+            <span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${healthy ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}">
+              ${healthy ? "健康" : "异常"}
+            </span>
+          </td>
+          <td class="py-2 pr-3 text-right">${node.active_requests ?? 0}</td>
+          <td class="py-2 pr-3 text-right">${node.node_max_concurrency ?? 0}</td>
+          <td class="py-2 pr-3 text-right">${node.available_slots ?? "-"}</td>
+          <td class="py-2 pr-3 text-right">${node.weight ?? 100}</td>
+          <td class="py-2 pr-3 text-right">${dispatchCount}</td>
+          <td class="py-2 pr-3 text-right">${successCount} / ${failureCount}</td>
+          <td class="py-2 pr-3 text-right">${trafficShare.toFixed(1)}%</td>
+          <td class="py-2 pr-3 text-right">${avgDuration}</td>
+          <td class="py-2 pr-3 text-right">${node.reported_roundtrip_ms ?? "-"}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(recentDispatch)}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(fmtClusterTime(node.last_seen_at))}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(node.status_reason || "-")}</td>
+          <td class="py-2 pr-3 text-right">${actionHtml}</td>
+        `;
+        tbody.appendChild(row);
+      });
     }
 
     // ========== 负载分析面板 ==========
@@ -6972,6 +7626,7 @@
       refreshTokens();
       loadProjectVersion();
       loadATAutoRefreshConfig();
+      toggleClusterRoleFields();
       // 每 3 秒自动刷新并发负载状态（适配高并发场景）
       setInterval(async () => {
         try {

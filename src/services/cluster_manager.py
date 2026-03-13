@@ -1,0 +1,500 @@
+"""Cluster coordination for Flow2API master/worker deployments."""
+import asyncio
+import secrets
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import httpx
+
+from ..core.config import config
+from ..core.logger import debug_logger
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ClusterManager:
+    """Coordinate worker heartbeats and request dispatch decisions."""
+
+    def __init__(self, load_balancer=None):
+        self.load_balancer = load_balancer
+        self._nodes: Dict[str, Dict[str, Any]] = {}
+        self._nodes_lock = asyncio.Lock()
+        self._dispatch_stats: Dict[str, Dict[str, Any]] = {}
+        self._dispatch_stats_lock = asyncio.Lock()
+        self._local_active_requests = 0
+        self._local_lock = asyncio.Lock()
+        self._worker_heartbeat_task: Optional[asyncio.Task] = None
+        self._master_cleanup_task: Optional[asyncio.Task] = None
+        self._last_master_sync: Dict[str, Any] = {
+            "success": False,
+            "last_attempt_at": None,
+            "last_success_at": None,
+            "last_error": None,
+            "roundtrip_ms": None,
+        }
+
+    async def record_dispatch(
+        self,
+        *,
+        target_node_id: str,
+        target_node_name: Optional[str] = None,
+        generation_type: Optional[str] = None,
+        resolved_model: Optional[str] = None,
+        status_code: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        node_id = str(target_node_id or "").strip()
+        if not node_id:
+            return
+
+        is_success = error is None and (status_code is None or int(status_code) < 400)
+        now_iso = _utc_now_iso()
+        async with self._dispatch_stats_lock:
+            current = dict(self._dispatch_stats.get(node_id) or {})
+            current["node_id"] = node_id
+            current["node_name"] = str(target_node_name or current.get("node_name") or node_id).strip()
+            current["dispatch_count"] = int(current.get("dispatch_count") or 0) + 1
+            current["success_count"] = int(current.get("success_count") or 0) + (1 if is_success else 0)
+            current["failure_count"] = int(current.get("failure_count") or 0) + (0 if is_success else 1)
+            current["image_count"] = int(current.get("image_count") or 0) + (1 if generation_type == "image" else 0)
+            current["video_count"] = int(current.get("video_count") or 0) + (1 if generation_type == "video" else 0)
+            current["total_duration_ms"] = int(current.get("total_duration_ms") or 0) + max(0, int(duration_ms or 0))
+            current["last_status_code"] = status_code
+            current["last_error"] = str(error or "").strip() or None
+            current["last_model"] = str(resolved_model or "").strip() or None
+            current["last_generation_type"] = str(generation_type or "").strip() or None
+            current["last_dispatch_at"] = now_iso
+            self._dispatch_stats[node_id] = current
+
+    async def _build_dispatch_stats_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        async with self._dispatch_stats_lock:
+            return {str(node_id): dict(item) for node_id, item in self._dispatch_stats.items()}
+
+    @property
+    def role(self) -> str:
+        return config.cluster_role
+
+    def is_enabled(self) -> bool:
+        return bool(config.cluster_enabled)
+
+    def is_master(self) -> bool:
+        return self.role == "master"
+
+    def is_worker(self) -> bool:
+        return self.role == "worker"
+
+    def should_dispatch_externally(self) -> bool:
+        return self.is_master() and self.is_enabled()
+
+    def verify_cluster_key(self, provided_key: Optional[str]) -> bool:
+        expected = str(config.cluster_key or "").strip()
+        actual = str(provided_key or "").strip()
+        if not expected or not actual:
+            return False
+        return secrets.compare_digest(expected, actual)
+
+    async def start(self):
+        await self.stop()
+        if not self.is_enabled():
+            return
+
+        if self.is_master():
+            self._master_cleanup_task = asyncio.create_task(self._master_cleanup_loop())
+            debug_logger.log_info("[CLUSTER] 主节点清理任务已启动")
+
+        if self.is_worker():
+            self._worker_heartbeat_task = asyncio.create_task(self._worker_heartbeat_loop())
+            debug_logger.log_info("[CLUSTER] 子节点心跳任务已启动")
+
+    async def stop(self):
+        for task in (self._worker_heartbeat_task, self._master_cleanup_task):
+            if task:
+                task.cancel()
+        for task in (self._worker_heartbeat_task, self._master_cleanup_task):
+            if task:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._worker_heartbeat_task = None
+        self._master_cleanup_task = None
+
+    async def reload_runtime(self):
+        await self.start()
+
+    async def acquire_local_slot(self) -> bool:
+        async with self._local_lock:
+            if not self.is_enabled():
+                self._local_active_requests += 1
+                return True
+            limit = max(0, int(config.cluster_node_max_concurrency))
+            if limit > 0 and self._local_active_requests >= limit:
+                return False
+            self._local_active_requests += 1
+            return True
+
+    async def release_local_slot(self):
+        async with self._local_lock:
+            self._local_active_requests = max(0, self._local_active_requests - 1)
+
+    async def get_local_active_requests(self) -> int:
+        async with self._local_lock:
+            return int(self._local_active_requests)
+
+    async def _build_load_summary(self) -> Dict[str, Any]:
+        if not self.load_balancer:
+            return {
+                "token_count": 0,
+                "total_image_inflight": 0,
+                "total_video_inflight": 0,
+                "total_image_capacity": None,
+                "total_video_capacity": None,
+            }
+
+        try:
+            status = await self.load_balancer.get_all_load_status()
+        except Exception as exc:
+            debug_logger.log_warning(f"[CLUSTER] 获取本地负载快照失败: {exc}")
+            return {
+                "token_count": 0,
+                "total_image_inflight": 0,
+                "total_video_inflight": 0,
+                "total_image_capacity": None,
+                "total_video_capacity": None,
+            }
+
+        return dict(status.get("summary") or {})
+
+    async def build_local_node_snapshot(self) -> Dict[str, Any]:
+        active_requests = await self.get_local_active_requests()
+        node_max = max(0, int(config.cluster_node_max_concurrency))
+        load_summary = await self._build_load_summary()
+        available_slots = max(0, node_max - active_requests) if node_max > 0 else None
+        return {
+            "node_id": config.cluster_node_id,
+            "node_name": config.cluster_node_name,
+            "base_url": config.cluster_effective_node_public_base_url,
+            "role": self.role,
+            "enabled": True,
+            "healthy": True,
+            "active_requests": active_requests,
+            "node_max_concurrency": node_max,
+            "available_slots": available_slots,
+            "weight": int(config.cluster_node_weight),
+            "load_summary": load_summary,
+            "status_reason": "local",
+            "last_seen_at": _utc_now_iso(),
+            "heartbeat_age_seconds": 0,
+            "reported_roundtrip_ms": (
+                self._last_master_sync.get("roundtrip_ms") if self.is_worker() else 0
+            ),
+        }
+
+    async def register_heartbeat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        node_id = str(payload.get("node_id") or "").strip()
+        if not node_id:
+            raise ValueError("node_id 不能为空")
+
+        now = time.time()
+        sanitized = {
+            "node_id": node_id,
+            "node_name": str(payload.get("node_name") or node_id).strip(),
+            "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
+            "role": str(payload.get("role") or "worker").strip().lower(),
+            "enabled": bool(payload.get("enabled", True)),
+            "active_requests": max(0, int(payload.get("active_requests") or 0)),
+            "node_max_concurrency": max(0, int(payload.get("node_max_concurrency") or 0)),
+            "weight": max(1, int(payload.get("weight") or 100)),
+            "available_slots": payload.get("available_slots"),
+            "load_summary": dict(payload.get("load_summary") or {}),
+            "reported_roundtrip_ms": payload.get("reported_roundtrip_ms"),
+            "reported_at": str(payload.get("reported_at") or _utc_now_iso()),
+            "last_seen_ts": now,
+            "last_seen_at": _utc_now_iso(),
+        }
+        if sanitized["available_slots"] is not None:
+            try:
+                sanitized["available_slots"] = max(0, int(sanitized["available_slots"]))
+            except Exception:
+                sanitized["available_slots"] = None
+
+        async with self._nodes_lock:
+            existing = dict(self._nodes.get(node_id) or {})
+            existing.update(sanitized)
+            self._nodes[node_id] = existing
+
+        return {"success": True, "received_at": _utc_now_iso(), "node_id": node_id}
+
+    async def remove_node(self, node_id: str) -> bool:
+        """Remove a remote node record from the master's in-memory registry."""
+        target = str(node_id or "").strip()
+        if not target:
+            raise ValueError("node_id 不能为空")
+        if target == config.cluster_node_id:
+            raise ValueError("不能删除当前节点")
+
+        async with self._nodes_lock:
+            existed = target in self._nodes
+            if existed:
+                self._nodes.pop(target, None)
+        return existed
+
+    async def _master_cleanup_loop(self):
+        while True:
+            try:
+                await asyncio.sleep(max(5, int(config.cluster_heartbeat_interval_seconds)))
+                await self.prune_stale_nodes()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                debug_logger.log_warning(f"[CLUSTER] 主节点清理异常: {exc}")
+
+    async def prune_stale_nodes(self):
+        timeout_seconds = max(5, int(config.cluster_heartbeat_timeout_seconds))
+        now = time.time()
+        async with self._nodes_lock:
+            stale_node_ids = [
+                node_id
+                for node_id, node in self._nodes.items()
+                if (now - float(node.get("last_seen_ts") or 0)) > (timeout_seconds * 3)
+            ]
+            for node_id in stale_node_ids:
+                self._nodes.pop(node_id, None)
+
+    async def _worker_heartbeat_loop(self):
+        while True:
+            try:
+                await self._send_heartbeat_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_master_sync.update(
+                    {
+                        "success": False,
+                        "last_attempt_at": _utc_now_iso(),
+                        "last_error": str(exc),
+                    }
+                )
+                debug_logger.log_warning(f"[CLUSTER] 子节点心跳失败: {exc}")
+
+            await asyncio.sleep(max(3, int(config.cluster_heartbeat_interval_seconds)))
+
+    async def _send_heartbeat_once(self):
+        master_base_url = str(config.cluster_master_base_url or "").strip().rstrip("/")
+        cluster_key = str(config.cluster_key or "").strip()
+        if not master_base_url or not cluster_key:
+            raise RuntimeError("worker 模式下必须配置 cluster.master_base_url 与 cluster.cluster_key")
+
+        payload = await self.build_local_node_snapshot()
+        payload["reported_at"] = _utc_now_iso()
+        payload["reported_roundtrip_ms"] = self._last_master_sync.get("roundtrip_ms")
+        endpoint = f"{master_base_url}/api/internal/cluster/heartbeat"
+        started_at = time.perf_counter()
+
+        async with httpx.AsyncClient(timeout=max(5, int(config.cluster_heartbeat_timeout_seconds))) as client:
+            response = await client.post(
+                endpoint,
+                json=payload,
+                headers={
+                    "X-Cluster-Key": cluster_key,
+                    "X-Cluster-Node-Id": str(payload.get("node_id") or ""),
+                },
+            )
+
+        roundtrip_ms = int((time.perf_counter() - started_at) * 1000)
+        if response.status_code >= 400:
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text}")
+
+        self._last_master_sync.update(
+            {
+                "success": True,
+                "last_attempt_at": _utc_now_iso(),
+                "last_success_at": _utc_now_iso(),
+                "last_error": None,
+                "roundtrip_ms": roundtrip_ms,
+            }
+        )
+
+    def _decorate_node(self, node: Dict[str, Any], now_ts: float) -> Dict[str, Any]:
+        item = dict(node or {})
+        last_seen_ts = float(item.get("last_seen_ts") or now_ts)
+        heartbeat_age = max(0, int(now_ts - last_seen_ts))
+        timeout_seconds = max(5, int(config.cluster_heartbeat_timeout_seconds))
+        healthy = bool(item.get("enabled", True)) and heartbeat_age <= timeout_seconds
+
+        item["healthy"] = healthy
+        item["heartbeat_age_seconds"] = heartbeat_age
+        item["available_slots"] = (
+            max(0, int(item.get("node_max_concurrency") or 0) - int(item.get("active_requests") or 0))
+            if item.get("node_max_concurrency") is not None and int(item.get("node_max_concurrency") or 0) > 0
+            else item.get("available_slots")
+        )
+        if not item.get("status_reason"):
+            if not item.get("enabled", True):
+                item["status_reason"] = "disabled"
+            elif healthy:
+                item["status_reason"] = "healthy"
+            else:
+                item["status_reason"] = "heartbeat_timeout"
+        return item
+
+    async def list_nodes(self) -> List[Dict[str, Any]]:
+        now_ts = time.time()
+        nodes: List[Dict[str, Any]] = []
+
+        local = await self.build_local_node_snapshot()
+        local["healthy"] = True
+        nodes.append(local)
+
+        async with self._nodes_lock:
+            remote_nodes = [dict(item) for item in self._nodes.values()]
+
+        for item in remote_nodes:
+            nodes.append(self._decorate_node(item, now_ts))
+
+        nodes.sort(key=lambda item: (0 if item.get("role") == "master" else 1, str(item.get("node_name") or "")))
+        return nodes
+
+    async def choose_dispatch_target(
+        self,
+        *,
+        resolved_model: Optional[str],
+        generation_type: Optional[str],
+    ) -> Dict[str, Any]:
+        if not self.should_dispatch_externally():
+            return {"dispatch_to": "local", "reason": "not_master"}
+
+        nodes = await self.list_nodes()
+        healthy_nodes = [
+            node for node in nodes
+            if bool(node.get("healthy")) and bool(node.get("enabled", True))
+        ]
+        if not healthy_nodes:
+            return {"dispatch_to": "local", "reason": "no_healthy_nodes"}
+
+        candidates: List[Dict[str, Any]] = []
+        for node in healthy_nodes:
+            node_max = max(0, int(node.get("node_max_concurrency") or 0))
+            active = max(0, int(node.get("active_requests") or 0))
+            if node_max <= 0:
+                available = 0
+            else:
+                available = max(0, node_max - active)
+            if available <= 0:
+                continue
+
+            weight = max(1, int(node.get("weight") or 100))
+            weighted_available = available * weight
+            if str(node.get("node_id") or "") == config.cluster_node_id and bool(config.cluster_prefer_local):
+                weighted_available += max(1, weight // 10)
+
+            candidate = dict(node)
+            candidate["score"] = weighted_available
+            candidate["dispatch_generation_type"] = generation_type
+            candidate["dispatch_model"] = resolved_model
+            candidates.append(candidate)
+
+        if not candidates:
+            return {"dispatch_to": "local", "reason": "all_nodes_full"}
+
+        selected = max(
+            candidates,
+            key=lambda item: (
+                int(item.get("score") or 0),
+                int(item.get("available_slots") or 0),
+                -int(item.get("active_requests") or 0),
+                -int(item.get("reported_roundtrip_ms") or 0),
+            ),
+        )
+
+        if str(selected.get("node_id") or "") == config.cluster_node_id:
+            return {"dispatch_to": "local", "reason": "selected_local", "node": selected}
+
+        if not str(selected.get("base_url") or "").strip():
+            return {"dispatch_to": "local", "reason": "selected_remote_missing_base_url"}
+
+        return {"dispatch_to": "remote", "reason": "selected_remote", "node": selected}
+
+    async def get_cluster_snapshot(self) -> Dict[str, Any]:
+        nodes = await self.list_nodes()
+        dispatch_stats_map = await self._build_dispatch_stats_snapshot()
+        remote_dispatch_total = 0
+        remote_dispatch_success = 0
+        remote_dispatch_failure = 0
+
+        for node in nodes:
+            node_id = str(node.get("node_id") or "").strip()
+            stats = dict(dispatch_stats_map.get(node_id) or {})
+            dispatch_count = int(stats.get("dispatch_count") or 0)
+            success_count = int(stats.get("success_count") or 0)
+            failure_count = int(stats.get("failure_count") or 0)
+            total_duration_ms = int(stats.get("total_duration_ms") or 0)
+            avg_duration_ms = int(total_duration_ms / dispatch_count) if dispatch_count > 0 else None
+            node["dispatch_stats"] = {
+                "dispatch_count": dispatch_count,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "image_count": int(stats.get("image_count") or 0),
+                "video_count": int(stats.get("video_count") or 0),
+                "avg_duration_ms": avg_duration_ms,
+                "last_dispatch_at": stats.get("last_dispatch_at"),
+                "last_status_code": stats.get("last_status_code"),
+                "last_error": stats.get("last_error"),
+                "last_model": stats.get("last_model"),
+                "last_generation_type": stats.get("last_generation_type"),
+            }
+            if node_id != str(config.cluster_node_id or "").strip() and str(node.get("role") or "") == "worker":
+                remote_dispatch_total += dispatch_count
+                remote_dispatch_success += success_count
+                remote_dispatch_failure += failure_count
+
+        for node in nodes:
+            stats = dict(node.get("dispatch_stats") or {})
+            dispatch_count = int(stats.get("dispatch_count") or 0)
+            stats["traffic_share"] = (
+                round((dispatch_count / remote_dispatch_total) * 100, 1)
+                if remote_dispatch_total > 0 and str(node.get("role") or "") == "worker" and str(node.get("node_id") or "").strip() != str(config.cluster_node_id or "").strip()
+                else 0
+            )
+            node["dispatch_stats"] = stats
+
+        healthy_nodes = [node for node in nodes if bool(node.get("healthy"))]
+        total_capacity = sum(max(0, int(node.get("node_max_concurrency") or 0)) for node in healthy_nodes)
+        available_capacity = sum(max(0, int(node.get("available_slots") or 0)) for node in healthy_nodes)
+        average_roundtrip = [
+            int(node.get("reported_roundtrip_ms"))
+            for node in healthy_nodes
+            if node.get("reported_roundtrip_ms") is not None
+        ]
+        return {
+            "enabled": self.is_enabled(),
+            "role": self.role,
+            "node_id": config.cluster_node_id,
+            "node_name": config.cluster_node_name,
+            "master_base_url": config.cluster_master_base_url,
+            "node_public_base_url": config.cluster_effective_node_public_base_url,
+            "cluster_key_masked": config.mask_cluster_key(),
+            "node_weight": int(config.cluster_node_weight),
+            "node_max_concurrency": int(config.cluster_node_max_concurrency),
+            "heartbeat_interval_seconds": int(config.cluster_heartbeat_interval_seconds),
+            "heartbeat_timeout_seconds": int(config.cluster_heartbeat_timeout_seconds),
+            "dispatch_timeout_seconds": int(config.cluster_dispatch_timeout_seconds),
+            "prefer_local": bool(config.cluster_prefer_local),
+            "total_nodes": len(nodes),
+            "healthy_nodes": len(healthy_nodes),
+            "effective_capacity": total_capacity,
+            "available_capacity": available_capacity,
+            "remote_dispatch_total": remote_dispatch_total,
+            "remote_dispatch_success": remote_dispatch_success,
+            "remote_dispatch_failure": remote_dispatch_failure,
+            "average_heartbeat_ms": (
+                int(sum(average_roundtrip) / len(average_roundtrip)) if average_roundtrip else None
+            ),
+            "last_refresh_at": _utc_now_iso(),
+            "nodes": nodes,
+            "master_sync": dict(self._last_master_sync),
+        }

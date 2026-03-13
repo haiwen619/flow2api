@@ -753,6 +753,30 @@ class Database:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS token_export_bindings (
+                    token_id INTEGER PRIMARY KEY,
+                    node_id TEXT NOT NULL,
+                    node_name TEXT,
+                    bound_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_exported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS token_export_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id TEXT,
+                    node_name TEXT,
+                    requested_count INTEGER DEFAULT 0,
+                    exported_count INTEGER DEFAULT 0,
+                    token_ids_json TEXT,
+                    token_emails_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Admin config table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS admin_config (
@@ -869,6 +893,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_token_id ON token_stats(token_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_refresh_history_token_id_created_at ON token_refresh_history(token_id, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_refresh_history_created_at ON token_refresh_history(created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_token_export_bindings_node_id ON token_export_bindings(node_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_token_export_history_node_id_created_at ON token_export_history(node_id, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_token_export_history_created_at ON token_export_history(created_at DESC)")
 
             await db.commit()
 
@@ -1169,6 +1196,174 @@ class Database:
             await db.commit()
             return int(cursor.lastrowid or 0)
 
+    async def get_token_export_binding_map(self) -> Dict[int, Dict[str, Any]]:
+        """Get current export bindings keyed by token_id."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT token_id, node_id, node_name, bound_at, last_exported_at
+                FROM token_export_bindings
+                """
+            )
+            rows = await cursor.fetchall()
+            return {int(row["token_id"]): dict(row) for row in rows}
+
+    async def upsert_token_export_bindings(
+        self,
+        token_ids: List[int],
+        *,
+        node_id: str,
+        node_name: Optional[str] = None,
+        exported_at: Optional[datetime] = None,
+    ) -> None:
+        """Bind exported tokens to a cluster node."""
+        normalized_node_id = str(node_id or "").strip()
+        if not normalized_node_id:
+            return
+
+        normalized_token_ids: List[int] = []
+        seen = set()
+        for token_id in token_ids or []:
+            try:
+                value = int(token_id)
+            except Exception:
+                continue
+            if value <= 0 or value in seen:
+                continue
+            normalized_token_ids.append(value)
+            seen.add(value)
+
+        if not normalized_token_ids:
+            return
+
+        ts = exported_at or datetime.utcnow()
+        async with aiosqlite.connect(self.db_path) as db:
+            for token_id in normalized_token_ids:
+                cursor = await db.execute(
+                    "SELECT token_id FROM token_export_bindings WHERE token_id = ?",
+                    (token_id,),
+                )
+                existing = await cursor.fetchone()
+                if existing:
+                    await db.execute(
+                        """
+                        UPDATE token_export_bindings
+                        SET node_id = ?, node_name = ?, last_exported_at = ?
+                        WHERE token_id = ?
+                        """,
+                        (
+                            normalized_node_id,
+                            str(node_name or "").strip() or None,
+                            ts,
+                            token_id,
+                        ),
+                    )
+                else:
+                    await db.execute(
+                        """
+                        INSERT INTO token_export_bindings (
+                            token_id, node_id, node_name, bound_at, last_exported_at
+                        )
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            token_id,
+                            normalized_node_id,
+                            str(node_name or "").strip() or None,
+                            ts,
+                            ts,
+                        ),
+                    )
+            await db.commit()
+
+    async def add_token_export_history(
+        self,
+        *,
+        node_id: Optional[str],
+        node_name: Optional[str],
+        requested_count: int,
+        exported_count: int,
+        token_ids: List[int],
+        token_emails: List[str],
+        created_at: Optional[datetime] = None,
+    ) -> int:
+        """Append a token export history row."""
+        normalized_token_ids: List[int] = []
+        for token_id in token_ids or []:
+            try:
+                value = int(token_id)
+            except Exception:
+                continue
+            if value > 0:
+                normalized_token_ids.append(value)
+
+        normalized_token_emails = [
+            str(email or "").strip()
+            for email in token_emails or []
+            if str(email or "").strip()
+        ]
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO token_export_history (
+                    node_id, node_name, requested_count, exported_count,
+                    token_ids_json, token_emails_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(node_id or "").strip() or None,
+                    str(node_name or "").strip() or None,
+                    max(0, int(requested_count or 0)),
+                    max(0, int(exported_count or 0)),
+                    json.dumps(normalized_token_ids, ensure_ascii=False),
+                    json.dumps(normalized_token_emails, ensure_ascii=False),
+                    created_at or datetime.utcnow(),
+                ),
+            )
+            await db.commit()
+            return int(cursor.lastrowid or 0)
+
+    async def get_token_export_history(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent token export history, newest first."""
+        safe_limit = max(1, min(int(limit or 20), 100))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT
+                    id,
+                    node_id,
+                    node_name,
+                    requested_count,
+                    exported_count,
+                    token_ids_json,
+                    token_emails_json,
+                    created_at
+                FROM token_export_history
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            )
+            rows = await cursor.fetchall()
+
+        history: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["token_ids"] = json.loads(item.pop("token_ids_json") or "[]")
+            except Exception:
+                item["token_ids"] = []
+            try:
+                item["token_emails"] = json.loads(item.pop("token_emails_json") or "[]")
+            except Exception:
+                item["token_emails"] = []
+            history.append(item)
+        return history
+
     async def get_token_refresh_history(
         self,
         token_id: int,
@@ -1198,6 +1393,7 @@ class Database:
             await db.execute("DELETE FROM request_logs WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM tasks WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM token_refresh_history WHERE token_id = ?", (token_id,))
+            await db.execute("DELETE FROM token_export_bindings WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM projects WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
@@ -1213,6 +1409,8 @@ class Database:
             await db.execute("DELETE FROM request_logs")
             await db.execute("DELETE FROM tasks")
             await db.execute("DELETE FROM token_refresh_history")
+            await db.execute("DELETE FROM token_export_bindings")
+            await db.execute("DELETE FROM token_export_history")
             await db.execute("DELETE FROM token_stats")
             await db.execute("DELETE FROM projects")
             await db.execute("DELETE FROM tokens")

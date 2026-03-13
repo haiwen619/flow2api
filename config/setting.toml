@@ -30,7 +30,7 @@ video_launch_stagger_ms = 250
 poll_interval = 3.0
 max_poll_attempts = 200
 
-reauth_cookie_invalid_auto_login_enabled = true
+reauth_cookie_invalid_auto_login_enabled = false
 block_gemini_25_flash_image = true
 [server]
 host = "127.0.0.1"
@@ -74,3 +74,17 @@ test_bitbrowser_id_local = "8775a712ab0c4db59e0811ad115bc565"
 test_bitbrowser_id_server = "b053c6d206644055aee44da3326ee24d"
 test_bitbrowser_ids_local = ["8775a712ab0c4db59e0811ad115bc565"]
 test_bitbrowser_ids_server = ["b053c6d206644055aee44da3326ee24d"]
+
+[cluster]
+cluster_key = "fcs_cluster_E3GwaIV6hZt9zjOO9EH6jkyOzRAUYXV4"
+role = "master"
+node_id = "standalone-node@http://23.159.248.139:8000"
+node_name = "standalone-node"
+master_base_url = ""
+node_public_base_url = "http://127.0.0.1:8000"
+node_weight = 100
+node_max_concurrency = 5
+heartbeat_interval_seconds = 10
+heartbeat_timeout_seconds = 30
+dispatch_timeout_seconds = 1800
+prefer_local = true

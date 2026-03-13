@@ -18,6 +18,7 @@ from .services.flow_client import FlowClient
 from .services.proxy_manager import ProxyManager
 from .services.token_manager import TokenManager
 from .services.load_balancer import LoadBalancer
+from .services.cluster_manager import ClusterManager
 from .services.concurrency_manager import ConcurrencyManager
 from .services.generation_handler import GenerationHandler
 from .services.perf_monitor import perf_monitor
@@ -198,6 +199,9 @@ async def lifespan(app: FastAPI):
     # Start performance monitor loop-lag tracker
     perf_monitor.start_loop_lag_monitor()
 
+    # Start cluster coordination tasks
+    await cluster_manager.start()
+
     # Start file cache cleanup task
     await generation_handler.file_cache.start_cleanup_task()
 
@@ -235,6 +239,8 @@ async def lifespan(app: FastAPI):
     print(f"[启动] Token 总数: {len(tokens)}")
     print(f"[启动] 缓存状态: {'启用' if config.cache_enabled else '禁用'}（超时: {config.cache_timeout}s）")
     print("[启动] 文件缓存清理任务已启动")
+    if config.cluster_enabled:
+        print(f"[启动] 集群模式已启用: role={config.cluster_role}, node={config.cluster_node_name}")
     print("[启动] 429 自动解禁任务已启动（每小时执行一次）")
     print("[启动] AT 自动刷新任务已启动（每分钟执行一次）")
     print(f"[启动] 服务监听地址: http://{config.server_host}:{config.server_port}")
@@ -246,6 +252,7 @@ async def lifespan(app: FastAPI):
     print("Flow2API 正在关闭...")
     # Stop file cache cleanup task
     await generation_handler.file_cache.stop_cleanup_task()
+    await cluster_manager.stop()
     # Stop auto-unban task
     auto_unban_task_handle.cancel()
     try:
@@ -274,6 +281,7 @@ flow_client = FlowClient(proxy_manager, db)
 token_manager = TokenManager(db, flow_client)
 concurrency_manager = ConcurrencyManager()
 load_balancer = LoadBalancer(token_manager, concurrency_manager)
+cluster_manager = ClusterManager(load_balancer)
 generation_handler = GenerationHandler(
     flow_client,
     token_manager,
@@ -290,7 +298,8 @@ proxy_manager.set_proxy_pool_service(proxy_pool_service)
 
 # Set dependencies
 routes.set_generation_handler(generation_handler)
-admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager, load_balancer)
+routes.set_cluster_manager(cluster_manager)
+admin.set_dependencies(token_manager, proxy_manager, db, concurrency_manager, load_balancer, cluster_manager)
 
 # Create FastAPI app
 app = FastAPI(

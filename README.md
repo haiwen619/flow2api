@@ -11,6 +11,8 @@ Esc_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq
 
 New-NetFirewallRule -DisplayName "Flow2API-RemoteBrowser-8060" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8060
 
+New-NetFirewallRule -DisplayName "Flow2API-8000" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8000
+
 New-NetFirewallRule -DisplayName "CAP-8137" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8137
 
 http://23.159.248.139:8000/manage

@@ -98,6 +98,26 @@ CREATE TABLE IF NOT EXISTS token_refresh_history (
     CONSTRAINT fk_token_refresh_history_token_id FOREIGN KEY (token_id) REFERENCES tokens(id)
 );
 
+CREATE TABLE IF NOT EXISTS token_export_bindings (
+    token_id BIGINT PRIMARY KEY,
+    node_id VARCHAR(255) NOT NULL,
+    node_name VARCHAR(255) NULL,
+    bound_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_exported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_token_export_bindings_token_id FOREIGN KEY (token_id) REFERENCES tokens(id)
+);
+
+CREATE TABLE IF NOT EXISTS token_export_history (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    node_id VARCHAR(255) NULL,
+    node_name VARCHAR(255) NULL,
+    requested_count INT NOT NULL DEFAULT 0,
+    exported_count INT NOT NULL DEFAULT 0,
+    token_ids_json LONGTEXT NULL,
+    token_emails_json LONGTEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS admin_config (
     id INT PRIMARY KEY DEFAULT 1,
     username VARCHAR(255) NOT NULL,
@@ -206,5 +226,8 @@ CREATE INDEX idx_request_logs_token_id_created_at ON request_logs(token_id, crea
 CREATE INDEX idx_token_stats_token_id ON token_stats(token_id);
 CREATE INDEX idx_token_refresh_history_token_id_created_at ON token_refresh_history(token_id, created_at DESC);
 CREATE INDEX idx_token_refresh_history_created_at ON token_refresh_history(created_at DESC);
+CREATE INDEX idx_token_export_bindings_node_id ON token_export_bindings(node_id);
+CREATE INDEX idx_token_export_history_node_id_created_at ON token_export_history(node_id, created_at DESC);
+CREATE INDEX idx_token_export_history_created_at ON token_export_history(created_at DESC);
 CREATE INDEX idx_account_pool_platform ON account_pool_accounts(platform);
 CREATE INDEX idx_account_pool_updated_at ON account_pool_accounts(updated_at);

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Security
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from urllib.parse import urlparse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -38,6 +38,7 @@ proxy_manager: ProxyManager = None
 db: Database = None
 concurrency_manager: Optional[ConcurrencyManager] = None
 load_balancer: Optional[LoadBalancer] = None
+cluster_manager = None
 
 # Store active admin session tokens (in production, use Redis or database)
 active_admin_tokens = set()
@@ -485,14 +486,16 @@ def set_dependencies(
     database: Database,
     cm: Optional[ConcurrencyManager] = None,
     lb: Optional[LoadBalancer] = None,
+    cluster_mgr = None,
 ):
     """Set service instances"""
-    global token_manager, proxy_manager, db, concurrency_manager, load_balancer
+    global token_manager, proxy_manager, db, concurrency_manager, load_balancer, cluster_manager
     token_manager = tm
     proxy_manager = pm
     db = database
     concurrency_manager = cm
     load_balancer = lb
+    cluster_manager = cluster_mgr
 
 
 # ========== Request Models ==========
@@ -563,6 +566,40 @@ class ServerConfigRequest(BaseModel):
     block_gemini_25_flash_image: Optional[bool] = None
 
 
+class ClusterConfigRequest(BaseModel):
+    role: str  # standalone | master | worker
+    node_id: Optional[str] = None
+    node_name: Optional[str] = None
+    master_base_url: Optional[str] = None
+    node_public_base_url: Optional[str] = None
+    cluster_key: Optional[str] = None
+    node_weight: Optional[int] = None
+    node_max_concurrency: Optional[int] = None
+    heartbeat_interval_seconds: Optional[int] = None
+    heartbeat_timeout_seconds: Optional[int] = None
+    dispatch_timeout_seconds: Optional[int] = None
+    prefer_local: Optional[bool] = None
+
+
+class ClusterHeartbeatRequest(BaseModel):
+    node_id: str
+    node_name: Optional[str] = None
+    base_url: Optional[str] = None
+    role: Optional[str] = "worker"
+    enabled: bool = True
+    active_requests: int = 0
+    node_max_concurrency: int = 0
+    available_slots: Optional[int] = None
+    weight: int = 100
+    reported_roundtrip_ms: Optional[int] = None
+    reported_at: Optional[str] = None
+    load_summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ClusterDeleteNodeRequest(BaseModel):
+    node_id: str
+
+
 class GenerationConfigRequest(BaseModel):
     image_timeout: int
     video_timeout: int
@@ -626,6 +663,13 @@ class InternalTokenExportRequest(BaseModel):
     files: List[str]
 
 
+class TokenExportRequest(BaseModel):
+    """Token 列表导出请求"""
+    count: int = Field(default=5, ge=1, le=200)
+    node_id: Optional[str] = None
+    node_name: Optional[str] = None
+
+
 # ========== Auth Middleware ==========
 
 async def verify_admin_token(
@@ -641,6 +685,17 @@ async def verify_admin_token(
         raise HTTPException(status_code=401, detail="Invalid or expired admin token")
 
     return token
+
+
+async def verify_cluster_internal_token(
+    x_cluster_key: Optional[str] = Header(None, alias="X-Cluster-Key"),
+):
+    """Verify internal cluster calls between master and workers."""
+    if not cluster_manager or not cluster_manager.is_enabled():
+        raise HTTPException(status_code=403, detail="Cluster mode is disabled")
+    if not cluster_manager.verify_cluster_key(x_cluster_key):
+        raise HTTPException(status_code=401, detail="Invalid cluster key")
+    return True
 
 
 # ========== Auth Endpoints ==========
@@ -863,6 +918,229 @@ def _normalize_internal_token_email_from_name(file_name: str) -> str:
     stem = Path(file_name).stem
     stem = re.sub(r"_\d{6,}$", "", stem)
     return stem.replace("_at_", "@")
+
+
+def _serialize_token_export_item(
+    row: Dict[str, Any],
+    *,
+    exported_node_id: Optional[str] = None,
+    exported_node_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "email": row.get("email"),
+        "access_token": row.get("at"),
+        "session_token": row.get("st") or None,
+        "cookie": row.get("cookie") or None,
+        "cookie_file": row.get("cookie_file") or None,
+        "is_active": bool(row.get("is_active")),
+        "image_enabled": bool(row.get("image_enabled", True)),
+        "video_enabled": bool(row.get("video_enabled", True)),
+        "image_concurrency": row.get("image_concurrency") if row.get("image_concurrency") is not None else -1,
+        "video_concurrency": row.get("video_concurrency") if row.get("video_concurrency") is not None else -1,
+        "remark": row.get("remark"),
+        "captcha_proxy_url": row.get("captcha_proxy_url") or None,
+        "project_id": row.get("current_project_id") or None,
+        "project_name": row.get("current_project_name") or None,
+        "exported_node_id": exported_node_id,
+        "exported_node_name": exported_node_name,
+    }
+
+
+async def _list_export_worker_nodes() -> List[Dict[str, Any]]:
+    if not cluster_manager:
+        return []
+
+    try:
+        snapshot = await cluster_manager.get_cluster_snapshot()
+    except Exception:
+        return []
+
+    local_node_id = str(snapshot.get("node_id") or "").strip()
+    worker_nodes: List[Dict[str, Any]] = []
+    for node in snapshot.get("nodes") or []:
+        node_id = str(node.get("node_id") or "").strip()
+        if not node_id or node_id == local_node_id:
+            continue
+        if str(node.get("role") or "").strip().lower() != "worker":
+            continue
+        worker_nodes.append(
+            {
+                "node_id": node_id,
+                "node_name": str(node.get("node_name") or node_id).strip(),
+                "base_url": str(node.get("base_url") or "").strip(),
+                "healthy": bool(node.get("healthy")),
+                "active_requests": int(node.get("active_requests") or 0),
+                "available_slots": node.get("available_slots"),
+                "weight": int(node.get("weight") or 100),
+                "last_seen_at": node.get("last_seen_at"),
+            }
+        )
+
+    worker_nodes.sort(
+        key=lambda item: (
+            not bool(item.get("healthy")),
+            str(item.get("node_name") or "").lower(),
+            str(item.get("node_id") or "").lower(),
+        )
+    )
+    return worker_nodes
+
+
+@router.get("/api/tokens/export/options")
+async def get_token_export_options(token: str = Depends(verify_admin_token)):
+    """获取 Token 导出所需的配置和历史信息。"""
+    _ = token
+    token_rows = await db.get_all_tokens_with_stats()
+    active_rows = [row for row in token_rows if bool(row.get("is_active"))]
+    bindings = await db.get_token_export_binding_map()
+    active_token_ids = {int(row.get("id") or 0) for row in active_rows if int(row.get("id") or 0) > 0}
+
+    binding_counts: Dict[str, int] = {}
+    active_bound_count = 0
+    for token_id, binding in bindings.items():
+        if int(token_id or 0) not in active_token_ids:
+            continue
+        bound_node_id = str(binding.get("node_id") or "").strip()
+        if not bound_node_id:
+            continue
+        active_bound_count += 1
+        binding_counts[bound_node_id] = binding_counts.get(bound_node_id, 0) + 1
+
+    worker_nodes = await _list_export_worker_nodes()
+    for index, node in enumerate(worker_nodes):
+        node["bound_token_count"] = int(binding_counts.get(str(node.get("node_id") or "").strip(), 0))
+        node["default_selected"] = index == 0
+
+    history_rows = await db.get_token_export_history(limit=10)
+    history = []
+    for row in history_rows:
+        created_at = row.get("created_at")
+        history.append(
+            {
+                "id": row.get("id"),
+                "node_id": row.get("node_id"),
+                "node_name": row.get("node_name"),
+                "requested_count": int(row.get("requested_count") or 0),
+                "exported_count": int(row.get("exported_count") or 0),
+                "token_emails": row.get("token_emails") or [],
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+            }
+        )
+
+    return {
+        "success": True,
+        "default_count": 5,
+        "active_token_count": len(active_rows),
+        "bound_token_count": active_bound_count,
+        "unbound_token_count": max(0, len(active_rows) - active_bound_count),
+        "worker_nodes": worker_nodes,
+        "history": history,
+    }
+
+
+@router.post("/api/tokens/export")
+async def export_tokens_selected(
+    request: TokenExportRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """按数量导出 Token，并在需要时绑定到指定子节点。"""
+    _ = token
+    requested_count = max(1, int(request.count or 5))
+    node_id = str(request.node_id or "").strip() or None
+    node_name = str(request.node_name or "").strip() or None
+
+    worker_nodes = await _list_export_worker_nodes()
+    worker_node_map = {
+        str(node.get("node_id") or "").strip(): node
+        for node in worker_nodes
+        if str(node.get("node_id") or "").strip()
+    }
+    if node_id and node_id not in worker_node_map:
+        raise HTTPException(status_code=400, detail="所选子节点不存在或当前不可用")
+    if node_id and node_id in worker_node_map:
+        node_name = str(worker_node_map[node_id].get("node_name") or node_name or node_id).strip() or node_id
+
+    token_rows = await db.get_all_tokens_with_stats()
+    active_rows = [row for row in token_rows if bool(row.get("is_active"))]
+    if not active_rows:
+        raise HTTPException(status_code=404, detail="当前没有可导出的活跃 Token")
+
+    bindings = await db.get_token_export_binding_map()
+    selected_rows: List[Dict[str, Any]] = []
+    if node_id:
+        same_node_rows: List[Dict[str, Any]] = []
+        unbound_rows: List[Dict[str, Any]] = []
+        for row in active_rows:
+            token_id = int(row.get("id") or 0)
+            binding = bindings.get(token_id) or {}
+            binding_node_id = str(binding.get("node_id") or "").strip()
+            if binding_node_id == node_id:
+                same_node_rows.append(row)
+            elif not binding_node_id:
+                unbound_rows.append(row)
+
+        same_node_rows.sort(
+            key=lambda row: (
+                str((bindings.get(int(row.get("id") or 0)) or {}).get("last_exported_at") or ""),
+                str(row.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        selected_rows = (same_node_rows + unbound_rows)[:requested_count]
+    else:
+        selected_rows = active_rows[:requested_count]
+
+    if not selected_rows:
+        if node_id:
+            raise HTTPException(status_code=404, detail="该子节点当前没有可分配的活跃 Token")
+        raise HTTPException(status_code=404, detail="当前没有可导出的 Token")
+
+    exported_items = [
+        _serialize_token_export_item(
+            row,
+            exported_node_id=node_id,
+            exported_node_name=node_name,
+        )
+        for row in selected_rows
+    ]
+    exported_count = len(exported_items)
+    payload = json.dumps(exported_items, ensure_ascii=False, indent=2)
+    payload_buffer = io.BytesIO(payload.encode("utf-8"))
+    payload_buffer.seek(0)
+
+    exported_token_ids = [int(row.get("id") or 0) for row in selected_rows if int(row.get("id") or 0) > 0]
+    exported_token_emails = [str(row.get("email") or "").strip() for row in selected_rows if str(row.get("email") or "").strip()]
+    export_time = datetime.utcnow()
+
+    if node_id and exported_token_ids:
+        await db.upsert_token_export_bindings(
+            exported_token_ids,
+            node_id=node_id,
+            node_name=node_name,
+            exported_at=export_time,
+        )
+
+    await db.add_token_export_history(
+        node_id=node_id,
+        node_name=node_name,
+        requested_count=requested_count,
+        exported_count=exported_count,
+        token_ids=exported_token_ids,
+        token_emails=exported_token_emails,
+        created_at=export_time,
+    )
+
+    filename_parts = ["tokens", datetime.now().strftime("%Y%m%d_%H%M%S")]
+    if node_id:
+        safe_node = re.sub(r"[^a-zA-Z0-9._-]+", "_", node_id).strip("_") or "node"
+        filename_parts.append(safe_node)
+    filename = "_".join(filename_parts) + ".json"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Exported-Count": str(exported_count),
+        "X-Requested-Count": str(requested_count),
+    }
+    return StreamingResponse(payload_buffer, media_type="application/json", headers=headers)
 
 
 def _scan_internal_token_files(token_dir: Path) -> List[Dict[str, Any]]:
@@ -1593,6 +1871,139 @@ async def update_server_config(
             "restart_required": True,
         },
     }
+
+
+@router.get("/api/cluster/config")
+async def get_cluster_config(token: str = Depends(verify_admin_token)):
+    """Get cluster role/config from setting.toml."""
+    _ = token
+    return {
+        "success": True,
+        "config": {
+            "enabled": bool(config.cluster_enabled),
+            "role": config.cluster_role,
+            "node_id": config.cluster_node_id,
+            "node_name": config.cluster_node_name,
+            "master_base_url": config.cluster_master_base_url,
+            "node_public_base_url": config.cluster_node_public_base_url,
+            "effective_node_public_base_url": config.cluster_effective_node_public_base_url,
+            "cluster_key": config.cluster_key,
+            "cluster_key_masked": config.mask_cluster_key(),
+            "node_weight": int(config.cluster_node_weight),
+            "node_max_concurrency": int(config.cluster_node_max_concurrency),
+            "heartbeat_interval_seconds": int(config.cluster_heartbeat_interval_seconds),
+            "heartbeat_timeout_seconds": int(config.cluster_heartbeat_timeout_seconds),
+            "dispatch_timeout_seconds": int(config.cluster_dispatch_timeout_seconds),
+            "prefer_local": bool(config.cluster_prefer_local),
+            "restart_required": False,
+        },
+    }
+
+
+@router.post("/api/cluster/config")
+async def update_cluster_config_endpoint(
+    request: ClusterConfigRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """Update cluster configuration and hot-reload runtime tasks."""
+    _ = token
+    try:
+        config.update_cluster_config(
+            role=request.role,
+            node_id=request.node_id,
+            node_name=request.node_name,
+            master_base_url=request.master_base_url,
+            node_public_base_url=request.node_public_base_url,
+            cluster_key=request.cluster_key,
+            node_weight=request.node_weight,
+            node_max_concurrency=request.node_max_concurrency,
+            heartbeat_interval_seconds=request.heartbeat_interval_seconds,
+            heartbeat_timeout_seconds=request.heartbeat_timeout_seconds,
+            dispatch_timeout_seconds=request.dispatch_timeout_seconds,
+            prefer_local=request.prefer_local,
+        )
+        if cluster_manager:
+            await cluster_manager.reload_runtime()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return await get_cluster_config(token)
+
+
+@router.post("/api/cluster/rotate-key")
+async def rotate_cluster_key(token: str = Depends(verify_admin_token)):
+    """Rotate shared cluster key used by master/workers."""
+    _ = token
+    new_key = config.rotate_cluster_key()
+    if cluster_manager:
+        await cluster_manager.reload_runtime()
+    return {
+        "success": True,
+        "cluster_key": new_key,
+        "cluster_key_masked": config.mask_cluster_key(),
+        "message": "Cluster Key 已轮换。请同步更新所有子节点配置。",
+    }
+
+
+@router.get("/api/cluster/diagnostics")
+async def get_cluster_diagnostics(token: str = Depends(verify_admin_token)):
+    """Get current cluster nodes and health snapshot."""
+    _ = token
+    if not cluster_manager:
+        return {
+            "success": True,
+            "snapshot": {
+                "enabled": False,
+                "role": "standalone",
+                "total_nodes": 0,
+                "healthy_nodes": 0,
+                "effective_capacity": 0,
+                "available_capacity": 0,
+                "nodes": [],
+            },
+        }
+    return {"success": True, "snapshot": await cluster_manager.get_cluster_snapshot()}
+
+
+@router.post("/api/cluster/delete-node")
+async def delete_cluster_node(
+    request: ClusterDeleteNodeRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """Delete a remote node record from the master's node list."""
+    _ = token
+    if not cluster_manager or not cluster_manager.is_enabled():
+        raise HTTPException(status_code=400, detail="当前未启用集群模式")
+    if not cluster_manager.is_master():
+        raise HTTPException(status_code=403, detail="只有主节点可以删除节点记录")
+
+    try:
+        deleted = await cluster_manager.remove_node(request.node_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "success": True,
+        "deleted": bool(deleted),
+        "node_id": request.node_id,
+        "message": "节点记录已删除" if deleted else "节点记录不存在，可能已被清理",
+        "snapshot": await cluster_manager.get_cluster_snapshot(),
+    }
+
+
+@router.post("/api/internal/cluster/heartbeat", include_in_schema=False)
+async def receive_cluster_heartbeat(
+    request: ClusterHeartbeatRequest,
+    authorized: bool = Depends(verify_cluster_internal_token),
+):
+    """Worker heartbeat endpoint consumed by master node."""
+    _ = authorized
+    if not cluster_manager or not cluster_manager.is_master():
+        raise HTTPException(status_code=403, detail="当前节点不是主节点")
+    try:
+        return await cluster_manager.register_heartbeat(request.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/config/proxy")
