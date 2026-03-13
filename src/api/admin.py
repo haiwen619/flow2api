@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Security
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -559,6 +560,7 @@ class ServerConfigRequest(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = None
     default_public_ip: Optional[str] = None
+    default_public_ips: Optional[List[str]] = None
     rpa_test_bitbrowser_id_local: Optional[str] = None
     rpa_test_bitbrowser_id_server: Optional[str] = None
     rpa_test_bitbrowser_ids_local: Optional[List[str]] = None
@@ -598,6 +600,29 @@ class ClusterHeartbeatRequest(BaseModel):
 
 class ClusterDeleteNodeRequest(BaseModel):
     node_id: str
+
+
+class ClusterDelegatedAutoLoginRequest(BaseModel):
+    source_node_id: str
+    source_node_name: Optional[str] = None
+    source_base_url: str
+    worker_token_id: int = Field(..., ge=1)
+    email: str
+
+
+class ClusterDelegatedAutoLoginResultRequest(BaseModel):
+    delegation_id: str
+    master_job_id: Optional[str] = None
+    master_node_id: Optional[str] = None
+    master_node_name: Optional[str] = None
+    token_id: int = Field(..., ge=1)
+    email: Optional[str] = None
+    status: str
+    detail: Optional[str] = None
+    session_token: Optional[str] = None
+    cookie: Optional[str] = None
+    cookie_file: Optional[str] = None
+    account_key: Optional[str] = None
 
 
 class GenerationConfigRequest(BaseModel):
@@ -644,6 +669,9 @@ class ImportTokenItem(BaseModel):
     session_token: Optional[str] = None
     cookie: Optional[str] = None
     cookie_file: Optional[str] = None
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
+    remark: Optional[str] = None
     is_active: bool = True
     captcha_proxy_url: Optional[str] = None
     image_enabled: bool = True
@@ -668,6 +696,7 @@ class TokenExportRequest(BaseModel):
     count: int = Field(default=5, ge=1, le=200)
     node_id: Optional[str] = None
     node_name: Optional[str] = None
+    email_keywords: List[str] = Field(default_factory=list)
 
 
 class TokenExportHistoryCleanupRequest(BaseModel):
@@ -701,6 +730,223 @@ async def verify_cluster_internal_token(
     if not cluster_manager.verify_cluster_key(x_cluster_key):
         raise HTTPException(status_code=401, detail="Invalid cluster key")
     return True
+
+
+def _get_accountpool_service():
+    try:
+        from .. import main as main_app
+    except Exception as exc:
+        raise RuntimeError(f"账号池服务导入失败: {exc}") from exc
+
+    service = getattr(main_app, "accountpool_service", None)
+    if service is None:
+        raise RuntimeError("账号池服务未初始化")
+    return service
+
+
+def _normalize_cluster_internal_base_url(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if normalized.lower().endswith("/manage"):
+        return normalized[:-7].rstrip("/")
+    return normalized
+
+
+async def _post_cluster_auto_login_result_to_worker(
+    *,
+    source_base_url: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    endpoint = f"{_normalize_cluster_internal_base_url(source_base_url)}/api/internal/cluster/token-auto-login-result"
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            endpoint,
+            json=payload,
+            headers={
+                "X-Cluster-Key": config.cluster_key,
+                "X-Cluster-Node-Id": config.cluster_node_id,
+                "X-Cluster-Origin-Role": config.cluster_role,
+            },
+        )
+
+    try:
+        body = response.json()
+    except Exception:
+        body = None
+
+    if response.status_code >= 400:
+        detail = ""
+        if isinstance(body, dict):
+            detail = str(body.get("detail") or body.get("message") or "").strip()
+        if not detail:
+            detail = str(response.text or "").strip()
+        raise RuntimeError(detail or f"HTTP {response.status_code}")
+
+    return body if isinstance(body, dict) else {"success": True}
+
+
+async def _watch_cluster_auto_login_delegate(
+    *,
+    delegation_id: str,
+    master_job_id: str,
+    source_node_id: str,
+    source_node_name: Optional[str],
+    source_base_url: str,
+    worker_token_id: int,
+    email: str,
+    account_key: str,
+) -> None:
+    if not cluster_manager:
+        return
+
+    try:
+        accountpool_service = _get_accountpool_service()
+    except Exception as exc:
+        await cluster_manager.record_delegated_auto_login_job(
+            delegation_id=delegation_id,
+            master_job_id=master_job_id,
+            worker_node_id=source_node_id,
+            worker_node_name=source_node_name,
+            worker_base_url=source_base_url,
+            worker_token_id=worker_token_id,
+            email=email,
+            account_key=account_key,
+            status="failed",
+            detail=f"主节点账号池服务不可用: {exc}",
+        )
+        return
+
+    timeout_at = time.time() + 900
+    final_payload: Dict[str, Any] = {
+        "delegation_id": delegation_id,
+        "master_job_id": master_job_id,
+        "master_node_id": config.cluster_node_id,
+        "master_node_name": config.cluster_node_name,
+        "token_id": int(worker_token_id),
+        "email": email,
+        "status": "FAILED",
+        "detail": "主节点自动登录任务未完成",
+        "account_key": account_key,
+    }
+
+    while True:
+        try:
+            job = accountpool_service.get_job_internal(job_id=master_job_id)
+        except KeyError:
+            await cluster_manager.record_delegated_auto_login_job(
+                delegation_id=delegation_id,
+                master_job_id=master_job_id,
+                worker_node_id=source_node_id,
+                worker_node_name=source_node_name,
+                worker_base_url=source_base_url,
+                worker_token_id=worker_token_id,
+                email=email,
+                account_key=account_key,
+                status="failed",
+                detail="主节点账号池任务不存在，可能已被清理",
+            )
+            final_payload["detail"] = "主节点账号池任务不存在，可能已被清理"
+            break
+
+        job_status = str(job.get("status") or "").strip().lower() or "running"
+        raw_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        raw_message = str((raw_result or {}).get("message") or "").strip()
+        raw_error = str(job.get("error") or "").strip()
+        progress_detail = raw_message or raw_error or f"主节点任务状态: {job_status}"
+        await cluster_manager.record_delegated_auto_login_job(
+            delegation_id=delegation_id,
+            master_job_id=master_job_id,
+            worker_node_id=source_node_id,
+            worker_node_name=source_node_name,
+            worker_base_url=source_base_url,
+            worker_token_id=worker_token_id,
+            email=email,
+            account_key=account_key,
+            status=job_status,
+            detail=progress_detail,
+        )
+
+        if job_status in {"success", "failed", "banned", "cancelled"}:
+            session_token = str((raw_result or {}).get("session_token") or "").strip()
+            cookie = str((raw_result or {}).get("cookie") or "").strip()
+            cookie_file = str((raw_result or {}).get("cookie_file") or "").strip()
+            payload_email = str((raw_result or {}).get("payload_email") or email or "").strip()
+            final_status = "FAILED"
+            if job_status == "banned" or accountpool_service._is_google_account_disabled_detail(progress_detail):
+                final_status = "BANNED"
+            elif job_status == "success" and (session_token or cookie or cookie_file):
+                final_status = "SUCCESS"
+            elif job_status == "cancelled":
+                progress_detail = raw_error or "主节点自动登录任务已取消"
+            elif job_status == "success":
+                progress_detail = raw_message or "主节点自动登录任务成功结束，但未拿到新的会话信息"
+
+            final_payload.update(
+                {
+                    "email": payload_email or email,
+                    "status": final_status,
+                    "detail": progress_detail or "主节点自动登录任务已结束",
+                    "session_token": session_token or None,
+                    "cookie": cookie or None,
+                    "cookie_file": cookie_file or None,
+                }
+            )
+            break
+
+        if time.time() >= timeout_at:
+            timeout_detail = "主节点等待账号池自动登录结果超时"
+            await cluster_manager.record_delegated_auto_login_job(
+                delegation_id=delegation_id,
+                master_job_id=master_job_id,
+                worker_node_id=source_node_id,
+                worker_node_name=source_node_name,
+                worker_base_url=source_base_url,
+                worker_token_id=worker_token_id,
+                email=email,
+                account_key=account_key,
+                status="failed",
+                detail=timeout_detail,
+            )
+            final_payload["detail"] = timeout_detail
+            break
+
+        await asyncio.sleep(2)
+
+    try:
+        callback_result = await _post_cluster_auto_login_result_to_worker(
+            source_base_url=source_base_url,
+            payload=final_payload,
+        )
+        await cluster_manager.record_delegated_auto_login_job(
+            delegation_id=delegation_id,
+            master_job_id=master_job_id,
+            worker_node_id=source_node_id,
+            worker_node_name=source_node_name,
+            worker_base_url=source_base_url,
+            worker_token_id=worker_token_id,
+            email=str(final_payload.get("email") or email or "").strip(),
+            account_key=account_key,
+            callback_ok=True,
+            callback_result=callback_result,
+            callback_at=datetime.now(timezone.utc).isoformat(),
+            status=f"callback_{str(final_payload.get('status') or 'failed').lower()}",
+            detail=str(final_payload.get("detail") or "主节点已完成回推").strip(),
+        )
+    except Exception as exc:
+        await cluster_manager.record_delegated_auto_login_job(
+            delegation_id=delegation_id,
+            master_job_id=master_job_id,
+            worker_node_id=source_node_id,
+            worker_node_name=source_node_name,
+            worker_base_url=source_base_url,
+            worker_token_id=worker_token_id,
+            email=str(final_payload.get("email") or email or "").strip(),
+            account_key=account_key,
+            callback_ok=False,
+            callback_error=str(exc),
+            callback_at=datetime.now(timezone.utc).isoformat(),
+            status="callback_failed",
+            detail=f"{str(final_payload.get('detail') or '主节点自动登录已结束').strip()}；回推子节点失败: {exc}",
+        )
 
 
 # ========== Auth Endpoints ==========
@@ -1153,6 +1399,14 @@ async def export_tokens_selected(
     requested_count = max(1, int(request.count or 5))
     node_id = str(request.node_id or "").strip() or None
     node_name = str(request.node_name or "").strip() or None
+    email_keywords: List[str] = []
+    seen_keywords = set()
+    for keyword in request.email_keywords or []:
+        normalized_keyword = str(keyword or "").strip().lower()
+        if len(normalized_keyword) < 2 or normalized_keyword in seen_keywords:
+            continue
+        seen_keywords.add(normalized_keyword)
+        email_keywords.append(normalized_keyword)
 
     worker_nodes = await _list_export_worker_nodes()
     worker_node_map = {
@@ -1169,6 +1423,19 @@ async def export_tokens_selected(
     active_rows = [row for row in token_rows if bool(row.get("is_active"))]
     if not active_rows:
         raise HTTPException(status_code=404, detail="当前没有可导出的活跃 Token")
+
+    if email_keywords:
+        active_rows = [
+            row
+            for row in active_rows
+            if any(
+                keyword in str(row.get("email") or "").strip().lower()
+                for keyword in email_keywords
+            )
+        ]
+        if not active_rows:
+            raise HTTPException(status_code=404, detail="未匹配到可导出的活跃 Token")
+        requested_count = len(active_rows)
 
     bindings = await db.get_token_export_binding_map()
     selected_rows: List[Dict[str, Any]] = []
@@ -1197,7 +1464,11 @@ async def export_tokens_selected(
 
     if not selected_rows:
         if node_id:
+            if email_keywords:
+                raise HTTPException(status_code=404, detail="匹配到的 Token 当前无法分配到该子节点")
             raise HTTPException(status_code=404, detail="该子节点当前没有可分配的活跃 Token")
+        if email_keywords:
+            raise HTTPException(status_code=404, detail="未匹配到可导出的 Token")
         raise HTTPException(status_code=404, detail="当前没有可导出的 Token")
 
     exported_items = [
@@ -1735,20 +2006,36 @@ async def import_tokens(
 
         email_hint_raw = str(item.email or "").strip()
         name_hint = str(item.name or "").strip()
+        access_token_hint = str(item.access_token or "").strip()
+        at_expires = _parse_expires(item.at_expires, fallback_token=access_token_hint)
+        now = datetime.now(timezone.utc)
+
+        fallback_payload = {
+            "idx": idx,
+            "item": item,
+            "st": st,
+            "email": _normalize_email(email_hint_raw),
+            "name": name_hint,
+            "at": access_token_hint or None,
+            "at_expires": at_expires,
+            "is_expired": bool(at_expires and at_expires <= now),
+            "used_fallback": True,
+        }
 
         try:
             async with semaphore:
                 result = await token_manager.flow_client.st_to_at(st)
-            access_token_hint = str(result.get("access_token") or "").strip()
+            access_token_hint = str(result.get("access_token") or access_token_hint or "").strip()
             email_hint_raw = str(result.get("user", {}).get("email") or email_hint_raw or "").strip()
             email_hint = _normalize_email(email_hint_raw)
             name_hint = str(result.get("user", {}).get("name") or name_hint or "").strip()
             at_expires = _parse_expires(result.get("expires"), fallback_token=access_token_hint)
 
             if not email_hint:
+                if fallback_payload["email"]:
+                    return fallback_payload
                 return {"error": f"第{idx+1}项: 无法获取邮箱信息"}
 
-            now = datetime.now(timezone.utc)
             return {
                 "idx": idx,
                 "item": item,
@@ -1758,8 +2045,11 @@ async def import_tokens(
                 "at": access_token_hint or None,
                 "at_expires": at_expires,
                 "is_expired": bool(at_expires and at_expires <= now),
+                "used_fallback": False,
             }
         except Exception as e:
+            if fallback_payload["email"]:
+                return fallback_payload
             return {"error": f"第{idx+1}项: {str(e)}"}
 
     resolved_items = await asyncio.gather(
@@ -1792,6 +2082,9 @@ async def import_tokens(
                     cookie_file=item.cookie_file,
                     at=at,
                     at_expires=at_expires,
+                    project_id=item.project_id,
+                    project_name=item.project_name,
+                    remark=item.remark,
                     captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
                     image_enabled=item.image_enabled,
                     video_enabled=item.video_enabled,
@@ -1818,6 +2111,9 @@ async def import_tokens(
                 existing.at_expires = at_expires
                 existing.cookie = item.cookie
                 existing.cookie_file = item.cookie_file
+                existing.current_project_id = item.project_id or existing.current_project_id
+                existing.current_project_name = item.project_name or existing.current_project_name
+                existing.remark = item.remark
                 existing.captcha_proxy_url = item.captcha_proxy_url
                 existing.image_enabled = item.image_enabled
                 existing.video_enabled = item.video_enabled
@@ -1831,6 +2127,9 @@ async def import_tokens(
                     captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
                     cookie=item.cookie,
                     cookie_file=item.cookie_file,
+                    project_id=item.project_id,
+                    project_name=item.project_name,
+                    remark=item.remark,
                     image_enabled=item.image_enabled,
                     video_enabled=item.video_enabled,
                     image_concurrency=item.image_concurrency,
@@ -1907,6 +2206,16 @@ async def update_server_config(
 
     host = str(request.host or "").strip()
     default_public_ip = str(request.default_public_ip or "").strip()
+    default_public_ips = (
+        [str(v or "").strip() for v in (request.default_public_ips or [])]
+        if request.default_public_ips is not None
+        else ([default_public_ip] if default_public_ip else config.default_server_public_ips)
+    )
+    normalized_default_public_ips = [value for value in default_public_ips if value]
+    if default_public_ip and default_public_ip not in normalized_default_public_ips:
+        normalized_default_public_ips.insert(0, default_public_ip)
+    if not default_public_ip and normalized_default_public_ips:
+        default_public_ip = normalized_default_public_ips[0]
     if not host:
         host = "127.0.0.1" if mode == "local" else "0.0.0.0"
     host = config.normalize_server_host_for_mode(
@@ -1944,6 +2253,7 @@ async def update_server_config(
             host=host,
             port=port,
             default_public_ip=default_public_ip,
+            default_public_ips=normalized_default_public_ips,
         )
         config.update_rpa_test_bitbrowser_ids(
             local_ids=local_bit_ids,
@@ -2111,6 +2421,136 @@ async def receive_cluster_heartbeat(
         return await cluster_manager.register_heartbeat(request.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/internal/cluster/token-auto-login-request", include_in_schema=False)
+async def request_cluster_token_auto_login(
+    request: ClusterDelegatedAutoLoginRequest,
+    authorized: bool = Depends(verify_cluster_internal_token),
+):
+    """Worker asks master to run browser-based auto login and sync the result back."""
+    _ = authorized
+    if not cluster_manager or not cluster_manager.is_master():
+        raise HTTPException(status_code=403, detail="当前节点不是主节点")
+
+    email = str(request.email or "").strip().lower()
+    source_base_url = _normalize_cluster_internal_base_url(request.source_base_url)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="email 无效")
+    if not source_base_url:
+        raise HTTPException(status_code=400, detail="source_base_url 不能为空")
+
+    try:
+        accountpool_service = _get_accountpool_service()
+        matched = await accountpool_service.find_account_by_email(email)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not matched:
+        raise HTTPException(status_code=404, detail=f"主节点账号池不存在邮箱 {email} 对应账号")
+
+    account_key = str(matched.get("account_key") or "").strip()
+    if not account_key:
+        raise HTTPException(status_code=500, detail="匹配账号缺少 account_key")
+
+    try:
+        master_job_id = await accountpool_service.trigger_single_validate(
+            account_key=account_key,
+            params={
+                "external_browser": False,
+                "manual": False,
+                "timeout_sec": 300,
+                "auto_enable_token_on_sync": False,
+                "sync_to_local_token_table": False,
+                "bitbrowser": True,
+                "bitbrowser_auto_delete": True,
+                "reuse_test_bitbrowser_id": True,
+            },
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"主节点触发账号池自动登录失败: {exc}") from exc
+
+    delegation_id = secrets.token_hex(16)
+    await cluster_manager.record_delegated_auto_login_job(
+        delegation_id=delegation_id,
+        master_job_id=master_job_id,
+        worker_node_id=str(request.source_node_id or "").strip(),
+        worker_node_name=str(request.source_node_name or "").strip() or None,
+        worker_base_url=source_base_url,
+        worker_token_id=int(request.worker_token_id),
+        email=email,
+        account_key=account_key,
+        status="queued",
+        detail="子节点已委托主节点执行浏览器自动登录",
+    )
+    asyncio.create_task(
+        _watch_cluster_auto_login_delegate(
+            delegation_id=delegation_id,
+            master_job_id=master_job_id,
+            source_node_id=str(request.source_node_id or "").strip(),
+            source_node_name=str(request.source_node_name or "").strip() or None,
+            source_base_url=source_base_url,
+            worker_token_id=int(request.worker_token_id),
+            email=email,
+            account_key=account_key,
+        )
+    )
+
+    return {
+        "success": True,
+        "delegation_id": delegation_id,
+        "master_job_id": master_job_id,
+        "account_key": account_key,
+        "message": "主节点已受理自动登录委托",
+    }
+
+
+@router.post("/api/internal/cluster/token-auto-login-result", include_in_schema=False)
+async def receive_cluster_token_auto_login_result(
+    request: ClusterDelegatedAutoLoginResultRequest,
+    authorized: bool = Depends(verify_cluster_internal_token),
+):
+    """Master pushes delegated auto-login result back to the worker."""
+    _ = authorized
+    if not cluster_manager or not cluster_manager.is_worker():
+        raise HTTPException(status_code=403, detail="当前节点不是子节点")
+
+    try:
+        applied = await token_manager.apply_cluster_auto_login_result(
+            token_id=int(request.token_id),
+            status=request.status,
+            detail=request.detail,
+            email=request.email,
+            session_token=request.session_token,
+            cookie=request.cookie,
+            cookie_file=request.cookie_file,
+            account_key=request.account_key,
+            delegation_id=request.delegation_id,
+            master_job_id=request.master_job_id,
+            master_node_id=request.master_node_id,
+            master_node_name=request.master_node_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    await cluster_manager.record_delegated_auto_login_job(
+        delegation_id=str(request.delegation_id or "").strip(),
+        master_job_id=str(request.master_job_id or "").strip() or None,
+        worker_node_id=config.cluster_node_id,
+        worker_node_name=config.cluster_node_name,
+        worker_base_url=config.cluster_effective_node_public_base_url,
+        worker_token_id=int(request.token_id),
+        email=str(request.email or "").strip() or None,
+        account_key=str(request.account_key or "").strip() or None,
+        status=f"worker_{str(request.status or 'failed').strip().lower()}",
+        detail=str(request.detail or "已接收主节点自动登录结果").strip(),
+        callback_ok=True,
+        callback_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    return {"success": True, "applied": applied}
 
 
 @router.get("/api/config/proxy")

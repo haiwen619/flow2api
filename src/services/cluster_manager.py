@@ -24,6 +24,8 @@ class ClusterManager:
         self._nodes_lock = asyncio.Lock()
         self._dispatch_stats: Dict[str, Dict[str, Any]] = {}
         self._dispatch_stats_lock = asyncio.Lock()
+        self._delegated_auto_login_jobs: Dict[str, Dict[str, Any]] = {}
+        self._delegated_auto_login_lock = asyncio.Lock()
         self._local_active_requests = 0
         self._local_lock = asyncio.Lock()
         self._worker_heartbeat_task: Optional[asyncio.Task] = None
@@ -73,6 +75,57 @@ class ClusterManager:
     async def _build_dispatch_stats_snapshot(self) -> Dict[str, Dict[str, Any]]:
         async with self._dispatch_stats_lock:
             return {str(node_id): dict(item) for node_id, item in self._dispatch_stats.items()}
+
+    async def record_delegated_auto_login_job(
+        self,
+        *,
+        delegation_id: str,
+        status: str,
+        detail: Optional[str] = None,
+        **fields: Any,
+    ) -> Dict[str, Any]:
+        key = str(delegation_id or "").strip()
+        if not key:
+            raise ValueError("delegation_id 不能为空")
+
+        now_iso = _utc_now_iso()
+        async with self._delegated_auto_login_lock:
+            current = dict(self._delegated_auto_login_jobs.get(key) or {})
+            if not current:
+                current["delegation_id"] = key
+                current["created_at"] = now_iso
+
+            for field_name, field_value in fields.items():
+                if field_value is None:
+                    continue
+                current[field_name] = field_value
+
+            current["status"] = str(status or current.get("status") or "queued").strip().lower()
+            current["detail"] = str(detail or current.get("detail") or "").strip() or None
+            current["updated_at"] = now_iso
+            self._delegated_auto_login_jobs[key] = current
+
+            if len(self._delegated_auto_login_jobs) > 200:
+                ordered = sorted(
+                    self._delegated_auto_login_jobs.items(),
+                    key=lambda item: str(item[1].get("created_at") or ""),
+                    reverse=True,
+                )
+                self._delegated_auto_login_jobs = dict(ordered[:200])
+
+            return dict(self._delegated_auto_login_jobs[key])
+
+    async def list_delegated_auto_login_jobs(self, limit: int = 30) -> List[Dict[str, Any]]:
+        try:
+            max_items = max(1, min(int(limit or 30), 100))
+        except Exception:
+            max_items = 30
+
+        async with self._delegated_auto_login_lock:
+            rows = [dict(item) for item in self._delegated_auto_login_jobs.values()]
+
+        rows.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+        return rows[:max_items]
 
     @property
     def role(self) -> str:
@@ -497,4 +550,5 @@ class ClusterManager:
             "last_refresh_at": _utc_now_iso(),
             "nodes": nodes,
             "master_sync": dict(self._last_master_sync),
+            "delegated_auto_login_jobs": await self.list_delegated_auto_login_jobs(),
         }

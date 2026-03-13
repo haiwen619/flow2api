@@ -119,6 +119,22 @@
                   <span class="iconify text-base" data-icon="material-symbols:close-small"></span>
                   <span>清空</span>
                 </button>
+                <button
+                  id="apBatchDeleteBtn"
+                  class="flex items-center space-x-1.5 px-3 py-2 rounded-xl border border-red-200 hover:bg-red-50 transition-all font-medium text-sm text-red-600"
+                  type="button"
+                >
+                  <span class="iconify text-base" data-icon="material-symbols:delete-sweep-outline"></span>
+                  <span>模糊批量删除</span>
+                </button>
+                <button
+                  id="apBatchPasswordBtn"
+                  class="flex items-center space-x-1.5 px-3 py-2 rounded-xl border border-amber-200 hover:bg-amber-50 transition-all font-medium text-sm text-amber-700"
+                  type="button"
+                >
+                  <span class="iconify text-base" data-icon="material-symbols:password"></span>
+                  <span>批量改密</span>
+                </button>
               </div>
               <button
                 class="flex items-center space-x-2 px-4 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all font-medium text-sm"
@@ -338,6 +354,196 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       apPage = 1;
       syncApSearchInput();
       await loadAccountPoolAccounts({ page: 1, search: '' });
+    }
+
+    function showBatchDeleteDialog() {
+      return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4';
+        overlay.innerHTML = `
+          <div class="w-full max-w-lg rounded-2xl bg-white shadow-xl border border-slate-200">
+            <div class="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <div class="text-base font-semibold text-slate-800">批量删除账号</div>
+                <div class="text-xs text-slate-500 mt-0.5">按邮箱/关键词模糊匹配账号池，再统一批量删除</div>
+              </div>
+              <button data-action="cancel" class="text-slate-400 hover:text-slate-700 transition-colors" title="关闭">
+                <span class="iconify text-xl" data-icon="material-symbols:close"></span>
+              </button>
+            </div>
+
+            <div class="px-5 py-4 space-y-4">
+              <div>
+                <label class="text-sm text-slate-700 font-medium">批量邮箱 / 关键词</label>
+                <textarea id="apBatchDeleteKeywordInput" rows="6"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-red-200"
+                  placeholder="可粘贴多行邮箱、逗号分隔邮箱，或邮箱片段关键词"></textarea>
+                <div id="apBatchDeleteKeywordSummary" class="text-xs text-slate-400 mt-1">会按 display_name / uid / account_key 模糊匹配账号</div>
+              </div>
+
+              <div>
+                <label class="text-sm text-slate-700 font-medium">最大处理数量</label>
+                <input id="apBatchDeleteLimit" type="number" min="1" max="5000" value="2000"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-red-200" />
+                <div class="text-xs text-slate-400 mt-1">默认最多处理 2000 个匹配账号</div>
+              </div>
+
+              <div id="apBatchDeleteError" class="hidden rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs px-3 py-2"></div>
+            </div>
+
+            <div class="px-5 pb-4 pt-2 flex items-center justify-end space-x-2">
+              <button data-action="cancel" class="px-4 py-2 rounded-lg text-sm bg-slate-100 text-slate-700 hover:bg-slate-200">取消</button>
+              <button data-action="ok" class="px-4 py-2 rounded-lg text-sm bg-red-600 text-white hover:bg-red-700">预览并删除</button>
+            </div>
+          </div>
+        `;
+
+        const cleanup = () => {
+          try { overlay.remove(); } catch (_) {}
+        };
+        const errorEl = () => overlay.querySelector('#apBatchDeleteError');
+        const setError = (msg) => {
+          const el = errorEl();
+          if (!el) return;
+          el.textContent = msg;
+          el.classList.remove('hidden');
+        };
+        const clearError = () => {
+          const el = errorEl();
+          if (!el) return;
+          el.textContent = '';
+          el.classList.add('hidden');
+        };
+        const finishCancel = () => {
+          cleanup();
+          resolve({ ok: false });
+        };
+        const finishOk = () => {
+          clearError();
+          const keywordEl = overlay.querySelector('#apBatchDeleteKeywordInput');
+          const limitEl = overlay.querySelector('#apBatchDeleteLimit');
+          const rawKeywords = String((keywordEl && keywordEl.value) || '');
+          const keywords = parseBatchValidateKeywords(rawKeywords);
+          let limit = Number((limitEl && limitEl.value) || '2000');
+          if (!keywords.length) {
+            setError('请先输入至少一个邮箱或关键词');
+            return;
+          }
+          if (!Number.isFinite(limit) || limit < 1) limit = 2000;
+          limit = Math.min(5000, Math.max(1, Math.floor(limit)));
+          cleanup();
+          resolve({ ok: true, rawKeywords, keywords, limit });
+        };
+
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) finishCancel();
+          const action = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+          if (!action) return;
+          const type = action.getAttribute('data-action');
+          if (type === 'cancel') finishCancel();
+          if (type === 'ok') finishOk();
+        });
+
+        const keywordInput = overlay.querySelector('#apBatchDeleteKeywordInput');
+        const keywordSummary = overlay.querySelector('#apBatchDeleteKeywordSummary');
+        if (keywordInput && keywordSummary) {
+          keywordInput.addEventListener('input', () => {
+            const keywords = parseBatchValidateKeywords(keywordInput.value);
+            keywordSummary.textContent = keywords.length
+              ? `当前已解析 ${keywords.length} 个邮箱/关键词，将按 display_name / uid / account_key 模糊匹配`
+              : '会按 display_name / uid / account_key 模糊匹配账号';
+          });
+        }
+
+        document.body.appendChild(overlay);
+      });
+    }
+
+    async function triggerBatchDeleteAccounts() {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      const dlg = await showBatchDeleteDialog();
+      if (!dlg || !dlg.ok) {
+        showToast('已取消批量删除', 'material-symbols:info');
+        return;
+      }
+
+      try {
+        showToast(`正在按 ${dlg.keywords.length} 个关键词匹配账号...`, 'material-symbols:search');
+        const matchResp = await fetch('/accountpool/accounts/match-by-keywords', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ keywords: dlg.keywords, limit: dlg.limit })
+        });
+
+        let matchData = {};
+        try {
+          matchData = await matchResp.json();
+        } catch (_) {
+          matchData = {};
+        }
+
+        if (!matchResp.ok || !matchData || !matchData.success) {
+          showToast(`匹配账号失败: ${matchData.detail || matchData.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        const matchedItems = Array.isArray(matchData.items) ? matchData.items : [];
+        if (matchedItems.length === 0) {
+          showToast(`未匹配到关键词对应的账号（关键词 ${dlg.keywords.length} 个）`, 'material-symbols:warning');
+          return;
+        }
+
+        const sampleEmails = matchedItems
+          .slice(0, 8)
+          .map((item) => String(item.uid || item.display_name || '').trim())
+          .filter(Boolean);
+        const sampleText = sampleEmails.length ? `\n示例：${sampleEmails.join('、')}` : '';
+        if (!confirm(`已匹配到 ${matchedItems.length} 个账号，确认全部删除吗？此操作不可恢复。${sampleText}`)) {
+          showToast('已取消批量删除', 'material-symbols:info');
+          return;
+        }
+
+        showToast(`正在批量删除 ${matchedItems.length} 个账号...`, 'material-symbols:sync');
+        const resp = await fetch('/accountpool/accounts/delete-by-keywords', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ keywords: dlg.keywords, limit: dlg.limit })
+        });
+
+        let data = {};
+        try {
+          data = await resp.json();
+        } catch (_) {
+          data = {};
+        }
+
+        if (!resp.ok || !data || !data.success) {
+          showToast(`批量删除失败: ${data.detail || data.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        const deleted = Number(data.deleted) || 0;
+        if (deleted <= 0) {
+          showToast('没有匹配到可删除的账号', 'material-symbols:info');
+          return;
+        }
+
+        showToast(`批量删除成功：已删除 ${deleted} 个匹配账号`, 'material-symbols:check-circle');
+        await loadAccountPoolAccounts({ page: 1, search: apSearch || '' });
+      } catch (e) {
+        showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+      }
     }
 
     // 侧边栏及模态框切换交互
@@ -1136,6 +1342,232 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       return false;
     }
 
+    function buildAccountSafeKey(accountKey) {
+      return String(accountKey || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    function parseBatchValidateKeywords(raw) {
+      const text = String(raw || '').trim();
+      if (!text) return [];
+
+      const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+      const tokens = emailMatches.length
+        ? emailMatches
+        : text.split(/[\s,;|]+/g);
+
+      const normalized = [];
+      const seen = new Set();
+      tokens.forEach((item) => {
+        const value = String(item || '').trim().toLowerCase();
+        if (!value || value.length < 2 || seen.has(value)) return;
+        seen.add(value);
+        normalized.push(value);
+      });
+      return normalized;
+    }
+
+    function showBatchPasswordDialog() {
+      return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4';
+        overlay.innerHTML = `
+          <div class="w-full max-w-lg rounded-2xl bg-white shadow-xl border border-slate-200">
+            <div class="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <div class="text-base font-semibold text-slate-800">批量修改密码</div>
+                <div class="text-xs text-slate-500 mt-0.5">按邮箱/关键词模糊匹配账号池，再统一更新为同一个密码</div>
+              </div>
+              <button data-action="cancel" class="text-slate-400 hover:text-slate-700 transition-colors" title="关闭">
+                <span class="iconify text-xl" data-icon="material-symbols:close"></span>
+              </button>
+            </div>
+
+            <div class="px-5 py-4 space-y-4">
+              <div>
+                <label class="text-sm text-slate-700 font-medium">批量邮箱 / 关键词</label>
+                <textarea id="apBatchPwdKeywordInput" rows="6"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-200"
+                  placeholder="可粘贴多行邮箱、逗号分隔邮箱，或邮箱片段关键词"></textarea>
+                <div id="apBatchPwdKeywordSummary" class="text-xs text-slate-400 mt-1">会按 display_name / uid / account_key 模糊匹配账号</div>
+              </div>
+
+              <div>
+                <label class="text-sm text-slate-700 font-medium">新密码</label>
+                <input id="apBatchPwdNewPassword" type="password"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-200"
+                  placeholder="请输入统一的新密码" />
+                <div class="text-xs text-slate-400 mt-1">命中的账号会统一更新为这个密码</div>
+              </div>
+
+              <div>
+                <label class="text-sm text-slate-700 font-medium">最大处理数量</label>
+                <input id="apBatchPwdLimit" type="number" min="1" max="5000" value="2000"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-200" />
+                <div class="text-xs text-slate-400 mt-1">默认最多处理 2000 个匹配账号</div>
+              </div>
+
+              <div id="apBatchPwdError" class="hidden rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs px-3 py-2"></div>
+            </div>
+
+            <div class="px-5 pb-4 pt-2 flex items-center justify-end space-x-2">
+              <button data-action="cancel" class="px-4 py-2 rounded-lg text-sm bg-slate-100 text-slate-700 hover:bg-slate-200">取消</button>
+              <button data-action="ok" class="px-4 py-2 rounded-lg text-sm bg-amber-600 text-white hover:bg-amber-700">预览并修改</button>
+            </div>
+          </div>
+        `;
+
+        const cleanup = () => {
+          try { overlay.remove(); } catch (_) {}
+        };
+        const errorEl = () => overlay.querySelector('#apBatchPwdError');
+        const setError = (msg) => {
+          const el = errorEl();
+          if (!el) return;
+          el.textContent = msg;
+          el.classList.remove('hidden');
+        };
+        const clearError = () => {
+          const el = errorEl();
+          if (!el) return;
+          el.textContent = '';
+          el.classList.add('hidden');
+        };
+
+        const finishCancel = () => {
+          cleanup();
+          resolve({ ok: false });
+        };
+
+        const finishOk = () => {
+          clearError();
+          const keywordEl = overlay.querySelector('#apBatchPwdKeywordInput');
+          const passwordEl = overlay.querySelector('#apBatchPwdNewPassword');
+          const limitEl = overlay.querySelector('#apBatchPwdLimit');
+          const rawKeywords = String((keywordEl && keywordEl.value) || '');
+          const keywords = parseBatchValidateKeywords(rawKeywords);
+          const password = String((passwordEl && passwordEl.value) || '');
+          let limit = Number((limitEl && limitEl.value) || '2000');
+          if (!keywords.length) {
+            setError('请先输入至少一个邮箱或关键词');
+            return;
+          }
+          if (!password.trim()) {
+            setError('请先输入统一的新密码');
+            return;
+          }
+          if (!Number.isFinite(limit) || limit < 1) limit = 2000;
+          limit = Math.min(5000, Math.max(1, Math.floor(limit)));
+          cleanup();
+          resolve({ ok: true, rawKeywords, keywords, password, limit });
+        };
+
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) finishCancel();
+          const action = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+          if (!action) return;
+          const type = action.getAttribute('data-action');
+          if (type === 'cancel') finishCancel();
+          if (type === 'ok') finishOk();
+        });
+
+        const keywordInput = overlay.querySelector('#apBatchPwdKeywordInput');
+        const keywordSummary = overlay.querySelector('#apBatchPwdKeywordSummary');
+        if (keywordInput && keywordSummary) {
+          keywordInput.addEventListener('input', () => {
+            const keywords = parseBatchValidateKeywords(keywordInput.value);
+            keywordSummary.textContent = keywords.length
+              ? `当前已解析 ${keywords.length} 个邮箱/关键词，将按 display_name / uid / account_key 模糊匹配`
+              : '会按 display_name / uid / account_key 模糊匹配账号';
+          });
+        }
+
+        document.body.appendChild(overlay);
+      });
+    }
+
+    async function triggerBatchPasswordUpdate() {
+      const token = getAuthToken();
+      if (!token) {
+        showToast('未检测到登录态，请先在控制面板登录', 'material-symbols:warning');
+        return;
+      }
+
+      const dlg = await showBatchPasswordDialog();
+      if (!dlg || !dlg.ok) {
+        showToast('已取消批量改密', 'material-symbols:info');
+        return;
+      }
+
+      try {
+        showToast(`正在按 ${dlg.keywords.length} 个关键词匹配账号...`, 'material-symbols:search');
+        const matchResp = await fetch('/accountpool/accounts/match-by-keywords', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ keywords: dlg.keywords, limit: dlg.limit })
+        });
+        const matchData = await matchResp.json();
+        if (!matchResp.ok || !matchData || !matchData.success) {
+          showToast(`匹配账号失败: ${matchData.detail || matchData.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        const matchedItems = Array.isArray(matchData.items) ? matchData.items : [];
+        if (matchedItems.length === 0) {
+          showToast(`未匹配到关键词对应的账号（关键词 ${dlg.keywords.length} 个）`, 'material-symbols:warning');
+          return;
+        }
+
+        const sampleEmails = matchedItems
+          .slice(0, 8)
+          .map((item) => String(item.uid || item.display_name || '').trim())
+          .filter(Boolean);
+        const sampleText = sampleEmails.length ? `\n示例：${sampleEmails.join('、')}` : '';
+        if (!confirm(`已匹配到 ${matchedItems.length} 个账号，确认统一更新为当前输入的新密码吗？${sampleText}`)) {
+          showToast('已取消批量改密', 'material-symbols:info');
+          return;
+        }
+
+        showToast(`正在批量修改 ${matchedItems.length} 个账号的密码...`, 'material-symbols:sync');
+        const updateResp = await fetch('/accountpool/accounts/update-password-by-keywords', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ keywords: dlg.keywords, password: dlg.password, limit: dlg.limit })
+        });
+        const updateData = await updateResp.json();
+        if (!updateResp.ok || !updateData || !updateData.success) {
+          showToast(`批量改密失败: ${updateData.detail || updateData.error || '未知错误'}`, 'material-symbols:error');
+          return;
+        }
+
+        const updated = Number(updateData.updated || 0);
+        if (updated <= 0) {
+          showToast('没有匹配到可更新密码的账号', 'material-symbols:info');
+          return;
+        }
+
+        showToast(`批量改密成功：已更新 ${updated} 个账号密码`, 'material-symbols:check-circle');
+        await loadAccountPoolAccounts({ page: apPage, search: apSearch });
+      } catch (e) {
+        showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+      }
+    }
+
+    function isMatchedAccountValidatedSuccess(item) {
+      const accountKey = String(item && item.account_key || '');
+      const safeKey = buildAccountSafeKey(accountKey);
+      if (safeKey && isAccountValidatedSuccess(safeKey)) return true;
+
+      const ok = item && item.last_validate_ok;
+      const status = String(item && item.last_validate_status || '').trim().toLowerCase();
+      return ok === 1 || status === 'success';
+    }
+
     function showBatchValidateDialog(defaultConcurrency) {
       return new Promise((resolve) => {
         let conc = Number(defaultConcurrency);
@@ -1164,6 +1596,16 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
                 <div class="text-xs text-slate-400 mt-1">默认 5（后端会限制最大并发）</div>
               </div>
 
+              <div>
+                <label class="text-sm text-slate-700 font-medium">批量邮箱/关键词</label>
+                <textarea id="apBatchKeywordInput" rows="5"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                  placeholder="可粘贴多行邮箱、逗号分隔邮箱，或邮箱片段关键词；留空时默认验证当前页账号"></textarea>
+                <div id="apBatchKeywordSummary" class="text-xs text-slate-400 mt-1">
+                  留空时默认按当前页账号批量验活；填写后会先按邮箱/账号模糊匹配全量账号池
+                </div>
+              </div>
+
               <label class="flex items-start space-x-2 text-sm text-slate-700">
                 <input id="apBatchSkipValidated" type="checkbox" class="mt-1 rounded border-slate-300" checked />
                 <span>跳过已验证成功的账号（不重新验证）</span>
@@ -1189,12 +1631,21 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         const finishOk = () => {
           const inputEl = overlay.querySelector('#apBatchConcInput');
           const skipEl = overlay.querySelector('#apBatchSkipValidated');
+          const keywordEl = overlay.querySelector('#apBatchKeywordInput');
           let v = Number((inputEl && inputEl.value) || conc);
           if (!Number.isFinite(v) || v < 1) v = conc;
           v = Math.floor(v);
+          const rawKeywords = String((keywordEl && keywordEl.value) || '');
+          const keywords = parseBatchValidateKeywords(rawKeywords);
           try { localStorage.setItem('accountpool_validate_concurrency', String(v)); } catch (_) {}
           cleanup();
-          resolve({ ok: true, concurrency: v, skipValidated: !!(skipEl && skipEl.checked) });
+          resolve({
+            ok: true,
+            concurrency: v,
+            skipValidated: !!(skipEl && skipEl.checked),
+            rawKeywords,
+            keywords,
+          });
         };
 
         overlay.addEventListener('click', (e) => {
@@ -1212,12 +1663,29 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         document.body.appendChild(overlay);
 
         const inputEl = overlay.querySelector('#apBatchConcInput');
+        const keywordEl = overlay.querySelector('#apBatchKeywordInput');
+        const summaryEl = overlay.querySelector('#apBatchKeywordSummary');
+        const updateKeywordSummary = () => {
+          if (!summaryEl || !keywordEl) return;
+          const keywords = parseBatchValidateKeywords(keywordEl.value);
+          summaryEl.innerText = keywords.length
+            ? `已解析 ${keywords.length} 个关键词；开始后会按这些关键词模糊匹配账号池`
+            : '留空时默认按当前页账号批量验活；填写后会先按邮箱/账号模糊匹配全量账号池';
+        };
         if (inputEl) {
           try { inputEl.focus(); inputEl.select(); } catch (_) {}
           inputEl.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') finishOk();
             if (e.key === 'Escape') finishCancel();
           });
+        }
+        if (keywordEl) {
+          keywordEl.addEventListener('input', updateKeywordSummary);
+          keywordEl.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') finishOk();
+            if (e.key === 'Escape') finishCancel();
+          });
+          updateKeywordSummary();
         }
       });
     }
@@ -1492,6 +1960,8 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       const searchInputEl = document.getElementById('apEmailSearch');
       const searchBtnEl = document.getElementById('apSearchBtn');
       const clearBtnEl = document.getElementById('apSearchClearBtn');
+      const batchDeleteBtnEl = document.getElementById('apBatchDeleteBtn');
+      const batchPasswordBtnEl = document.getElementById('apBatchPasswordBtn');
       if (searchBtnEl) {
         searchBtnEl.addEventListener('click', () => {
           applyApEmailSearch({ resetPage: true });
@@ -1500,6 +1970,16 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       if (clearBtnEl) {
         clearBtnEl.addEventListener('click', () => {
           clearApEmailSearch();
+        });
+      }
+      if (batchDeleteBtnEl) {
+        batchDeleteBtnEl.addEventListener('click', () => {
+          triggerBatchDeleteAccounts();
+        });
+      }
+      if (batchPasswordBtnEl) {
+        batchPasswordBtnEl.addEventListener('click', () => {
+          triggerBatchPasswordUpdate();
         });
       }
       if (searchInputEl) {
@@ -1595,10 +2075,6 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         }
 
         const buttons = Array.from(document.querySelectorAll('button[title="验证"][data-account-key]'));
-        if (buttons.length === 0) {
-          showToast('暂无账号可验证', 'material-symbols:info');
-          return;
-        }
 
         // 并发控制交给后端：前端只触发一次批量任务，然后按 job_id 轮询。
         // 弹窗支持：并发数 + “跳过已验证成功”选项；取消则直接退出。
@@ -1611,17 +2087,66 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         }
         conc = Number(dlg.concurrency) || conc;
         const skipValidated = dlg.skipValidated !== false;
+        const keywordList = Array.isArray(dlg.keywords) ? dlg.keywords : [];
 
-        // 收集本页账号
-        const pairsAll = buttons
-          .map(btn => ({
-            accountKey: String(btn.dataset.accountKey || ''),
-            safeKey: String(btn.dataset.safeKey || '')
-          }))
-          .filter(x => x.accountKey && x.safeKey);
+        let pairsAll = [];
+        let sourceLabel = '本页';
+        let matchedKeywordCount = 0;
+        let matchedTotal = 0;
+
+        if (keywordList.length > 0) {
+          sourceLabel = '关键词匹配';
+          matchedKeywordCount = keywordList.length;
+          try {
+            showToast(`正在按 ${keywordList.length} 个关键词匹配账号池...`, 'material-symbols:search');
+            const matchResp = await fetch('/accountpool/accounts/match-by-keywords', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ keywords: keywordList, limit: 1000 })
+            });
+            const matchData = await matchResp.json();
+            if (!matchResp.ok || !matchData || !matchData.success) {
+              showToast(`匹配账号失败: ${matchData.detail || matchData.error || '未知错误'}`, 'material-symbols:error');
+              return;
+            }
+
+            const matchedItems = Array.isArray(matchData.items) ? matchData.items : [];
+            matchedTotal = matchedItems.length;
+            if (matchedItems.length === 0) {
+              showToast(`未匹配到关键词对应的账号（关键词 ${keywordList.length} 个）`, 'material-symbols:warning');
+              return;
+            }
+
+            pairsAll = matchedItems.map((item) => ({
+              accountKey: String(item.account_key || ''),
+              safeKey: buildAccountSafeKey(item.account_key || ''),
+              validatedSuccess: isMatchedAccountValidatedSuccess(item),
+              email: String(item.uid || item.display_name || ''),
+            })).filter(x => x.accountKey && x.safeKey);
+          } catch (e) {
+            showToast(`匹配账号失败: ${e.message}`, 'material-symbols:error');
+            return;
+          }
+        } else {
+          if (buttons.length === 0) {
+            showToast('当前页暂无账号可验证；如需全库匹配，请在弹窗中输入邮箱关键词', 'material-symbols:info');
+            return;
+          }
+          // 收集本页账号
+          pairsAll = buttons
+            .map(btn => ({
+              accountKey: String(btn.dataset.accountKey || ''),
+              safeKey: String(btn.dataset.safeKey || ''),
+              validatedSuccess: isAccountValidatedSuccess(String(btn.dataset.safeKey || '')),
+            }))
+            .filter(x => x.accountKey && x.safeKey);
+        }
 
         if (pairsAll.length === 0) {
-          showToast('缺少账号标识，无法验证', 'material-symbols:error');
+          showToast(keywordList.length > 0 ? '关键词已匹配到空结果，无法验证' : '缺少账号标识，无法验证', 'material-symbols:error');
           return;
         }
 
@@ -1629,7 +2154,7 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         const pairs = [];
         let skipped = 0;
         for (const p of pairsAll) {
-          if (skipValidated && isAccountValidatedSuccess(p.safeKey)) {
+          if (skipValidated && p.validatedSuccess) {
             skipped += 1;
             continue;
           }
@@ -1647,11 +2172,13 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
 
         // 先把 UI 状态置为“排队/验证中”
         for (const p of pairs) {
-          setAccountStatus(p.safeKey, '排队中', 'bg-slate-500');
+          if (document.getElementById(`apStatus_${p.safeKey}`)) {
+            setAccountStatus(p.safeKey, '排队中', 'bg-slate-500');
+          }
         }
 
         showToast(
-          `已提交本页批量验证：${pairs.length} 个账号，并发 ${conc}${skipped > 0 ? `（跳过 ${skipped} 个已验证）` : ''}`,
+          `${sourceLabel === '关键词匹配' ? `已按 ${matchedKeywordCount} 个关键词匹配 ${matchedTotal} 个账号` : '已提交本页批量验证'}：实际验证 ${pairs.length} 个账号，并发 ${conc}${skipped > 0 ? `（跳过 ${skipped} 个已验证）` : ''}`,
           'material-symbols:shield-sync'
         );
 

@@ -264,6 +264,17 @@
               d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v 3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
           </svg>
         </a>
+        <button onclick="openMessageCenterModal()"
+          class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1 relative"
+          title="查看历史消息">
+          <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          消息
+          <span id="messageCenterBadge"
+            class="hidden absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] leading-[18px] text-center font-semibold">0</span>
+        </button>
         <button onclick="logout()"
           class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1">
           <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
@@ -805,12 +816,21 @@
               </select>
             </div>
             <div>
-              <label class="text-sm font-medium mb-2 block">默认服务器公网IP</label>
+              <label class="text-sm font-medium mb-2 block">主公网IP（兼容字段）</label>
               <input id="cfgServerDefaultPublicIp"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 placeholder="23.159.248.139" />
               <p id="cfgServerDetectedIpHint" class="text-xs text-muted-foreground mt-1">
                 启动时会检测本机公网IP，命中该值时自动按服务器模式运行
+              </p>
+            </div>
+            <div>
+              <label class="text-sm font-medium mb-2 block">服务器公网IP列表</label>
+              <textarea id="cfgServerDefaultPublicIps" rows="6"
+                class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                placeholder="每行一个公网IP，例如：&#10;23.159.248.139&#10;38.150.35.162&#10;38.49.55.204&#10;38.49.55.206&#10;104.129.59.235&#10;107.174.210.147"></textarea>
+              <p class="text-xs text-muted-foreground mt-1">
+                启动时会检测本机公网IP，只要命中列表中的任意一个，就自动切换为服务器模式并绑定 <code>0.0.0.0</code>
               </p>
             </div>
             <div>
@@ -1709,15 +1729,15 @@
               <div id="clusterMasterSyncStatus" class="font-medium">-</div>
               <div id="clusterMasterSyncMeta" class="text-xs text-muted-foreground mt-1">-</div>
             </div>
-            <div class="rounded-md border border-border p-3">
-              <div class="text-xs text-muted-foreground">节点说明</div>
-              <div class="text-sm text-muted-foreground leading-6">
-                主节点会按节点级并发上限与权重分配请求；子节点只负责执行本地生成并上报心跳。
-              </div>
-            </div>
+        <div class="rounded-md border border-border p-3">
+          <div class="text-xs text-muted-foreground">节点说明</div>
+          <div class="text-sm text-muted-foreground leading-6">
+                主节点会接收外部请求、参与本机执行，并按节点级并发上限与权重分配请求；子节点负责执行本地生成并上报心跳。
           </div>
         </div>
       </div>
+    </div>
+  </div>
 
       <div class="rounded-lg border border-border bg-background p-4">
         <div class="flex items-center justify-between mb-3">
@@ -1750,8 +1770,34 @@
             </thead>
             <tbody id="clusterNodeTableBody" class="divide-y divide-border"></tbody>
           </table>
+      </div>
+      <div id="clusterNodeEmpty" class="hidden text-center text-muted-foreground text-sm py-6">当前没有已上报节点</div>
+    </div>
+
+      <div class="rounded-lg border border-border bg-background p-4 mt-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-medium">集群自动登录委托记录</h3>
+          <span id="clusterAutoLoginSummary" class="text-xs text-muted-foreground">最近 0 条</span>
         </div>
-        <div id="clusterNodeEmpty" class="hidden text-center text-muted-foreground text-sm py-6">当前没有已上报节点</div>
+        <div class="overflow-x-auto">
+          <table class="min-w-[1280px] w-full text-sm">
+            <thead class="text-xs text-muted-foreground border-b border-border">
+              <tr>
+                <th class="py-2 text-left">委托ID</th>
+                <th class="py-2 text-left">主节点任务ID</th>
+                <th class="py-2 text-left">来源节点</th>
+                <th class="py-2 text-left">邮箱</th>
+                <th class="py-2 text-left">账号池账号</th>
+                <th class="py-2 text-right">Token ID</th>
+                <th class="py-2 text-left">状态</th>
+                <th class="py-2 text-left">最近更新时间</th>
+                <th class="py-2 text-left">详情</th>
+              </tr>
+            </thead>
+            <tbody id="clusterAutoLoginTableBody" class="divide-y divide-border"></tbody>
+          </table>
+        </div>
+        <div id="clusterAutoLoginEmpty" class="hidden text-center text-muted-foreground text-sm py-6">当前没有自动登录委托记录</div>
       </div>
     </div>
 
@@ -2419,6 +2465,36 @@
     </div>
   </div>
 
+  <div id="messageCenterModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="bg-background rounded-lg border border-border w-full max-w-3xl shadow-xl max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between gap-3 p-5 border-b border-border">
+        <div>
+          <h3 class="text-lg font-semibold">消息中心</h3>
+          <p class="text-xs text-muted-foreground mt-1">记录页面提示、导入结果和失败明细</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="clearMessageCenterHistory()"
+            class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+            清空历史
+          </button>
+          <button onclick="closeMessageCenterModal()" class="text-muted-foreground hover:text-foreground" title="关闭">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="p-5 overflow-y-auto">
+        <div id="messageCenterList" class="space-y-3"></div>
+        <div id="messageCenterEmpty" class="hidden rounded-md border border-border bg-muted/30 p-6 text-sm text-muted-foreground text-center">
+          暂无历史消息
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Token 导入模态框 -->
   <div id="importModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
     <div class="bg-background rounded-lg border border-border w-full max-w-md shadow-xl">
@@ -2552,6 +2628,16 @@
               class="w-full rounded-md border border-input bg-background h-10 px-3"></select>
           </label>
         </div>
+        <div class="rounded-md border border-border p-4 space-y-3 bg-muted/20">
+          <div>
+            <div class="text-sm font-medium">根据邮箱筛选导出指定 Token</div>
+            <div class="mt-1 text-xs text-muted-foreground">支持输入多个邮箱或关键词，按换行、逗号、空格分隔；填写后会按邮箱模糊匹配活跃 Token 并导出命中项</div>
+          </div>
+          <textarea id="tokenExportEmailFilterInput" oninput="updateTokenExportSummary()"
+            class="w-full min-h-[96px] rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            placeholder="例如：&#10;user1@gmail.com&#10;user2&#10;@example.com"></textarea>
+          <div id="tokenExportEmailFilterSummary" class="text-xs text-muted-foreground">未启用邮箱筛选，默认按数量导出</div>
+        </div>
         <div class="rounded-md border border-border overflow-hidden">
           <div class="px-4 py-3 border-b border-border bg-muted/30 text-sm font-medium">最近导出记录</div>
           <div id="tokenExportHistoryList" class="divide-y divide-border text-sm"></div>
@@ -2598,6 +2684,45 @@
       <div class="p-5 space-y-4 overflow-y-auto">
         <div class="flex flex-wrap items-center gap-2 rounded-md bg-indigo-50/70 border border-indigo-200 p-3">
           <span id="internalExportSummary" class="text-sm text-indigo-900">加载中...</span>
+        </div>
+        <div class="rounded-md border border-border p-4 space-y-3 bg-muted/20">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div class="text-sm font-medium">批量邮箱模糊筛选</div>
+              <div class="text-xs text-muted-foreground">支持粘贴邮箱、TXT / CSV / JSON 文本，系统会自动提取邮箱并按邮箱或文件名模糊匹配</div>
+            </div>
+            <input id="internalExportEmailFileInput" type="file" accept=".txt,.csv,.json,.log,.md" class="hidden"
+              onchange="importInternalExportEmailFile(event)">
+            <button type="button" onclick="document.getElementById('internalExportEmailFileInput').click()"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+              导入邮箱数据
+            </button>
+          </div>
+          <textarea id="internalExportEmailBulkInput"
+            class="w-full min-h-[108px] rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            placeholder="可直接粘贴批量邮箱、文本内容或 JSON 数据；点击下方按钮后会自动模糊匹配并勾选对应内部Token"></textarea>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" onclick="applyInternalExportEmailSelection('latest')"
+              class="inline-flex items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 h-8 px-3 text-sm">
+              匹配并仅选最新
+            </button>
+            <button type="button" onclick="applyInternalExportEmailSelection('all')"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+              匹配并全选命中
+            </button>
+            <button type="button" onclick="clearInternalExportEmailFilter()"
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+              清空邮箱筛选
+            </button>
+            <label class="inline-flex items-center gap-2 text-sm text-muted-foreground select-none">
+              <input id="internalExportOnlyShowMatched" type="checkbox" class="h-4 w-4 rounded border-input"
+                onchange="toggleInternalExportMatchedOnly(this.checked)">
+              仅显示匹配项
+            </label>
+          </div>
+          <div id="internalExportEmailMatchSummary" class="text-xs text-muted-foreground">
+            暂未导入邮箱筛选数据
+          </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button onclick="selectInternalExportFiles('latest')"
@@ -2659,9 +2784,13 @@
     let tokenEmailSearchKeyword = "";
     let batchImportSelectedFile = null;
     let tokenExportOptions = {};
+    let tokenExportEmailKeywords = [];
     let internalExportFiles = [];
     let internalExportMeta = {};
     let internalExportSelectedNames = new Set();
+    let internalExportFilterKeywords = [];
+    let internalExportMatchedNames = new Set();
+    let internalExportOnlyShowMatched = false;
     let cookieRefreshTicker = null;
     let tokenAutoRefreshTicker = null;
     let tokenAutoRefreshInFlight = false;
@@ -2674,6 +2803,11 @@
     let projectVersionCache = null;
     let captchaPriorityOrder = [];
     let currentLogsPage = 1;
+    let uiMessageHistory = [];
+    let uiMessageUnreadCount = 0;
+    const messageHistoryLimit = 200;
+    const messageHistoryStorageKey = "flow2api_ui_message_history_v1";
+    const messageHistoryUnreadStorageKey = "flow2api_ui_message_unread_v1";
     const logsPageSize = 10;
     let logPaginationMeta = { page: 1, page_size: 10, total: 0, total_pages: 1 };
     const $ = (id) => document.getElementById(id),
@@ -4182,6 +4316,9 @@
             session_token: st,
             cookie: cookieForImport || null,
             cookie_file: cookieFile || null,
+            project_id: item.project_id || item.current_project_id || null,
+            project_name: item.project_name || item.current_project_name || null,
+            remark: item.remark || null,
             is_active: item.is_active !== false,
             image_enabled: item.image_enabled !== false,
             video_enabled: item.video_enabled !== false,
@@ -4339,9 +4476,12 @@
           if (d.success) {
             closeBatchImportModal();
             await refreshTokens();
+              const failedCount = Array.isArray(d.errors) ? d.errors.length : 0;
+              const detailErrors = Array.isArray(d.errors) ? d.errors : [];
             showToast(
-              `导入完成: JSON文件${parsed.jsonFileCount}个, 解析${parsed.rawCount}条, 去重后${parsed.tokens.length}条, 新增${d.added || 0}, 更新${d.updated || 0}, 跳过${d.skipped || 0}`,
-              "success",
+              `导入完成: JSON文件${parsed.jsonFileCount}个, 解析${parsed.rawCount}条, 去重后${parsed.tokens.length}条, 新增${d.added || 0}, 更新${d.updated || 0}, 跳过${d.skipped || 0}${failedCount ? `, 失败${failedCount}（消息中心可查看详情）` : ""}`,
+              failedCount ? "warning" : "success",
+              detailErrors,
             );
           } else {
             showToast(
@@ -4424,22 +4564,66 @@
           return `<div class="p-4 space-y-1"><div class="flex items-center justify-between gap-3"><span class="font-medium">${escapeHtml(nodeName)}</span><span class="text-xs text-muted-foreground">${escapeHtml(createdAt)}</span></div><div class="flex items-center justify-between gap-3"><div class="text-xs text-muted-foreground">导出 ${exportedCount}/${requestedCount} 个账号，本机待删 ${localExistingCount} 个</div>${cleanupHtml}</div><div class="text-xs break-all">${escapeHtml(emailText + moreText)}</div></div>`;
         }).join("");
       },
+      parseTokenExportEmailKeywords = (rawText) => {
+        const text = String(rawText || "").trim();
+        if (!text) return [];
+        const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+        const rawKeywords = emailMatches.length
+          ? emailMatches
+          : text.split(/[\r\n,;|\t\s]+/g);
+        return Array.from(
+          new Set(
+            rawKeywords
+              .map((item) => String(item || "").trim().toLowerCase())
+              .filter((item) => item.length >= 2),
+          ),
+        );
+      },
+      getMatchedTokenExportRows = (keywords = tokenExportEmailKeywords) => {
+        const normalizedKeywords = Array.isArray(keywords)
+          ? keywords.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)
+          : [];
+        if (!normalizedKeywords.length) return [];
+        const sourceRows = Array.isArray(allTokens) ? allTokens : [];
+        return sourceRows.filter((item) => {
+          if (!item?.is_active) return false;
+          const email = String(item?.email || "").trim().toLowerCase();
+          return normalizedKeywords.some((keyword) => email.includes(keyword));
+        });
+      },
       updateTokenExportSummary = () => {
         const summary = $("tokenExportSummary");
         const hint = $("tokenExportHint");
+        const emailSummary = $("tokenExportEmailFilterSummary");
         if (!summary || !hint) return;
         const activeCount = Number(tokenExportOptions.active_token_count || 0);
         const unboundCount = Number(tokenExportOptions.unbound_token_count || 0);
         const boundCount = Number(tokenExportOptions.bound_token_count || 0);
         const selectedCount = Math.max(1, Number($("tokenExportCountInput")?.value || tokenExportOptions.default_count || 5));
+        tokenExportEmailKeywords = parseTokenExportEmailKeywords($("tokenExportEmailFilterInput")?.value || "");
+        const matchedRows = getMatchedTokenExportRows(tokenExportEmailKeywords);
         const selectedNodeId = String($("tokenExportNodeSelect")?.value || "").trim();
         const workerNodes = Array.isArray(tokenExportOptions.worker_nodes) ? tokenExportOptions.worker_nodes : [];
         const selectedNode = workerNodes.find((item) => String(item.node_id || "") === selectedNodeId) || null;
-        summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；本次计划导出 ${selectedCount} 个账号。`;
+        if (tokenExportEmailKeywords.length) {
+          summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；邮箱筛选命中 ${matchedRows.length} 个活跃 Token，本次将优先导出这些命中项。`;
+          if (emailSummary) {
+            emailSummary.textContent = `已输入 ${tokenExportEmailKeywords.length} 个邮箱关键词，匹配到 ${matchedRows.length} 个活跃 Token；提交导出时会以这些匹配结果为准。`;
+          }
+        } else {
+          summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；本次计划导出 ${selectedCount} 个账号。`;
+          if (emailSummary) {
+            emailSummary.textContent = "未启用邮箱筛选，默认按数量导出";
+          }
+        }
         if (selectedNode) {
-          hint.textContent = `默认绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，会优先复用该节点已绑定账号，再补充未绑定账号，避免不同子节点重复使用。`;
+          hint.textContent = tokenExportEmailKeywords.length
+            ? `当前绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，命中的 Token 会优先复用该节点已绑定账号，再补充该筛选结果中的未绑定账号。`
+            : `默认绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，会优先复用该节点已绑定账号，再补充未绑定账号，避免不同子节点重复使用。`;
         } else if (workerNodes.length) {
-          hint.textContent = "当前未选择子节点，本次导出不会写入绑定记录；如用于集群部署，建议选择一个子节点。";
+          hint.textContent = tokenExportEmailKeywords.length
+            ? "当前未选择子节点，本次会按邮箱筛选结果导出，但不会写入子节点绑定记录。"
+            : "当前未选择子节点，本次导出不会写入绑定记录；如用于集群部署，建议选择一个子节点。";
         } else {
           hint.textContent = "当前没有可选子节点，本地环境可直接导出；上线后有子节点时再绑定即可。";
         }
@@ -4461,9 +4645,12 @@
         $("tokenExportModal").classList.remove("hidden");
         $("tokenExportSummary").textContent = "正在加载导出配置...";
         $("tokenExportHint").textContent = "";
+        $("tokenExportEmailFilterInput").value = "";
+        $("tokenExportEmailFilterSummary").textContent = "未启用邮箱筛选，默认按数量导出";
         $("tokenExportHistoryList").innerHTML = "";
         $("tokenExportHistoryEmpty").classList.add("hidden");
         tokenExportOptions = {};
+        tokenExportEmailKeywords = [];
         $("tokenExportCountInput").value = 5;
         $("tokenExportNodeSelect").innerHTML = '<option value="">加载中...</option>';
 
@@ -4534,10 +4721,17 @@
         const btnText = $("tokenExportBtnText");
         const btnSpinner = $("tokenExportBtnSpinner");
         const requestedCount = Math.max(1, Math.min(200, Number($("tokenExportCountInput")?.value || 5)));
+        const emailKeywords = parseTokenExportEmailKeywords($("tokenExportEmailFilterInput")?.value || "");
+        const matchedRows = getMatchedTokenExportRows(emailKeywords);
         const nodeId = String($("tokenExportNodeSelect")?.value || "").trim();
         const selectedNode = (Array.isArray(tokenExportOptions.worker_nodes) ? tokenExportOptions.worker_nodes : []).find(
           (item) => String(item.node_id || "") === nodeId,
         );
+
+        if (emailKeywords.length && matchedRows.length === 0) {
+          showToast("邮箱筛选未匹配到活跃 Token，无法导出", "error");
+          return;
+        }
 
         btn.disabled = true;
         btnText.textContent = "导出中...";
@@ -4554,9 +4748,10 @@
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              count: requestedCount,
+              count: emailKeywords.length ? matchedRows.length : requestedCount,
               node_id: nodeId || null,
               node_name: selectedNode?.node_name || null,
+              email_keywords: emailKeywords,
             }),
           });
 
@@ -4645,6 +4840,75 @@
         if (Number.isNaN(d.getTime())) return String(text);
         return d.toLocaleString("zh-CN");
       },
+      parseInternalExportEmailKeywords = (rawText) => {
+        const text = String(rawText || "").trim();
+        if (!text) return [];
+
+        const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+        const rawKeywords = emailMatches.length
+          ? emailMatches
+          : text.split(/[\r\n,;|\t\s]+/g);
+
+        return Array.from(
+          new Set(
+            rawKeywords
+              .map((item) => String(item || "").trim().toLowerCase())
+              .filter((item) => item.length >= 2),
+          ),
+        );
+      },
+      getInternalExportMatchedFiles = (keywords = internalExportFilterKeywords) => {
+        const normalizedKeywords = Array.isArray(keywords)
+          ? keywords
+            .map((item) => String(item || "").trim().toLowerCase())
+            .filter(Boolean)
+          : [];
+        if (!normalizedKeywords.length) return [];
+
+        return internalExportFiles.filter((item) => {
+          const email = String(item.email || "").trim().toLowerCase();
+          const fileName = String(item.name || "").trim().toLowerCase();
+          return normalizedKeywords.some(
+            (keyword) => email.includes(keyword) || fileName.includes(keyword),
+          );
+        });
+      },
+      getInternalExportVisibleFiles = () => {
+        if (
+          internalExportOnlyShowMatched &&
+          internalExportFilterKeywords.length &&
+          internalExportMatchedNames.size
+        ) {
+          return internalExportFiles.filter((item) =>
+            internalExportMatchedNames.has(String(item.name || "").trim()),
+          );
+        }
+        return internalExportFiles;
+      },
+      updateInternalExportEmailMatchSummary = () => {
+        const summaryEl = $("internalExportEmailMatchSummary");
+        const onlyMatchedEl = $("internalExportOnlyShowMatched");
+        if (!summaryEl) return;
+
+        if (onlyMatchedEl) {
+          onlyMatchedEl.disabled = internalExportMatchedNames.size === 0;
+          if (internalExportMatchedNames.size === 0) {
+            onlyMatchedEl.checked = false;
+            internalExportOnlyShowMatched = false;
+          }
+        }
+
+        if (!internalExportFilterKeywords.length) {
+          summaryEl.textContent = "暂未导入邮箱筛选数据";
+          return;
+        }
+
+        const matchedFiles = getInternalExportMatchedFiles();
+        const matchedEmailCount = new Set(
+          matchedFiles.map((item) => String(item.email || "").trim().toLowerCase()),
+        ).size;
+        summaryEl.textContent = `已导入 ${internalExportFilterKeywords.length} 个邮箱关键词，命中 ${matchedFiles.length} 个文件（${matchedEmailCount} 个邮箱）${internalExportOnlyShowMatched && matchedFiles.length ? "，当前仅显示匹配项" : ""}`;
+      },
       updateInternalExportSummary = () => {
         const total = Number(
           internalExportMeta.total_files || internalExportFiles.length || 0,
@@ -4660,7 +4924,102 @@
           (f) => f.is_latest_for_email,
         ).length;
         const selectedCount = internalExportSelectedNames.size;
-        $("internalExportSummary").textContent = `共 ${total} 个文件（${uniqueEmails} 个邮箱），默认最新 ${latestCount} 个，当前已选 ${selectedCount} 个`;
+        const matchedFiles = getInternalExportMatchedFiles();
+        const matchedEmailCount = new Set(
+          matchedFiles.map((item) => String(item.email || "").trim().toLowerCase()),
+        ).size;
+        $("internalExportSummary").textContent = `共 ${total} 个文件（${uniqueEmails} 个邮箱），默认最新 ${latestCount} 个，当前已选 ${selectedCount} 个${matchedFiles.length ? `，当前筛选命中 ${matchedFiles.length} 个文件（${matchedEmailCount} 个邮箱）` : ""}`;
+        updateInternalExportEmailMatchSummary();
+      },
+      applyInternalExportEmailSelection = (mode = "latest") => {
+        const keywords = parseInternalExportEmailKeywords(
+          $("internalExportEmailBulkInput")?.value || "",
+        );
+        internalExportFilterKeywords = keywords;
+
+        const matchedFiles = getInternalExportMatchedFiles(keywords);
+        internalExportMatchedNames = new Set(
+          matchedFiles.map((item) => String(item.name || "").trim()),
+        );
+
+        if (!keywords.length) {
+          internalExportSelectedNames = new Set();
+          internalExportOnlyShowMatched = false;
+          const onlyMatchedEl = $("internalExportOnlyShowMatched");
+          if (onlyMatchedEl) onlyMatchedEl.checked = false;
+          renderInternalExportTable();
+          showToast("请先粘贴或导入邮箱数据", "error");
+          return;
+        }
+
+        const selectedFiles =
+          mode === "all"
+            ? matchedFiles
+            : matchedFiles.filter((item) => item.is_latest_for_email);
+        internalExportSelectedNames = new Set(
+          selectedFiles.map((item) => String(item.name || "").trim()),
+        );
+
+        if (matchedFiles.length > 0) {
+          internalExportOnlyShowMatched = true;
+          const onlyMatchedEl = $("internalExportOnlyShowMatched");
+          if (onlyMatchedEl) onlyMatchedEl.checked = true;
+        }
+
+        renderInternalExportTable();
+
+        if (!matchedFiles.length) {
+          showToast("未匹配到对应邮箱的内部Token文件", "error");
+          return;
+        }
+
+        showToast(
+          `已匹配 ${matchedFiles.length} 个文件，并自动勾选 ${selectedFiles.length} 个${mode === "latest" ? "最新" : "命中"}文件`,
+          "success",
+        );
+      },
+      clearInternalExportEmailFilter = () => {
+        const inputEl = $("internalExportEmailBulkInput");
+        const fileInputEl = $("internalExportEmailFileInput");
+        const onlyMatchedEl = $("internalExportOnlyShowMatched");
+        if (inputEl) inputEl.value = "";
+        if (fileInputEl) fileInputEl.value = "";
+        if (onlyMatchedEl) onlyMatchedEl.checked = false;
+
+        internalExportFilterKeywords = [];
+        internalExportMatchedNames = new Set();
+        internalExportOnlyShowMatched = false;
+        renderInternalExportTable();
+      },
+      toggleInternalExportMatchedOnly = (checked) => {
+        internalExportOnlyShowMatched = !!checked && internalExportMatchedNames.size > 0;
+        const onlyMatchedEl = $("internalExportOnlyShowMatched");
+        if (onlyMatchedEl && !internalExportMatchedNames.size) {
+          onlyMatchedEl.checked = false;
+        }
+        renderInternalExportTable();
+      },
+      importInternalExportEmailFile = async (event) => {
+        const file = event?.target?.files?.[0];
+        if (!file) return;
+
+        try {
+          const text = await file.text();
+          const inputEl = $("internalExportEmailBulkInput");
+          if (!inputEl) return;
+
+          const existingText = String(inputEl.value || "").trim();
+          const importedText = String(text || "").trim();
+          inputEl.value = existingText && importedText
+            ? `${existingText}\n${importedText}`
+            : importedText || existingText;
+
+          applyInternalExportEmailSelection("latest");
+        } catch (e) {
+          showToast("导入邮箱数据失败: " + (e.message || "未知错误"), "error");
+        } finally {
+          if (event?.target) event.target.value = "";
+        }
       },
       toggleInternalExportFile = (fileName, checked) => {
         const n = String(fileName || "").trim();
@@ -4674,23 +5033,46 @@
         const empty = $("internalExportEmpty");
         if (!tb || !empty) return;
 
+        const visibleFiles = getInternalExportVisibleFiles();
+
         if (!internalExportFiles.length) {
           tb.innerHTML = "";
           empty.classList.remove("hidden");
+          empty.textContent = "没有可导出的内部Token文件";
+          updateInternalExportSummary();
+          return;
+        }
+
+        if (!visibleFiles.length) {
+          tb.innerHTML = "";
+          empty.classList.remove("hidden");
+          empty.textContent = internalExportFilterKeywords.length
+            ? "当前筛选没有匹配到内部Token文件"
+            : "没有可导出的内部Token文件";
           updateInternalExportSummary();
           return;
         }
 
         empty.classList.add("hidden");
-        tb.innerHTML = internalExportFiles
+        tb.innerHTML = visibleFiles
           .map((item) => {
             const checked = internalExportSelectedNames.has(item.name)
               ? "checked"
               : "";
-            const statusHtml = item.is_latest_for_email
-              ? '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-emerald-50 text-emerald-700">最新</span>'
-              : '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-slate-100 text-slate-600">旧版本</span>';
-            return `<tr class="border-b border-border/80"><td class="px-3 py-2"><input type="checkbox" class="h-4 w-4 rounded border-input" data-file-name="${escapeHtml(item.name)}" ${checked}></td><td class="px-3 py-2 text-xs">${escapeHtml(item.email || "-")}</td><td class="px-3 py-2 text-xs font-mono">${escapeHtml(item.name || "-")}</td><td class="px-3 py-2 text-xs">${escapeHtml(formatInternalExportDateTime(item.modified_at))}</td><td class="px-3 py-2 text-xs">${escapeHtml(formatInternalExportFileSize(item.size))}</td><td class="px-3 py-2 text-xs">${statusHtml}</td></tr>`;
+            const isMatched = internalExportMatchedNames.has(
+              String(item.name || "").trim(),
+            );
+            const statusBadges = [
+              item.is_latest_for_email
+                ? '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-emerald-50 text-emerald-700">最新</span>'
+                : '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-slate-100 text-slate-600">旧版本</span>',
+            ];
+            if (isMatched) {
+              statusBadges.push(
+                '<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-indigo-50 text-indigo-700">匹配</span>',
+              );
+            }
+            return `<tr class="border-b border-border/80 ${isMatched ? "bg-indigo-50/30" : ""}"><td class="px-3 py-2"><input type="checkbox" class="h-4 w-4 rounded border-input" data-file-name="${escapeHtml(item.name)}" ${checked}></td><td class="px-3 py-2 text-xs">${escapeHtml(item.email || "-")}</td><td class="px-3 py-2 text-xs font-mono">${escapeHtml(item.name || "-")}</td><td class="px-3 py-2 text-xs">${escapeHtml(formatInternalExportDateTime(item.modified_at))}</td><td class="px-3 py-2 text-xs">${escapeHtml(formatInternalExportFileSize(item.size))}</td><td class="px-3 py-2 text-xs"><div class="flex flex-wrap items-center gap-1">${statusBadges.join("")}</div></td></tr>`;
           })
           .join("");
 
@@ -4728,9 +5110,20 @@
         $("internalExportSummary").textContent = "正在加载内部Token文件...";
         $("internalExportTableBody").innerHTML = "";
         $("internalExportEmpty").classList.add("hidden");
+        $("internalExportEmpty").textContent = "没有可导出的内部Token文件";
+        if ($("internalExportEmailBulkInput")) $("internalExportEmailBulkInput").value = "";
+        if ($("internalExportEmailFileInput")) $("internalExportEmailFileInput").value = "";
+        if ($("internalExportOnlyShowMatched")) {
+          $("internalExportOnlyShowMatched").checked = false;
+          $("internalExportOnlyShowMatched").disabled = true;
+        }
         internalExportFiles = [];
         internalExportMeta = {};
         internalExportSelectedNames = new Set();
+        internalExportFilterKeywords = [];
+        internalExportMatchedNames = new Set();
+        internalExportOnlyShowMatched = false;
+        updateInternalExportEmailMatchSummary();
 
         try {
           const r = await apiRequest("/api/tokens/internal/files");
@@ -4885,8 +5278,10 @@
             if (d.success) {
               closeImportModal();
               await refreshTokens();
-              const msg = `导入成功！新增: ${d.added || 0}, 更新: ${d.updated || 0}, 跳过: ${d.skipped || 0}`;
-              showToast(msg, "success");
+              const failedCount = Array.isArray(d.errors) ? d.errors.length : 0;
+              const detailErrors = Array.isArray(d.errors) ? d.errors : [];
+              const msg = `导入成功！新增: ${d.added || 0}, 更新: ${d.updated || 0}, 跳过: ${d.skipped || 0}${failedCount ? `, 失败: ${failedCount}（消息中心可查看详情）` : ""}`;
+              showToast(msg, failedCount ? "warning" : "success", detailErrors);
             } else {
               showToast(
                 "导入失败: " + (d.detail || d.message || "未知错误"),
@@ -5312,12 +5707,33 @@
         updateRpaBitbrowserIdSummary("local");
         updateRpaBitbrowserIdSummary("server");
       },
+      DEFAULT_SERVER_PUBLIC_IPS = Object.freeze([
+        "23.159.248.139",
+        "38.150.35.162",
+        "38.49.55.204",
+        "38.49.55.206",
+        "104.129.59.235",
+        "107.174.210.147",
+      ]),
+      parseServerPublicIpList = (raw) => {
+        const seen = new Set();
+        return String(raw || "")
+          .replace(/\r/g, "\n")
+          .split(/[\n,;]+/g)
+          .map((item) => String(item || "").trim())
+          .filter((item) => {
+            if (!item || seen.has(item)) return false;
+            seen.add(item);
+            return true;
+          });
+      },
       applyServerModePreset = () => {
         const mode = ($("cfgServerMode").value || "server").toLowerCase();
         if (mode === "local") {
           $("cfgServerHost").value = "127.0.0.1";
         } else {
-          const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim();
+          const defaultPublicIps = parseServerPublicIpList($("cfgServerDefaultPublicIps")?.value || "");
+          const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim() || defaultPublicIps[0] || "";
           $("cfgServerHost").value = defaultPublicIp || "0.0.0.0";
         }
       },
@@ -5331,15 +5747,22 @@
           $("cfgServerMode").value = mode === "local" ? "local" : "server";
           $("cfgServerHost").value = d.config.host || "";
           $("cfgServerPort").value = d.config.port || 8000;
+          const defaultPublicIps = Array.isArray(d.config.default_public_ips) && d.config.default_public_ips.length
+            ? d.config.default_public_ips
+            : DEFAULT_SERVER_PUBLIC_IPS;
           $("cfgServerDefaultPublicIp").value =
-            d.config.default_public_ip || "23.159.248.139";
+            d.config.default_public_ip || defaultPublicIps[0] || "23.159.248.139";
+          $("cfgServerDefaultPublicIps").value = defaultPublicIps.join("\n");
           const detectedIp = String(d.config.detected_public_ip || "").trim();
           const autoDetected = Boolean(d.config.server_auto_detected);
+          const ipListText = defaultPublicIps.length
+            ? `配置列表: ${defaultPublicIps.join(", ")}`
+            : "当前未配置服务器公网IP列表";
           $("cfgServerDetectedIpHint").textContent = detectedIp
             ? autoDetected
-              ? `当前检测公网IP: ${detectedIp}，已命中默认服务器公网IP并按服务器模式运行`
-              : `当前检测公网IP: ${detectedIp}，未命中默认服务器公网IP`
-            : "启动时会检测本机公网IP，命中该值时自动按服务器模式运行";
+              ? `当前检测公网IP: ${detectedIp}，已命中服务器公网IP列表并按服务器模式运行；${ipListText}`
+              : `当前检测公网IP: ${detectedIp}，未命中服务器公网IP列表；${ipListText}`
+            : `启动时会检测本机公网IP，命中列表中的任意一个时自动按服务器模式运行；${ipListText}`;
           renderRpaBitbrowserIdRows(
             "local",
             d.config.rpa_test_bitbrowser_ids_local ||
@@ -5362,7 +5785,11 @@
         const mode = ($("cfgServerMode").value || "server").toLowerCase();
         const host = $("cfgServerHost").value.trim();
         const port = parseInt($("cfgServerPort").value, 10) || 8000;
-        const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim();
+        const parsedPublicIpList = parseServerPublicIpList($("cfgServerDefaultPublicIps").value);
+        const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim() || parsedPublicIpList[0] || "";
+        const defaultPublicIps = defaultPublicIp
+          ? [defaultPublicIp, ...parsedPublicIpList.filter((item) => item !== defaultPublicIp)]
+          : parsedPublicIpList;
         const localBitIds = collectRpaBitbrowserIdList("local");
         const serverBitIds = collectRpaBitbrowserIdList("server");
         const blockGemini25FlashImage = $("cfgBlockGemini25FlashImage").checked;
@@ -5370,6 +5797,8 @@
         if (!host) return showToast("请输入监听地址", "error");
         if (port < 1 || port > 65535)
           return showToast("端口必须在 1-65535 之间", "error");
+        if (mode === "server" && !defaultPublicIps.length)
+          return showToast("服务器模式下请至少配置一个公网IP", "error");
 
         try {
           const r = await apiRequest("/api/server/config", {
@@ -5379,6 +5808,7 @@
               host: host,
               port: port,
               default_public_ip: defaultPublicIp || null,
+              default_public_ips: defaultPublicIps,
               rpa_test_bitbrowser_ids_local: localBitIds,
               rpa_test_bitbrowser_ids_server: serverBitIds,
               block_gemini_25_flash_image: blockGemini25FlashImage,
@@ -6024,6 +6454,9 @@
             upsampling_2k: "正在放大到2K",
             upsampling_4k: "正在放大到4K",
             upsampling_1080p: "正在放大到1080P",
+            cluster_dispatch_streaming: "集群分流中",
+            cluster_dispatched: "集群分流完成",
+            cluster_dispatch_failed: "集群分流失败",
           };
           return map[statusText] || statusText;
         }
@@ -6178,6 +6611,7 @@
             if (source === "system") return "系统";
             if (source === "proxy_pool") return "代理池";
             if (source === "direct") return "直连";
+            if (source === "cluster_remote") return "集群分流";
             return "-";
           };
           if (!logs.length) {
@@ -6474,11 +6908,139 @@
         resetLogMediaCache();
         $("logDetailModal").classList.add("hidden");
       },
-      showToast = (m, t = "info") => {
+      persistMessageHistory = () => {
+        try {
+          localStorage.setItem(
+            messageHistoryStorageKey,
+            JSON.stringify(uiMessageHistory.slice(0, messageHistoryLimit)),
+          );
+          localStorage.setItem(
+            messageHistoryUnreadStorageKey,
+            String(Math.max(0, Number(uiMessageUnreadCount || 0))),
+          );
+        } catch (_) { }
+      },
+      updateMessageCenterBadge = () => {
+        const badge = $("messageCenterBadge");
+        if (!badge) return;
+        const unread = Math.max(0, Number(uiMessageUnreadCount || 0));
+        if (!unread) {
+          badge.classList.add("hidden");
+          badge.textContent = "0";
+          return;
+        }
+        badge.classList.remove("hidden");
+        badge.textContent = unread > 99 ? "99+" : String(unread);
+      },
+      loadMessageCenterHistory = () => {
+        try {
+          const raw = localStorage.getItem(messageHistoryStorageKey);
+          const parsed = raw ? JSON.parse(raw) : [];
+          uiMessageHistory = Array.isArray(parsed) ? parsed : [];
+        } catch (_) {
+          uiMessageHistory = [];
+        }
+        uiMessageUnreadCount = Math.max(
+          0,
+          Number(localStorage.getItem(messageHistoryUnreadStorageKey) || 0),
+        );
+        updateMessageCenterBadge();
+      },
+      renderMessageCenter = () => {
+        const list = $("messageCenterList");
+        const empty = $("messageCenterEmpty");
+        if (!list || !empty) return;
+        if (!uiMessageHistory.length) {
+          list.innerHTML = "";
+          empty.classList.remove("hidden");
+          return;
+        }
+        empty.classList.add("hidden");
+        const toneClass = {
+          success: "border-green-200 bg-green-50/70",
+          error: "border-red-200 bg-red-50/70",
+          warning: "border-amber-200 bg-amber-50/70",
+          info: "border-blue-200 bg-blue-50/70",
+        };
+        const toneLabel = {
+          success: "成功",
+          error: "错误",
+          warning: "警告",
+          info: "提示",
+        };
+        list.innerHTML = uiMessageHistory.map((item) => {
+          const details = Array.isArray(item.details)
+            ? item.details.filter(Boolean).map((v) => String(v))
+            : [];
+          const createdAt = item.created_at ? new Date(item.created_at) : null;
+          const createdText = createdAt && !Number.isNaN(createdAt.getTime())
+            ? createdAt.toLocaleString("zh-CN", { hour12: false })
+            : "-";
+          const detailHtml = details.length
+            ? `<div class="mt-2 rounded-md bg-white/70 border border-border p-3"><div class="text-xs font-medium text-muted-foreground mb-2">详情</div><ul class="space-y-1 text-xs text-foreground max-h-40 overflow-y-auto">${details.slice(0, 50).map((detail) => `<li class="break-all">${escapeHtml(detail)}</li>`).join("")}${details.length > 50 ? `<li class="text-muted-foreground">其余 ${details.length - 50} 条请缩小范围后重试</li>` : ""}</ul></div>`
+            : "";
+          return `<div class="rounded-lg border p-4 ${toneClass[item.type] || toneClass.info}">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <div class="text-sm font-semibold">${escapeHtml(item.message || "-")}</div>
+                <div class="mt-1 text-xs text-muted-foreground">${toneLabel[item.type] || toneLabel.info} · ${escapeHtml(createdText)}</div>
+              </div>
+            </div>
+            ${detailHtml}
+          </div>`;
+        }).join("");
+      },
+      addMessageHistoryEntry = (message, type = "info", details = []) => {
+        const text = String(message || "").trim();
+        if (!text) return;
+        const detailList = Array.isArray(details)
+          ? details.filter(Boolean).map((item) => String(item))
+          : details
+            ? [String(details)]
+            : [];
+        uiMessageHistory.unshift({
+          id: `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+          message: text,
+          type: String(type || "info"),
+          details: detailList,
+          created_at: new Date().toISOString(),
+        });
+        if (uiMessageHistory.length > messageHistoryLimit) {
+          uiMessageHistory = uiMessageHistory.slice(0, messageHistoryLimit);
+        }
+        uiMessageUnreadCount = Math.min(messageHistoryLimit, Number(uiMessageUnreadCount || 0) + 1);
+        persistMessageHistory();
+        updateMessageCenterBadge();
+        if (!$("messageCenterModal")?.classList.contains("hidden")) {
+          renderMessageCenter();
+        }
+      },
+      openMessageCenterModal = () => {
+        $("messageCenterModal").classList.remove("hidden");
+        uiMessageUnreadCount = 0;
+        persistMessageHistory();
+        updateMessageCenterBadge();
+        renderMessageCenter();
+      },
+      closeMessageCenterModal = () => {
+        $("messageCenterModal").classList.add("hidden");
+      },
+      clearMessageCenterHistory = () => {
+        uiMessageHistory = [];
+        uiMessageUnreadCount = 0;
+        persistMessageHistory();
+        updateMessageCenterBadge();
+        renderMessageCenter();
+      },
+      showToast = (m, t = "info", details = [], options = {}) => {
+        const persist = options?.persist !== false;
+        const duration = Math.max(1200, Number(options?.duration || 2000));
+        if (persist) addMessageHistoryEntry(m, t, details);
         const d = document.createElement("div"),
           bc = {
             success: "bg-green-600",
             error: "bg-destructive",
+            warning: "bg-amber-500",
             info: "bg-primary",
           };
         d.className = `fixed bottom-4 right-4 ${bc[t] || bc.info} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;
@@ -6488,7 +7050,7 @@
           d.style.opacity = "0";
           d.style.transition = "opacity .3s";
           setTimeout(() => d.parentNode && document.body.removeChild(d), 300);
-        }, 2000);
+        }, duration);
       },
       logout = () => {
         if (!confirm("确定要退出登录吗?")) return;
@@ -6790,6 +7352,7 @@
         if (source === "system") return "系统";
         if (source === "proxy_pool") return "代理池";
         if (source === "direct") return "直连";
+        if (source === "cluster_remote") return "集群分流";
         return "-";
       };
 
@@ -6987,8 +7550,8 @@
           ? `成功时间: ${fmtClusterTime(masterSync.last_success_at)}${masterSync.roundtrip_ms != null ? `，往返 ${masterSync.roundtrip_ms} ms` : ""}`
           : (masterSync.last_error || "尚未与主节点建立连接");
       } else {
-        $("clusterMasterSyncStatus").textContent = "当前节点负责接收子节点心跳";
-        $("clusterMasterSyncMeta").textContent = "主节点通过子节点上报的心跳刷新节点健康状态";
+        $("clusterMasterSyncStatus").textContent = "当前节点负责接收心跳并参与执行";
+        $("clusterMasterSyncMeta").textContent = "主节点既接收子节点心跳，也会参与本机请求执行与自动登录委托处理";
       }
 
       const tbody = $("clusterNodeTableBody");
@@ -7037,6 +7600,45 @@
           <td class="py-2 pr-3 text-right">${actionHtml}</td>
         `;
         tbody.appendChild(row);
+      });
+
+      const jobTbody = $("clusterAutoLoginTableBody");
+      const jobEmpty = $("clusterAutoLoginEmpty");
+      const jobs = Array.isArray(snapshot.delegated_auto_login_jobs) ? snapshot.delegated_auto_login_jobs : [];
+      jobTbody.innerHTML = "";
+      jobEmpty.classList.toggle("hidden", jobs.length > 0);
+      $("clusterAutoLoginSummary").textContent = `最近 ${jobs.length} 条`;
+
+      const jobStatusMeta = (status) => {
+        const key = String(status || "").trim().toLowerCase();
+        if (!key) return { label: "-", cls: "bg-slate-100 text-slate-700" };
+        if (key.includes("success")) return { label: "成功", cls: "bg-green-100 text-green-700" };
+        if (key.includes("failed") || key === "cancelled") return { label: "失败", cls: "bg-red-100 text-red-700" };
+        if (key.includes("banned")) return { label: "封禁", cls: "bg-rose-100 text-rose-700" };
+        if (key.includes("callback")) return { label: key, cls: "bg-indigo-100 text-indigo-700" };
+        if (key === "queued") return { label: "排队中", cls: "bg-amber-100 text-amber-700" };
+        return { label: "执行中", cls: "bg-blue-100 text-blue-700" };
+      };
+
+      jobs.forEach((job) => {
+        const meta = jobStatusMeta(job.status);
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td class="py-2 pr-3 font-mono text-xs break-all">${escapeLogHtml(job.delegation_id || "-")}</td>
+          <td class="py-2 pr-3 font-mono text-xs break-all">${escapeLogHtml(job.master_job_id || "-")}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(job.worker_node_name || job.worker_node_id || "-")}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(job.email || "-")}</td>
+          <td class="py-2 pr-3">${escapeLogHtml(job.account_key || "-")}</td>
+          <td class="py-2 pr-3 text-right">${job.worker_token_id ?? "-"}</td>
+          <td class="py-2 pr-3">
+            <span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${meta.cls}">
+              ${escapeLogHtml(meta.label)}
+            </span>
+          </td>
+          <td class="py-2 pr-3">${escapeLogHtml(fmtClusterTime(job.updated_at || job.created_at))}</td>
+          <td class="py-2 pr-3 break-all">${escapeLogHtml(job.detail || "-")}</td>
+        `;
+        jobTbody.appendChild(row);
       });
     }
 
@@ -7708,6 +8310,7 @@
 
     window.addEventListener("DOMContentLoaded", () => {
       checkAuth();
+      loadMessageCenterHistory();
       initBatchImportDropZone();
       refreshTokens();
       loadProjectVersion();

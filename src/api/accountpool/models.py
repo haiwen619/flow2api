@@ -29,6 +29,27 @@ class AccountPoolBatchValidateRequest(BaseModel):
     account_keys: List[str] = Field(..., min_length=1)
 
 
+class AccountPoolMatchAccountsRequest(BaseModel):
+    keywords: List[str] = Field(..., min_length=1)
+    limit: int = Field(default=500, ge=1, le=2000)
+
+
+class AccountPoolBatchDeleteBySearchRequest(BaseModel):
+    search: str = Field(..., min_length=1)
+    platform: Optional[str] = None
+
+
+class AccountPoolBatchDeleteByKeywordsRequest(BaseModel):
+    keywords: List[str] = Field(..., min_length=1)
+    limit: int = Field(default=2000, ge=1, le=5000)
+
+
+class AccountPoolBatchUpdatePasswordRequest(BaseModel):
+    keywords: List[str] = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    limit: int = Field(default=2000, ge=1, le=5000)
+
+
 class AccountPoolItem(BaseModel):
     id: int
     account_key: str

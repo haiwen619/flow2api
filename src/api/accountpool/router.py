@@ -9,6 +9,10 @@ from fastapi.responses import JSONResponse
 from .auth import verify_panel_token
 from .models import (
     AccountPoolAddAccountRequest,
+    AccountPoolBatchDeleteBySearchRequest,
+    AccountPoolBatchDeleteByKeywordsRequest,
+    AccountPoolBatchUpdatePasswordRequest,
+    AccountPoolMatchAccountsRequest,
     AccountPoolBatchValidateRequest,
     AccountPoolUpdateAccountRequest,
 )
@@ -99,6 +103,75 @@ def create_accountpool_router(service: AccountPoolService) -> APIRouter:
             return JSONResponse(content={"success": True})
         except KeyError:
             raise HTTPException(status_code=404, detail="account not found")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/accountpool/accounts/delete-by-search")
+    async def delete_accounts_by_search(
+        request: AccountPoolBatchDeleteBySearchRequest,
+        token: str = Depends(verify_panel_token),
+    ) -> JSONResponse:
+        _ = token
+        try:
+            result = await service.delete_accounts_by_search(
+                search=request.search,
+                platform=request.platform,
+            )
+            return JSONResponse(content={"success": True, **result})
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/accountpool/accounts/delete-by-keywords")
+    async def delete_accounts_by_keywords(
+        request: AccountPoolBatchDeleteByKeywordsRequest,
+        token: str = Depends(verify_panel_token),
+    ) -> JSONResponse:
+        _ = token
+        try:
+            result = await service.delete_accounts_by_keywords(
+                keywords=request.keywords,
+                limit=request.limit,
+            )
+            return JSONResponse(content={"success": True, **result})
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/accountpool/accounts/match-by-keywords")
+    async def match_accounts_by_keywords(
+        request: AccountPoolMatchAccountsRequest,
+        token: str = Depends(verify_panel_token),
+    ) -> JSONResponse:
+        _ = token
+        try:
+            result = await service.match_accounts_by_keywords(
+                keywords=request.keywords,
+                limit=request.limit,
+            )
+            return JSONResponse(content={"success": True, **result})
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/accountpool/accounts/update-password-by-keywords")
+    async def batch_update_password_by_keywords(
+        request: AccountPoolBatchUpdatePasswordRequest,
+        token: str = Depends(verify_panel_token),
+    ) -> JSONResponse:
+        _ = token
+        try:
+            result = await service.batch_update_password_by_keywords(
+                keywords=request.keywords,
+                password=request.password,
+                limit=request.limit,
+            )
+            return JSONResponse(content={"success": True, **result})
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:

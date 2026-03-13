@@ -170,6 +170,23 @@ def _get_test_default_bitbrowser_id() -> Optional[str]:
     return s or None
 
 
+def _is_bitbrowser_auto_create_enabled(options: Optional[ValidateOptions] = None) -> bool:
+    """Whether BitBrowser window auto-creation is allowed."""
+    explicit = getattr(options, "bitbrowser_auto_create", None) if options is not None else None
+    if explicit is not None:
+        return bool(explicit)
+
+    env_val = str(os.environ.get("RPA_ALLOW_BITBROWSER_AUTO_CREATE", "") or "").strip().lower()
+    if env_val:
+        return env_val in {"1", "true", "yes", "on"}
+
+    try:
+        from src.core.config import config as app_config
+        return bool(app_config.rpa_bitbrowser_auto_create_enabled)
+    except Exception:
+        return False
+
+
 # 说明：本函数用于在本地测试时优先复用一个固定的 BitBrowser 窗口 ID。12
 # 在开发/调试时可以在文件顶部修改 `TEST_DEFAULT_BITBROWSER_ID` 或者通过环境变量
 # RPA_TEST_BITBROWSER_ID 来指定。生产环境通常会注释掉该默认值以强制走 createBrowser().
@@ -300,11 +317,12 @@ class ValidateOptions:
     human_delay_max_sec: float = 6.0
 
     # BitBrowser（本地服务）：
-    # - bitbrowser=True 时：自动 createBrowser() -> openBrowser() -> connect_over_cdp(ws)
-    # - bitbrowser_id：指定窗口 id（传了就不会 createBrowser）
+    # - bitbrowser=True 时：默认仅复用已有窗口，不主动 createBrowser()
+    # - bitbrowser_id：指定窗口 id
     # - bitbrowser_auto_delete=True 时：结束后 deleteBrowser(id)
     bitbrowser: bool = True
     bitbrowser_id: Optional[str] = None
+        bitbrowser_auto_create: Optional[bool] = None
     bitbrowser_auto_delete: bool = False
     reuse_test_bitbrowser_id: bool = True
 
@@ -1163,7 +1181,13 @@ async def validate_antigravity_account(
                 # 兼容在 Rpa/BrowserAutomation 目录直接运行时的导入路径
                 from ..Login.bit_api import BitBrowserAPIError, createBrowser, openBrowser, closeBrowser  # type: ignore
 
+            allow_auto_create = _is_bitbrowser_auto_create_enabled(options)
+
             if not bitbrowser_id:
+                if not allow_auto_create:
+                    raise RuntimeError(
+                        "当前已关闭 BitBrowser 自动创建窗口；请先在 BitBrowser 中准备可复用窗口，并配置 [rpa] test_bitbrowser_id_local/test_bitbrowser_id_server 或显式传入 bitbrowser_id。"
+                    )
                 _print_and_log("[RPA] 将通过 BitBrowser 创建新的浏览器窗口...")
                 bitbrowser_id = createBrowser()
                 _print_and_log(f"[RPA] 已通过 BitBrowser 创建窗口，ID: {bitbrowser_id}")
@@ -1175,6 +1199,10 @@ async def validate_antigravity_account(
                     e.is_window_missing() or e.is_permission_denied()
                 ):
                     stale_bitbrowser_id = bitbrowser_id
+                    if not allow_auto_create:
+                        raise RuntimeError(
+                            f"[RPA] 复用 BitBrowser 窗口失败，且当前已关闭自动创建新窗口。请检查窗口是否存在、是否有权限打开，或更换 [rpa] 中配置的窗口 ID。原始错误: {e}"
+                        ) from e
                     _print_and_log(
                         f"[RPA] 复用 BitBrowser 窗口失败，窗口不可用或无权限，准备自动创建新窗口，ID: {stale_bitbrowser_id}"
                     )

@@ -33,6 +33,10 @@
                         <label for="password" class="text-sm font-medium">密码</label>
                         <input type="password" id="password" name="password" autocomplete="current-password" required class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" placeholder="请输入密码">
                     </div>
+                    <label class="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
+                        <input type="checkbox" id="rememberLogin" class="h-4 w-4 rounded border-input">
+                        <span>记住账号密码</span>
+                    </label>
                     <button type="submit" id="loginButton" class="inline-flex items-center justify-center rounded-md font-medium transition-colors bg-primary text-primary-foreground hover:bg-primary/90 h-10 w-full disabled:opacity-50">登录</button>
                 </form>
 
@@ -48,10 +52,36 @@
         const btn=document.getElementById('loginButton');
         const usernameInput=document.getElementById('username');
         const passwordInput=document.getElementById('password');
+        const rememberLoginInput=document.getElementById('rememberLogin');
+        const rememberedLoginStorageKey='flow2api_remembered_login';
         let isSubmitting=false;
         let autoLoginTried=false;
         let autoLoginWatcherId=null;
         let isRedirecting=false;
+
+        function saveRememberedLogin(username,password){
+            const payload={username:(username||'').trim(),password:String(password||'')};
+            localStorage.setItem(rememberedLoginStorageKey,JSON.stringify(payload));
+        }
+
+        function clearRememberedLogin(){
+            localStorage.removeItem(rememberedLoginStorageKey);
+        }
+
+        function loadRememberedLogin(){
+            try{
+                const raw=localStorage.getItem(rememberedLoginStorageKey);
+                if(!raw)return null;
+                const parsed=JSON.parse(raw);
+                if(!parsed||typeof parsed!=='object')return null;
+                return {
+                    username:String(parsed.username||'').trim(),
+                    password:String(parsed.password||''),
+                };
+            }catch(e){
+                return null;
+            }
+        }
 
         async function loginOnce(username,password,{silent=false}={}){
             if(isSubmitting)return;
@@ -62,6 +92,8 @@
                 const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
                 const d=await r.json();
                 if(d.success){
+                    if(rememberLoginInput.checked)saveRememberedLogin(username,password);
+                    else clearRememberedLogin();
                     localStorage.setItem('adminToken',d.token);
                     localStorage.setItem('gcli2api_auth_token',d.token);
                     if(!isRedirecting){
@@ -118,10 +150,19 @@
         passwordInput.addEventListener('input',()=>setTimeout(tryAutoLogin,0));
         usernameInput.addEventListener('change',()=>setTimeout(tryAutoLogin,0));
         passwordInput.addEventListener('change',()=>setTimeout(tryAutoLogin,0));
+        rememberLoginInput.addEventListener('change',()=>{
+            if(!rememberLoginInput.checked)clearRememberedLogin();
+        });
 
         function showToast(m,t='error'){const d=document.createElement('div'),bc={success:'bg-green-600',error:'bg-destructive',info:'bg-primary'};d.className=`fixed bottom-4 right-4 ${bc[t]||bc.error} text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium z-50 animate-slide-up`;d.textContent=m;document.body.appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.parentNode&&document.body.removeChild(d),300)},2000)}
 
         window.addEventListener('DOMContentLoaded',async()=>{
+            const remembered=loadRememberedLogin();
+            if(remembered&&(remembered.username||remembered.password)){
+                usernameInput.value=remembered.username||'';
+                passwordInput.value=remembered.password||'';
+                rememberLoginInput.checked=true;
+            }
             setTimeout(tryAutoLogin,0);
             setTimeout(tryAutoLogin,300);
             setTimeout(tryAutoLogin,900);

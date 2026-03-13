@@ -1485,6 +1485,31 @@ class Database:
                     await db.commit()
                     return cursor.lastrowid
             except Exception as exc:
+                existing_project: Optional[Project] = None
+                try:
+                    existing_project = await self.get_project_by_id(project.project_id)
+                except Exception:
+                    existing_project = None
+
+                if existing_project:
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute(
+                            """
+                            UPDATE projects
+                            SET token_id = ?, project_name = ?, tool_name = ?, is_active = ?
+                            WHERE project_id = ?
+                            """,
+                            (
+                                project.token_id,
+                                project.project_name,
+                                project.tool_name,
+                                project.is_active,
+                                project.project_id,
+                            ),
+                        )
+                        await db.commit()
+                    return int(existing_project.id or 0)
+
                 if (
                     self.backend == "sqlite"
                     and self._is_sqlite_locked_error(exc)

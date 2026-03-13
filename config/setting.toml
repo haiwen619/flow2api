@@ -33,10 +33,10 @@ max_poll_attempts = 200
 reauth_cookie_invalid_auto_login_enabled = false
 block_gemini_25_flash_image = true
 [server]
-host = "127.0.0.1"
+host = "0.0.0.0"
 port = 8000
 default_public_ip = "23.159.248.139"
-default_public_ips = ["23.159.248.139", "38.150.35.162", "38.49.55.204", "38.49.55.206"]
+default_public_ips = ["23.159.248.139", "38.49.55.204", "38.49.55.206", "104.129.59.235", "107.174.210.147"]
 
 [debug]
 enabled = false
@@ -75,6 +75,7 @@ test_bitbrowser_id_local = "8775a712ab0c4db59e0811ad115bc565"
 test_bitbrowser_id_server = "b053c6d206644055aee44da3326ee24d"
 test_bitbrowser_ids_local = ["8775a712ab0c4db59e0811ad115bc565"]
 test_bitbrowser_ids_server = ["b053c6d206644055aee44da3326ee24d"]
+bitbrowser_auto_create = false
 
 [cluster]
 cluster_key = "fcs_cluster_E3GwaIV6hZt9zjOO9EH6jkyOzRAUYXV4"

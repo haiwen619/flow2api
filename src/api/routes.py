@@ -11,7 +11,7 @@ import httpx
 from curl_cffi.requests import AsyncSession
 from ..core.auth import verify_api_key_header
 from ..core.config import config
-from ..core.models import ChatCompletionRequest
+from ..core.models import ChatCompletionRequest, RequestLog
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 from ..core.logger import debug_logger
 
@@ -115,6 +115,118 @@ def _build_request_summary_for_log(request: ChatCompletionRequest) -> Dict[str, 
             summary["contents_preview"] = "\n".join(first_parts_preview)[:120]
 
     return _truncate_for_log(summary)
+
+
+def _cluster_dispatch_operation_name(generation_type: Optional[str]) -> str:
+    normalized = str(generation_type or "").strip().lower()
+    if normalized == "image":
+        return "cluster_dispatch_image"
+    if normalized == "video":
+        return "cluster_dispatch_video"
+    return "cluster_dispatch"
+
+
+def _build_cluster_dispatch_request_payload(
+    request: ChatCompletionRequest,
+    decision: Dict[str, Any],
+    target_node: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "request": _build_request_summary_for_log(request),
+        "dispatch": {
+            "decision_reason": str(decision.get("reason") or "").strip() or None,
+            "dispatch_to": "remote",
+            "target_node_id": str(target_node.get("node_id") or "").strip() or None,
+            "target_node_name": str(target_node.get("node_name") or "").strip() or None,
+            "target_node_base_url": str(target_node.get("base_url") or "").strip() or None,
+            "target_node_weight": target_node.get("weight"),
+            "target_node_available_slots": target_node.get("available_slots"),
+            "target_node_active_requests": target_node.get("active_requests"),
+        },
+    }
+
+
+def _parse_cluster_dispatch_response_payload(
+    *,
+    content_type: str,
+    body_bytes: Optional[bytes] = None,
+    body_text: Optional[str] = None,
+) -> Any:
+    text = str(body_text or "").strip()
+    if body_bytes is not None and not text:
+        try:
+            text = body_bytes.decode("utf-8", errors="ignore")
+        except Exception:
+            text = ""
+
+    if text and "json" in str(content_type or "").lower():
+        try:
+            return _truncate_for_log(json.loads(text), 1200)
+        except Exception:
+            pass
+
+    if text:
+        return _truncate_for_log(text, 1200)
+    return None
+
+
+async def _write_cluster_dispatch_request_log(
+    *,
+    request: ChatCompletionRequest,
+    decision: Dict[str, Any],
+    target_node: Dict[str, Any],
+    status_code: int,
+    duration_seconds: float,
+    status_text: str,
+    progress: int,
+    response_payload: Dict[str, Any],
+    log_id: Optional[int] = None,
+) -> Optional[int]:
+    if not cluster_manager or not cluster_manager.is_master():
+        return log_id
+    if generation_handler is None or getattr(generation_handler, "db", None) is None:
+        return log_id
+
+    request_payload = _build_cluster_dispatch_request_payload(request, decision, target_node)
+    request_body = json.dumps(_truncate_for_log(request_payload, 1200), ensure_ascii=False)
+    response_body = json.dumps(_truncate_for_log(response_payload, 1200), ensure_ascii=False)
+    safe_progress = max(0, min(100, int(progress or 0)))
+
+    try:
+        if log_id:
+            await generation_handler.db.update_request_log(
+                int(log_id),
+                token_id=None,
+                operation=_cluster_dispatch_operation_name(
+                    target_node.get("dispatch_generation_type") or decision.get("generation_type")
+                ),
+                proxy_source="cluster_remote",
+                request_body=request_body,
+                response_body=response_body,
+                status_code=int(status_code),
+                duration=float(duration_seconds or 0),
+                status_text=str(status_text or "").strip() or "cluster_dispatched",
+                progress=safe_progress,
+            )
+            return int(log_id)
+
+        row = RequestLog(
+            token_id=None,
+            operation=_cluster_dispatch_operation_name(
+                target_node.get("dispatch_generation_type") or decision.get("generation_type")
+            ),
+            proxy_source="cluster_remote",
+            request_body=request_body,
+            response_body=response_body,
+            status_code=int(status_code),
+            duration=float(duration_seconds or 0),
+            status_text=str(status_text or "").strip() or "cluster_dispatched",
+            progress=safe_progress,
+        )
+        return await generation_handler.db.add_request_log(row)
+    except Exception as exc:
+        debug_logger.log_warning(f"[CLUSTER] 写入主节点分流请求日志失败: {exc}")
+        return log_id
 
 
 def _is_temporarily_blocked_image_model(model_id: str) -> bool:
@@ -580,6 +692,8 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
     target_node_name = str(target_node.get("node_name") or target_node_id).strip() or target_node_id
     generation_type = str(decision.get("node", {}).get("dispatch_generation_type") or "").strip() or None
     resolved_model = str(decision.get("node", {}).get("dispatch_model") or "").strip() or None
+    decision["generation_type"] = generation_type
+    dispatch_log_id: Optional[int] = None
 
     try:
         if request.stream:
@@ -600,6 +714,27 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                         duration_ms=int((time.perf_counter() - started_at) * 1000),
                         error=body.decode("utf-8", errors="ignore")[:500],
                     )
+                await _write_cluster_dispatch_request_log(
+                    request=request,
+                    decision=decision,
+                    target_node=target_node,
+                    status_code=upstream_response.status_code,
+                    duration_seconds=(time.perf_counter() - started_at),
+                    status_text="cluster_dispatch_failed",
+                    progress=0,
+                    response_payload={
+                        "dispatch": {
+                            "target_node_id": target_node_id,
+                            "target_node_name": target_node_name,
+                            "mode": "stream",
+                            "remote_status_code": upstream_response.status_code,
+                        },
+                        "error": _parse_cluster_dispatch_response_payload(
+                            content_type=upstream_response.headers.get("content-type", "application/json"),
+                            body_bytes=body,
+                        ),
+                    },
+                )
                 await upstream_response.aclose()
                 await client.aclose()
                 return Response(
@@ -619,14 +754,58 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                     duration_ms=int((time.perf_counter() - started_at) * 1000),
                 )
 
+            dispatch_log_id = await _write_cluster_dispatch_request_log(
+                request=request,
+                decision=decision,
+                target_node=target_node,
+                status_code=102,
+                duration_seconds=0,
+                status_text="cluster_dispatch_streaming",
+                progress=15,
+                response_payload={
+                    "dispatch": {
+                        "target_node_id": target_node_id,
+                        "target_node_name": target_node_name,
+                        "mode": "stream",
+                        "remote_status_code": upstream_response.status_code,
+                    },
+                    "message": "主节点已将请求分流到子节点，正在转发流式响应",
+                },
+            )
+
             async def iter_stream():
+                stream_error: Optional[str] = None
                 try:
                     async for chunk in upstream_response.aiter_bytes():
                         if chunk:
                             yield chunk
+                except Exception as exc:
+                    stream_error = str(exc)
+                    raise
                 finally:
                     await upstream_response.aclose()
                     await client.aclose()
+                    await _write_cluster_dispatch_request_log(
+                        request=request,
+                        decision=decision,
+                        target_node=target_node,
+                        status_code=upstream_response.status_code if not stream_error else 502,
+                        duration_seconds=(time.perf_counter() - started_at),
+                        status_text="cluster_dispatched" if not stream_error else "cluster_dispatch_failed",
+                        progress=100 if not stream_error else 0,
+                        response_payload={
+                            "dispatch": {
+                                "target_node_id": target_node_id,
+                                "target_node_name": target_node_name,
+                                "mode": "stream",
+                                "remote_status_code": upstream_response.status_code,
+                                "stream_completed": not bool(stream_error),
+                            },
+                            "error": stream_error or None,
+                            "message": "主节点已完成子节点流式响应转发" if not stream_error else "主节点转发子节点流式响应失败",
+                        },
+                        log_id=dispatch_log_id,
+                    )
 
             stream_headers = dict(response_headers)
             stream_headers["Cache-Control"] = "no-cache"
@@ -651,6 +830,27 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
                 error=None if upstream_response.status_code < 400 else upstream_response.text[:500],
             )
+        await _write_cluster_dispatch_request_log(
+            request=request,
+            decision=decision,
+            target_node=target_node,
+            status_code=upstream_response.status_code,
+            duration_seconds=(time.perf_counter() - started_at),
+            status_text="cluster_dispatched" if upstream_response.status_code < 400 else "cluster_dispatch_failed",
+            progress=100 if upstream_response.status_code < 400 else 0,
+            response_payload={
+                "dispatch": {
+                    "target_node_id": target_node_id,
+                    "target_node_name": target_node_name,
+                    "mode": "json",
+                    "remote_status_code": upstream_response.status_code,
+                },
+                "response": _parse_cluster_dispatch_response_payload(
+                    content_type=upstream_response.headers.get("content-type", "application/json"),
+                    body_bytes=upstream_response.content,
+                ),
+            },
+        )
         return Response(
             content=upstream_response.content,
             status_code=upstream_response.status_code,
@@ -669,6 +869,24 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
                 error=str(exc),
             )
+        await _write_cluster_dispatch_request_log(
+            request=request,
+            decision=decision,
+            target_node=target_node,
+            status_code=502,
+            duration_seconds=(time.perf_counter() - started_at),
+            status_text="cluster_dispatch_failed",
+            progress=0,
+            response_payload={
+                "dispatch": {
+                    "target_node_id": target_node_id,
+                    "target_node_name": target_node_name,
+                    "mode": "exception",
+                },
+                "error": str(exc),
+            },
+            log_id=dispatch_log_id,
+        )
         raise HTTPException(status_code=502, detail=f"主节点转发到子节点失败: {exc}") from exc
 
 

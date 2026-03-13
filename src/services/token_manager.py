@@ -1,6 +1,7 @@
 """Token manager for Flow2API with AT auto-refresh"""
 import asyncio
 import base64
+import httpx
 import os
 import re
 import traceback
@@ -42,6 +43,28 @@ class TokenManager:
         """Build a project name for the pool."""
         normalized_base = self._normalize_project_name_base(base_name)
         return f"{normalized_base} P{pool_index}"
+
+    async def _ensure_primary_project_binding(
+        self,
+        *,
+        token_id: int,
+        project_id: Optional[str],
+        project_name: Optional[str] = None,
+    ) -> Optional[Project]:
+        """Ensure the primary project binding exists and points to the current token."""
+        normalized_project_id = str(project_id or "").strip()
+        if not normalized_project_id:
+            return None
+
+        normalized_project_name = str(project_name or "").strip() or self._build_project_name(1)
+        project = Project(
+            project_id=normalized_project_id,
+            token_id=token_id,
+            project_name=normalized_project_name,
+            tool_name="PINHOLE",
+        )
+        project.id = await self.db.add_project(project)
+        return project
 
     async def _create_project_for_token(
         self,
@@ -115,7 +138,7 @@ class TokenManager:
     def _is_auto_login_triggered_message(self, message: str) -> bool:
         """判断是否已成功触发账号池自动登录任务。"""
         text = str(message or "").strip()
-        return text.startswith("已触发账号池自动登录(")
+        return text.startswith("已触发账号池自动登录(") or text.startswith("已委托主节点自动登录(")
 
     def _extract_auto_login_job_id(self, detail: str) -> str:
         text = str(detail or "").strip()
@@ -203,6 +226,9 @@ class TokenManager:
         if not mail or "@" not in mail:
             return "邮箱为空或格式无效，无法触发账号池自动登录"
 
+        if config.cluster_enabled and config.cluster_role == "worker":
+            return await self._delegate_auto_login_to_master(token_id=token_id, email=mail)
+
         try:
             from .. import main as main_app
         except Exception as import_err:
@@ -261,6 +287,216 @@ class TokenManager:
             return f"已触发账号池自动登录(account_key={account_key}, job_id={job_id})"
         except Exception as trigger_err:
             return f"触发账号池自动登录失败: {trigger_err}"
+
+    async def _delegate_auto_login_to_master(
+        self,
+        *,
+        token_id: int,
+        email: str,
+    ) -> str:
+        from ..core.config import config
+
+        def _normalize_cluster_internal_base(value: str) -> str:
+            text = str(value or "").strip().rstrip("/")
+            if text.lower().endswith("/manage"):
+                return text[:-7].rstrip("/")
+            return text
+
+        master_base_url = _normalize_cluster_internal_base(config.cluster_master_base_url)
+        cluster_key = str(config.cluster_key or "").strip()
+        callback_base_url = _normalize_cluster_internal_base(config.cluster_effective_node_public_base_url)
+        if not master_base_url or not cluster_key:
+            return "当前子节点未配置主节点地址或 Cluster Key，无法委托主节点自动登录"
+        if not callback_base_url:
+            return "当前子节点未配置对外地址，主节点无法回传刷新结果"
+
+        payload = {
+            "source_node_id": config.cluster_node_id,
+            "source_node_name": config.cluster_node_name,
+            "source_base_url": callback_base_url,
+            "worker_token_id": int(token_id),
+            "email": str(email or "").strip().lower(),
+        }
+
+        endpoint = f"{master_base_url}/api/internal/cluster/token-auto-login-request"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(
+                    endpoint,
+                    json=payload,
+                    headers={
+                        "X-Cluster-Key": cluster_key,
+                        "X-Cluster-Node-Id": config.cluster_node_id,
+                        "X-Cluster-Origin-Role": config.cluster_role,
+                    },
+                )
+        except Exception as exc:
+            return f"委托主节点自动登录失败: {exc}"
+
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+
+        if response.status_code >= 400:
+            detail = ""
+            if isinstance(data, dict):
+                detail = str(data.get("detail") or data.get("message") or "").strip()
+            if not detail:
+                detail = str(response.text or "").strip()
+            return f"委托主节点自动登录失败: {detail or f'HTTP {response.status_code}'}"
+
+        delegation_id = str((data or {}).get("delegation_id") or "").strip()
+        master_job_id = str((data or {}).get("master_job_id") or "").strip()
+        account_key = str((data or {}).get("account_key") or "").strip()
+        try:
+            from .. import main as main_app
+            cluster_mgr = getattr(main_app, "cluster_manager", None)
+            if cluster_mgr and delegation_id:
+                await cluster_mgr.record_delegated_auto_login_job(
+                    delegation_id=delegation_id,
+                    master_job_id=master_job_id or None,
+                    worker_node_id=config.cluster_node_id,
+                    worker_node_name=config.cluster_node_name,
+                    worker_base_url=callback_base_url,
+                    worker_token_id=int(token_id),
+                    email=str(email or "").strip().lower(),
+                    account_key=account_key or None,
+                    status="delegated",
+                    detail="子节点已把浏览器自动登录委托给主节点",
+                )
+        except Exception:
+            pass
+        debug_logger.log_info(
+            f"[AT_REFRESH] Token {token_id}: 已委托主节点自动登录 delegation_id={delegation_id} master_job_id={master_job_id}"
+        )
+        parts = []
+        if account_key:
+            parts.append(f"account_key={account_key}")
+        if master_job_id:
+            parts.append(f"job_id={master_job_id}")
+        if delegation_id:
+            parts.append(f"delegation_id={delegation_id}")
+        suffix = ", ".join(parts) if parts else "主节点已受理"
+        return f"已委托主节点自动登录({suffix})"
+
+    async def apply_cluster_auto_login_result(
+        self,
+        *,
+        token_id: int,
+        status: str,
+        detail: Optional[str] = None,
+        email: Optional[str] = None,
+        session_token: Optional[str] = None,
+        cookie: Optional[str] = None,
+        cookie_file: Optional[str] = None,
+        account_key: Optional[str] = None,
+        delegation_id: Optional[str] = None,
+        master_job_id: Optional[str] = None,
+        master_node_id: Optional[str] = None,
+        master_node_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        token = await self.db.get_token(int(token_id))
+        if not token:
+            raise ValueError("token not found")
+
+        status_text = str(status or "").strip().upper() or "FAILED"
+        token_email = str(email or getattr(token, "email", "") or "").strip()
+        st_value = str(session_token or "").strip()
+        cookie_value = str(cookie or "").strip()
+        cookie_file_value = str(cookie_file or "").strip()
+        source_name = str(master_node_name or master_node_id or "主节点").strip() or "主节点"
+        detail_parts = [str(detail or "").strip() or "主节点已返回自动登录处理结果"]
+        detail_parts.append(f"来源={source_name}")
+        if account_key:
+            detail_parts.append(f"account_key={account_key}")
+        if master_job_id:
+            detail_parts.append(f"job_id={master_job_id}")
+        if delegation_id:
+            detail_parts.append(f"delegation_id={delegation_id}")
+        detail_text = "；".join([part for part in detail_parts if part])
+
+        if status_text == "BANNED":
+            await self.db.update_token(
+                int(token_id),
+                is_active=False,
+                ban_reason="google_account_disabled",
+                banned_at=datetime.now(timezone.utc),
+            )
+            await self._record_refresh_event(
+                int(token_id),
+                "CLUSTER_MASTER_AUTO_LOGIN",
+                "BANNED",
+                detail_text,
+            )
+            return {"success": True, "status": "BANNED", "token_id": int(token_id), "email": token_email}
+
+        if status_text == "SUCCESS":
+            if st_value:
+                await self.update_token(
+                    token_id=int(token_id),
+                    st=st_value,
+                    cookie=(cookie_value or None),
+                    cookie_file=(cookie_file_value or None),
+                )
+                at_ok = await self._do_refresh_at(int(token_id), st_value)
+                await self.enable_token(int(token_id))
+                await self._record_refresh_event(
+                    int(token_id),
+                    "CLUSTER_MASTER_AUTO_LOGIN",
+                    "SUCCESS",
+                    (
+                        f"{detail_text}；主节点已同步新的 Session Token"
+                        if at_ok
+                        else f"{detail_text}；主节点已同步新的 Session Token，但本地 AT 补刷失败，后续会继续自动刷新"
+                    ),
+                )
+                return {
+                    "success": True,
+                    "status": "SUCCESS",
+                    "token_id": int(token_id),
+                    "email": token_email,
+                    "st_synced": True,
+                    "at_refreshed": bool(at_ok),
+                }
+
+            if cookie_value or cookie_file_value:
+                await self.update_token(
+                    token_id=int(token_id),
+                    cookie=(cookie_value or None),
+                    cookie_file=(cookie_file_value or None),
+                )
+                await self.enable_token(int(token_id))
+                await self._record_refresh_event(
+                    int(token_id),
+                    "CLUSTER_MASTER_AUTO_LOGIN_COOKIE",
+                    "SUCCESS",
+                    f"{detail_text}；主节点已同步新的 Cookie，会在后续请求中继续恢复会话",
+                )
+                return {
+                    "success": True,
+                    "status": "SUCCESS",
+                    "token_id": int(token_id),
+                    "email": token_email,
+                    "cookie_synced": True,
+                }
+
+            status_text = "FAILED"
+            detail_text = f"{detail_text}；主节点任务成功结束，但未返回新的 Session Token 或 Cookie"
+
+        await self.db.update_token(
+            int(token_id),
+            is_active=False,
+            ban_reason="cookie_invalid_need_relogin",
+            banned_at=datetime.now(timezone.utc),
+        )
+        await self._record_refresh_event(
+            int(token_id),
+            "CLUSTER_MASTER_AUTO_LOGIN",
+            "FAILED",
+            detail_text,
+        )
+        return {"success": False, "status": status_text, "token_id": int(token_id), "email": token_email}
 
     async def _record_refresh_event(
         self,
@@ -559,11 +795,21 @@ class TokenManager:
         token.id = token_id
 
         pooled_projects[0].token_id = token_id
-        pooled_projects[0].id = await self.db.add_project(pooled_projects[0])
+        pooled_projects[0] = await self._ensure_primary_project_binding(
+            token_id=token_id,
+            project_id=pooled_projects[0].project_id,
+            project_name=pooled_projects[0].project_name,
+        ) or pooled_projects[0]
 
         while len(pooled_projects) < self._project_pool_size:
-            new_project = await self._create_project_for_token(token, len(pooled_projects) + 1, base_project_name)
-            pooled_projects.append(new_project)
+            try:
+                new_project = await self._create_project_for_token(token, len(pooled_projects) + 1, base_project_name)
+                pooled_projects.append(new_project)
+            except Exception as exc:
+                debug_logger.log_warning(
+                    f"[ADD_TOKEN] Token {token_id} primary import succeeded, but pooled project P{len(pooled_projects) + 1} creation failed: {exc}"
+                )
+                break
 
         debug_logger.log_info(
             f"[ADD_TOKEN] Token added successfully (ID: {token_id}, Email: {email}, pooled_projects={len(pooled_projects)})"
@@ -640,6 +886,12 @@ class TokenManager:
 
         if update_fields:
             await self.db.update_token(token_id, **update_fields)
+            if project_id is not None:
+                await self._ensure_primary_project_binding(
+                    token_id=token_id,
+                    project_id=project_id,
+                    project_name=project_name,
+                )
 
     # ========== AT自动刷新逻辑 (核心) ==========
 

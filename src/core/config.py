@@ -1107,8 +1107,19 @@ class Config:
         ids = self.get_active_rpa_test_bitbrowser_ids()
         return ids[0] if ids else ""
 
-    def update_server_config(self, host: str, port: int, default_public_ip: Optional[str] = None):
-        """Persist [server].host/port/default_public_ip into setting.toml, then reload memory config."""
+    @property
+    def rpa_bitbrowser_auto_create_enabled(self) -> bool:
+        """Whether RPA may auto-create BitBrowser windows when reuse fails or no id is provided."""
+        return bool((self._config.get("rpa", {}) or {}).get("bitbrowser_auto_create", False))
+
+    def update_server_config(
+        self,
+        host: str,
+        port: int,
+        default_public_ip: Optional[str] = None,
+        default_public_ips: Optional[List[str]] = None,
+    ):
+        """Persist [server] host/port/default_public_ip(s) into setting.toml, then reload memory config."""
         host_value = str(host or "").strip()
         if not host_value:
             raise ValueError("server host 不能为空")
@@ -1121,11 +1132,20 @@ class Config:
         if port_value < 1 or port_value > 65535:
             raise ValueError("server port 必须在 1-65535 之间")
 
-        default_public_ip_values = self._normalize_server_public_ip_values(
-            self.default_server_public_ips if default_public_ip is None else [default_public_ip]
-        )
-        if default_public_ip is not None and str(default_public_ip).strip() and not default_public_ip_values:
-            raise ValueError("默认服务器公网IP格式无效")
+        if default_public_ips is not None:
+            default_public_ip_values = self._normalize_server_public_ip_values(default_public_ips)
+        else:
+            default_public_ip_values = self._normalize_server_public_ip_values(
+                self.default_server_public_ips if default_public_ip is None else [default_public_ip]
+            )
+
+        explicit_single_ip = str(default_public_ip or "").strip()
+        if explicit_single_ip:
+            normalized_single_ip = self._normalize_ip_text(explicit_single_ip)
+            if not normalized_single_ip:
+                raise ValueError("默认服务器公网IP格式无效")
+            if normalized_single_ip not in default_public_ip_values:
+                default_public_ip_values.insert(0, normalized_single_ip)
 
         content = self._config_path.read_text(encoding="utf-8")
         content = self._upsert_toml_key_in_section(

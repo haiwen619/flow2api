@@ -56,6 +56,31 @@ class AccountPoolService:
     ) -> Dict[str, Any]:
         return await self.repo.list_accounts(offset=offset, limit=limit, search=search, platform=platform)
 
+    async def find_account_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        mail = str(email or "").strip().lower()
+        if not mail or "@" not in mail:
+            return None
+
+        listed = await self.list_accounts(offset=0, limit=200, search=mail, platform=None)
+        items = listed.get("items", []) if isinstance(listed, dict) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            display_name = str(item.get("display_name") or "").strip().lower()
+            uid = str(item.get("uid") or "").strip().lower()
+            account_key = str(item.get("account_key") or "").strip().lower()
+            if display_name == mail or uid == mail or account_key.endswith(f":{mail}"):
+                return item
+        return None
+
+    async def match_accounts_by_keywords(
+        self,
+        *,
+        keywords: List[str],
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        return await self.repo.match_accounts_by_keywords(keywords=keywords, limit=limit)
+
     async def update_account(
         self,
         *,
@@ -81,6 +106,35 @@ class AccountPoolService:
 
     async def delete_account(self, *, account_key: str) -> None:
         await self.repo.delete_account(account_key=account_key)
+
+    async def delete_accounts_by_search(
+        self,
+        *,
+        search: str,
+        platform: Optional[str],
+    ) -> Dict[str, Any]:
+        return await self.repo.delete_accounts_by_search(search=search, platform=platform)
+
+    async def delete_accounts_by_keywords(
+        self,
+        *,
+        keywords: List[str],
+        limit: int = 2000,
+    ) -> Dict[str, Any]:
+        return await self.repo.delete_accounts_by_keywords(keywords=keywords, limit=limit)
+
+    async def batch_update_password_by_keywords(
+        self,
+        *,
+        keywords: List[str],
+        password: str,
+        limit: int = 2000,
+    ) -> Dict[str, Any]:
+        return await self.repo.batch_update_password_by_keywords(
+            keywords=keywords,
+            password=password,
+            limit=limit,
+        )
 
     def _default_concurrency(self) -> int:
         try:
@@ -1006,6 +1060,10 @@ class AccountPoolService:
             (params or {}).get("auto_enable_token_on_sync"),
             default=False,
         )
+        sync_to_local_token_table = self._as_bool(
+            (params or {}).get("sync_to_local_token_table"),
+            default=True,
+        )
         refresh_method = "ACCOUNTPOOL_AUTO_LOGIN" if auto_enable_token_on_sync else "ACCOUNTPOOL_VALIDATE"
         payload_email = str(username or "").strip()
         job["status"] = "running"
@@ -1054,16 +1112,28 @@ class AccountPoolService:
                     job_id,
                     len(session_token),
                 )
-                sync_res = await self._sync_session_token_to_token_table(
-                    session_token=session_token,
-                    email_hint=(payload_email or username),
-                    cookie_header=(cookie_header or None),
-                    cookie_file_header=(cookie_file_header or None),
-                    job_id=job_id,
-                )
+                if sync_to_local_token_table:
+                    sync_res = await self._sync_session_token_to_token_table(
+                        session_token=session_token,
+                        email_hint=(payload_email or username),
+                        cookie_header=(cookie_header or None),
+                        cookie_file_header=(cookie_file_header or None),
+                        job_id=job_id,
+                    )
+                else:
+                    sync_res = {
+                        "synced": False,
+                        "reason": "cluster_delegate_skip_local_sync",
+                        "email": payload_email or username,
+                    }
+                    logger.info(
+                        "[AccountPool] delegated cluster job skip local ST sync account_key=%s job_id=%s",
+                        account_key,
+                        job_id,
+                    )
                 if isinstance(result, dict):
                     result["token_sync"] = sync_res
-                if auto_enable_token_on_sync:
+                if auto_enable_token_on_sync and sync_to_local_token_table:
                     auto_enable_res = await self._auto_enable_token_after_sync(
                         sync_result=sync_res,
                         job_id=job_id,
@@ -1097,42 +1167,56 @@ class AccountPoolService:
                     bool(cookie_file_header),
                 )
                 if cookie_header or cookie_file_header:
-                    cookie_sync_res = await self._sync_cookie_to_token_table(
-                        cookie_header=cookie_header,
-                        cookie_file_header=(cookie_file_header or None),
-                        email_hint=(payload_email or username),
-                        job_id=job_id,
-                    )
+                    if sync_to_local_token_table:
+                        cookie_sync_res = await self._sync_cookie_to_token_table(
+                            cookie_header=cookie_header,
+                            cookie_file_header=(cookie_file_header or None),
+                            email_hint=(payload_email or username),
+                            job_id=job_id,
+                        )
+                    else:
+                        cookie_sync_res = {
+                            "synced": False,
+                            "reason": "cluster_delegate_skip_local_sync",
+                            "email": payload_email or username,
+                            "cookie_synced": bool(cookie_header),
+                            "cookie_file_synced": bool(cookie_file_header),
+                        }
+                        logger.info(
+                            "[AccountPool] delegated cluster job skip local cookie sync account_key=%s job_id=%s",
+                            account_key,
+                            job_id,
+                        )
                     if isinstance(result, dict):
                         result["token_sync"] = cookie_sync_res
-                    if auto_enable_token_on_sync:
+                    if auto_enable_token_on_sync and sync_to_local_token_table:
                         auto_enable_res = await self._auto_enable_token_after_sync(
                             sync_result=cookie_sync_res,
                             job_id=job_id,
                             account_key=account_key,
                             refresh_method="ACCOUNTPOOL_AUTO_LOGIN_COOKIE",
-                        detail_prefix="账号池自动登录完成，Cookie已同步并恢复Token活跃状态",
-                    )
-                    if isinstance(result, dict):
-                        result["token_auto_enable"] = auto_enable_res
-                    token_refresh_finalized = bool(auto_enable_res.get("enabled"))
-                    if token_refresh_finalized:
-                        refresh_method = "ACCOUNTPOOL_AUTO_LOGIN_COOKIE"
-                    else:
-                        await self._record_auto_login_refresh_outcome(
-                            account_key=account_key,
-                            username=username,
-                            payload_email=payload_email,
-                            job_id=job_id,
-                            status="FAILED",
-                            detail=self._classify_token_sync_failure_detail(
-                                sync_result=cookie_sync_res,
-                                auto_enable_result=auto_enable_res,
-                                cookie_mode=True,
-                            ),
-                            refresh_method="ACCOUNTPOOL_AUTO_LOGIN_COOKIE",
+                            detail_prefix="账号池自动登录完成，Cookie已同步并恢复Token活跃状态",
                         )
-                elif auto_enable_token_on_sync:
+                        if isinstance(result, dict):
+                            result["token_auto_enable"] = auto_enable_res
+                        token_refresh_finalized = bool(auto_enable_res.get("enabled"))
+                        if token_refresh_finalized:
+                            refresh_method = "ACCOUNTPOOL_AUTO_LOGIN_COOKIE"
+                        else:
+                            await self._record_auto_login_refresh_outcome(
+                                account_key=account_key,
+                                username=username,
+                                payload_email=payload_email,
+                                job_id=job_id,
+                                status="FAILED",
+                                detail=self._classify_token_sync_failure_detail(
+                                    sync_result=cookie_sync_res,
+                                    auto_enable_result=auto_enable_res,
+                                    cookie_mode=True,
+                                ),
+                                refresh_method="ACCOUNTPOOL_AUTO_LOGIN_COOKIE",
+                            )
+                elif auto_enable_token_on_sync and sync_to_local_token_table:
                     await self._record_auto_login_refresh_outcome(
                         account_key=account_key,
                         username=username,
@@ -1184,7 +1268,7 @@ class AccountPoolService:
                 message=(result.get("message") if isinstance(result, dict) else None),
                 set_validate_at=True,
             )
-            if auto_enable_token_on_sync and (not ok) and validation_status != "banned":
+            if auto_enable_token_on_sync and sync_to_local_token_table and (not ok) and validation_status != "banned":
                 await self._record_auto_login_refresh_outcome(
                     account_key=account_key,
                     username=username,
@@ -1229,7 +1313,7 @@ class AccountPoolService:
                 message=None,
                 set_validate_at=True,
             )
-            if auto_enable_token_on_sync and validation_status != "banned":
+            if auto_enable_token_on_sync and sync_to_local_token_table and validation_status != "banned":
                 await self._record_auto_login_refresh_outcome(
                     account_key=account_key,
                     username=username,
@@ -1265,6 +1349,36 @@ class AccountPoolService:
                     "token_sync": result.get("token_sync"),
                 }
         return safe
+
+    def get_job_internal(self, *, job_id: str) -> Dict[str, Any]:
+        job = self.jobs.get(job_id)
+        if not job:
+            raise KeyError("job not found")
+
+        result = job.get("result")
+        payload = None
+        if isinstance(result, dict):
+            payload = {
+                "success": bool(result.get("success")),
+                "message": result.get("message"),
+                "session_token": result.get("session_token"),
+                "cookie": result.get("cookie"),
+                "cookie_file": result.get("cookie_file"),
+                "payload_email": result.get("payload_email"),
+                "auto_detected_project": result.get("auto_detected_project"),
+                "token_sync": result.get("token_sync"),
+            }
+
+        return {
+            "job_id": job.get("job_id"),
+            "account_key": job.get("account_key"),
+            "username": job.get("username"),
+            "status": job.get("status"),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+            "error": job.get("error"),
+            "result": payload,
+        }
 
     async def create_batch_task(
         self,

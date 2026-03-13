@@ -233,6 +233,58 @@ class AccountPoolRepository:
             "limit": safe_limit,
         }
 
+    async def match_accounts_by_keywords(
+        self,
+        *,
+        keywords: List[str],
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        normalized_keywords: List[str] = []
+        seen = set()
+        for raw in keywords or []:
+            text = str(raw or "").strip().lower()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized_keywords.append(text)
+
+        if not normalized_keywords:
+            raise ValueError("keywords is required")
+
+        safe_limit = min(max(int(limit or 500), 1), 2000)
+        conditions: List[str] = []
+        params: List[Any] = []
+        for keyword in normalized_keywords:
+            like = f"%{keyword}%"
+            conditions.append("(LOWER(display_name) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(account_key) LIKE ?)")
+            params.extend([like, like, like])
+
+        where_sql = "WHERE " + " OR ".join(conditions)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""
+                SELECT id, account_key, platform, display_name, uid, is_2fa_enabled, tags,
+                       last_validate_at, last_validate_ok, last_validate_status,
+                       last_validate_error, last_validate_job_id, last_validate_msg,
+                       created_at, updated_at, session_token
+                FROM account_pool_accounts
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params + [safe_limit]),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        items = [self._row_to_item(r) for r in (rows or [])]
+        return {
+            "keywords": normalized_keywords,
+            "matched": len(items),
+            "items": items,
+            "limit": safe_limit,
+            "truncated": len(items) >= safe_limit,
+        }
+
     async def get_account_secret(self, *, account_key: str) -> Dict[str, Any]:
         key = str(account_key or "").strip()
         if not key:
@@ -380,6 +432,209 @@ class AccountPoolRepository:
                 raise KeyError("account not found")
             await db.execute("DELETE FROM account_pool_accounts WHERE account_key = ?", (key,))
             await db.commit()
+
+    async def delete_accounts_by_search(
+        self,
+        *,
+        search: str,
+        platform: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        keyword = str(search or "").strip()
+        if not keyword:
+            raise ValueError("search is required")
+
+        conditions: List[str] = []
+        params: List[Any] = []
+        if platform and platform.strip():
+            conditions.append("platform = ?")
+            params.append(platform.strip())
+
+        q = f"%{keyword}%"
+        conditions.append("(display_name LIKE ? OR uid LIKE ? OR platform LIKE ?)")
+        params.extend([q, q, q])
+        where_sql = "WHERE " + " AND ".join(conditions)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""
+                SELECT account_key, display_name
+                FROM account_pool_accounts
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                """,
+                tuple(params),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if not rows:
+                return {
+                    "deleted": 0,
+                    "matched": 0,
+                    "sample_display_names": [],
+                }
+
+            account_keys = [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
+            sample_display_names = [str(row[1] or "").strip() for row in rows[:10] if str(row[1] or "").strip()]
+            placeholders = ", ".join("?" for _ in account_keys)
+            await db.execute(
+                f"DELETE FROM account_pool_accounts WHERE account_key IN ({placeholders})",
+                tuple(account_keys),
+            )
+            await db.commit()
+
+        return {
+            "deleted": len(account_keys),
+            "matched": len(account_keys),
+            "sample_display_names": sample_display_names,
+        }
+
+    async def delete_accounts_by_keywords(
+        self,
+        *,
+        keywords: List[str],
+        limit: int = 2000,
+    ) -> Dict[str, Any]:
+        normalized_keywords: List[str] = []
+        seen = set()
+        for raw in keywords or []:
+            text = str(raw or "").strip().lower()
+            if len(text) < 2 or text in seen:
+                continue
+            seen.add(text)
+            normalized_keywords.append(text)
+
+        if not normalized_keywords:
+            raise ValueError("keywords is required")
+
+        safe_limit = min(max(int(limit or 2000), 1), 5000)
+        conditions: List[str] = []
+        params: List[Any] = []
+        for keyword in normalized_keywords:
+            like = f"%{keyword}%"
+            conditions.append("(LOWER(display_name) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(account_key) LIKE ?)")
+            params.extend([like, like, like])
+
+        where_sql = "WHERE " + " OR ".join(conditions)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""
+                SELECT account_key, display_name, uid
+                FROM account_pool_accounts
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params + [safe_limit]),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if not rows:
+                return {
+                    "deleted": 0,
+                    "matched": 0,
+                    "sample_display_names": [],
+                    "sample_emails": [],
+                    "keywords": normalized_keywords,
+                    "limit": safe_limit,
+                    "truncated": False,
+                }
+
+            account_keys = [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
+            sample_display_names = [str(row[1] or "").strip() for row in rows[:10] if str(row[1] or "").strip()]
+            sample_emails = [str(row[2] or row[1] or "").strip() for row in rows[:10] if str(row[2] or row[1] or "").strip()]
+            placeholders = ", ".join("?" for _ in account_keys)
+            await db.execute(
+                f"DELETE FROM account_pool_accounts WHERE account_key IN ({placeholders})",
+                tuple(account_keys),
+            )
+            await db.commit()
+
+        matched_count = len(account_keys)
+        return {
+            "deleted": matched_count,
+            "matched": matched_count,
+            "sample_display_names": sample_display_names,
+            "sample_emails": sample_emails,
+            "keywords": normalized_keywords,
+            "limit": safe_limit,
+            "truncated": matched_count >= safe_limit,
+        }
+
+    async def batch_update_password_by_keywords(
+        self,
+        *,
+        keywords: List[str],
+        password: str,
+        limit: int = 2000,
+    ) -> Dict[str, Any]:
+        normalized_keywords: List[str] = []
+        seen = set()
+        for raw in keywords or []:
+            text = str(raw or "").strip().lower()
+            if len(text) < 2 or text in seen:
+                continue
+            seen.add(text)
+            normalized_keywords.append(text)
+
+        new_password = str(password or "")
+        if not normalized_keywords:
+            raise ValueError("keywords is required")
+        if not new_password.strip():
+            raise ValueError("password is required")
+
+        safe_limit = min(max(int(limit or 2000), 1), 5000)
+        conditions: List[str] = []
+        params: List[Any] = []
+        for keyword in normalized_keywords:
+            like = f"%{keyword}%"
+            conditions.append("(LOWER(display_name) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(account_key) LIKE ?)")
+            params.extend([like, like, like])
+
+        where_sql = "WHERE " + " OR ".join(conditions)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""
+                SELECT account_key, display_name, uid
+                FROM account_pool_accounts
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params + [safe_limit]),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if not rows:
+                return {
+                    "updated": 0,
+                    "matched": 0,
+                    "sample_display_names": [],
+                    "sample_emails": [],
+                    "keywords": normalized_keywords,
+                    "limit": safe_limit,
+                    "truncated": False,
+                }
+
+            account_keys = [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
+            sample_display_names = [str(row[1] or "").strip() for row in rows[:10] if str(row[1] or "").strip()]
+            sample_emails = [str(row[2] or row[1] or "").strip() for row in rows[:10] if str(row[2] or row[1] or "").strip()]
+            placeholders = ", ".join("?" for _ in account_keys)
+            await db.execute(
+                f"UPDATE account_pool_accounts SET password = ?, updated_at = unixepoch() WHERE account_key IN ({placeholders})",
+                tuple([new_password] + account_keys),
+            )
+            await db.commit()
+
+        matched_count = len(account_keys)
+        return {
+            "updated": matched_count,
+            "matched": matched_count,
+            "sample_display_names": sample_display_names,
+            "sample_emails": sample_emails,
+            "keywords": normalized_keywords,
+            "limit": safe_limit,
+            "truncated": matched_count >= safe_limit,
+        }
 
     async def set_validation(
         self,
