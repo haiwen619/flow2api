@@ -186,6 +186,53 @@ class ProxyPoolRepository:
             "limit": safe_limit,
         }
 
+    async def list_proxy_test_candidates(
+        self,
+        *,
+        search: Optional[str] = None,
+        host: Optional[str] = None,
+        only_enabled: bool = True,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = min(max(int(limit or 1000), 1), 5000)
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if only_enabled:
+            where_clauses.append("disabled = 0")
+
+        if host and str(host).strip():
+            where_clauses.append("host = ?")
+            params.append(str(host).strip())
+
+        if search and str(search).strip():
+            q = f"%{str(search).strip()}%"
+            where_clauses.append(
+                "(host LIKE ? OR username LIKE ? OR proxy_key LIKE ? OR bound_credential LIKE ? OR bound_credential_email LIKE ?)"
+            )
+            params.extend([q, q, q, q, q])
+
+        where_sql = ""
+        if where_clauses:
+            where_sql = "WHERE " + " AND ".join(where_clauses)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""
+                SELECT id, proxy_key, host, port, username, tags, disabled,
+                       bound_credential, bound_credential_email, bound_mode, bound_at,
+                       last_test_at, last_test_ok, last_test_ip, last_test_msg,
+                       created_at, updated_at
+                FROM proxy_pool_proxies
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params + [safe_limit]),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [self._row_to_item(x) for x in (rows or [])]
+
     async def update_proxy(
         self,
         *,

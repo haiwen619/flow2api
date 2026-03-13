@@ -214,6 +214,7 @@
       </div>
       <div class="flex flex-wrap gap-2">
         <button id="ppReloadBtn" class="pp-btn pp-btn-primary">刷新列表</button>
+        <button id="ppBatchTestBtn" class="pp-btn">批量测试</button>
         <button id="ppBulkOpenBtn" class="pp-btn">批量导入</button>
       </div>
     </div>
@@ -254,11 +255,14 @@
       <div class="lg:col-span-2 pp-card p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <h2 class="pp-card-title">代理列表</h2>
-          <div class="flex w-full sm:w-auto gap-2">
+          <div class="flex flex-wrap w-full sm:w-auto gap-2">
             <input id="ppSearch" class="w-full sm:w-64 rounded border px-3 py-2 text-sm" placeholder="搜索 host/username/凭证" />
+            <input id="ppBatchTimeout" type="number" min="1" max="60" value="8" class="w-24 rounded border px-3 py-2 text-sm" title="批测超时(秒)" />
+            <input id="ppBatchConcurrency" type="number" min="1" max="50" value="5" class="w-24 rounded border px-3 py-2 text-sm" title="批测并发数" />
             <button id="ppSearchBtn" class="pp-btn">搜索</button>
           </div>
         </div>
+        <div id="ppBatchMsg" class="mt-3 text-sm text-slate-600"></div>
 
         <div class="pp-table-wrap">
           <table class="pp-table">
@@ -642,6 +646,40 @@
 
     // 绑定事件
     document.getElementById('ppReloadBtn').addEventListener('click', () => loadList().catch(showTopError));
+    document.getElementById('ppBatchTestBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('ppBatchTestBtn');
+      const msg = document.getElementById('ppBatchMsg');
+      const search = document.getElementById('ppSearch').value.trim();
+      const timeoutS = Number(document.getElementById('ppBatchTimeout').value || 8);
+      const concurrency = Number(document.getElementById('ppBatchConcurrency').value || 5);
+
+      const scopeText = search ? `当前搜索结果：${search}` : '全部启用代理';
+      if (!confirm(`确认批量测试 ${scopeText} 吗？`)) return;
+
+      btn.disabled = true;
+      const oldText = btn.textContent;
+      btn.textContent = '批测中...';
+      msg.textContent = '批量测试进行中...';
+      try {
+        const data = await apiFetch('/proxypool/proxies/batch-test', {
+          method: 'POST',
+          body: JSON.stringify({
+            search,
+            only_enabled: true,
+            timeout_s: timeoutS,
+            concurrency,
+            limit: 1000,
+          }),
+        });
+        msg.textContent = `批量测试完成：总计 ${data.total}，成功 ${data.ok}，失败 ${data.failed}`;
+        await loadList({ page: ppPage, search: ppSearch });
+      } catch (err) {
+        msg.textContent = '批量测试失败：' + (err && err.message ? err.message : String(err));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
+    });
     document.getElementById('ppSearchBtn').addEventListener('click', () => {
       const q = document.getElementById('ppSearch').value.trim();
       ppPage = 1;

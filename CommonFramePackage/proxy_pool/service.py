@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, Iterable, List, Optional
 
 from .proxy_utils import (
@@ -142,6 +143,74 @@ class ProxyPoolService:
             msg=full_msg,
         )
         return {"ok": bool(ok), "ip": ip, "msg": full_msg}
+
+    async def batch_test_proxies(
+        self,
+        *,
+        search: Optional[str] = None,
+        host: Optional[str] = None,
+        only_enabled: bool = True,
+        timeout_s: float = 8.0,
+        concurrency: int = 5,
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        candidates = await self.repo.list_proxy_test_candidates(
+            search=search,
+            host=host,
+            only_enabled=only_enabled,
+            limit=limit,
+        )
+        if not candidates:
+            return {
+                "total": 0,
+                "ok": 0,
+                "failed": 0,
+                "results": [],
+            }
+
+        semaphore = asyncio.Semaphore(max(1, int(concurrency or 5)))
+        results: List[Dict[str, Any]] = []
+
+        async def _run_one(item: Dict[str, Any]) -> Dict[str, Any]:
+            async with semaphore:
+                proxy_key = str(item.get("proxy_key") or "")
+                try:
+                    tested = await self.test_proxy(
+                        proxy_key=proxy_key,
+                        timeout_s=float(timeout_s or 8.0),
+                    )
+                    return {
+                        "proxy_key": proxy_key,
+                        "host": item.get("host"),
+                        "port": item.get("port"),
+                        "username": item.get("username"),
+                        "ok": bool(tested.get("ok")),
+                        "ip": tested.get("ip"),
+                        "msg": tested.get("msg"),
+                    }
+                except Exception as exc:
+                    return {
+                        "proxy_key": proxy_key,
+                        "host": item.get("host"),
+                        "port": item.get("port"),
+                        "username": item.get("username"),
+                        "ok": False,
+                        "ip": None,
+                        "msg": str(exc),
+                    }
+
+        tasks = [_run_one(item) for item in candidates]
+        for result in await asyncio.gather(*tasks):
+            results.append(result)
+
+        ok_count = sum(1 for item in results if item.get("ok"))
+        failed_count = max(0, len(results) - ok_count)
+        return {
+            "total": len(results),
+            "ok": ok_count,
+            "failed": failed_count,
+            "results": results[:200],
+        }
 
     async def bind_proxy(
         self,

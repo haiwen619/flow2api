@@ -33,6 +33,15 @@ class ProxyPoolTestRequest(BaseModel):
     timeout_s: Optional[float] = Field(8.0, ge=1.0, le=60.0)
 
 
+class ProxyPoolBatchTestRequest(BaseModel):
+    search: Optional[str] = ""
+    host: Optional[str] = ""
+    only_enabled: Optional[bool] = True
+    timeout_s: Optional[float] = Field(8.0, ge=1.0, le=60.0)
+    concurrency: Optional[int] = Field(5, ge=1, le=50)
+    limit: Optional[int] = Field(1000, ge=1, le=5000)
+
+
 class ProxyPoolBindRequest(BaseModel):
     credential_name: str = Field(..., min_length=1)
     mode: Optional[str] = "antigravity"

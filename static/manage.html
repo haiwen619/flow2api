@@ -493,6 +493,19 @@
             </svg>
             <span class="text-sm font-medium">导出</span>
           </button>
+          <button onclick="openTokenExportModal()"
+            class="inline-flex items-center justify-center rounded-md bg-red-600 text-white hover:bg-red-700 h-8 px-3"
+            title="按最近导出记录删除本机已导出的Token">
+            <svg class="h-4 w-4 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+            </svg>
+            <span class="text-sm font-medium">删除最近导出</span>
+          </button>
           <button onclick="exportCodeServiceProjectActions()"
             class="inline-flex items-center justify-center rounded-md bg-slate-700 text-white hover:bg-slate-800 h-8 px-3"
             title="导出代码服务 project_id/action 配置">
@@ -2546,6 +2559,10 @@
         </div>
       </div>
       <div class="flex items-center justify-end gap-3 p-5 border-t border-border">
+        <button id="tokenExportDeleteRecentBtn" onclick="deleteRecentExportedTokens()"
+          class="inline-flex items-center justify-center rounded-md bg-red-600 text-white hover:bg-red-700 h-9 px-5">
+          删除最近导出Token
+        </button>
         <button onclick="closeTokenExportModal()"
           class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5">
           取消
@@ -4362,7 +4379,7 @@
           '<option value="">不绑定子节点（本地/临时导出）</option>',
           ...workerNodes.map((node) => {
             const nodeId = String(node.node_id || "");
-            const nodeName = String(node.node_name || nodeId || "未命名节点");
+            const nodeName = String(node.display_name || node.node_name || nodeId || "未命名节点");
             const healthyText = node.healthy ? "健康" : "异常";
             const boundCount = Number(node.bound_token_count || 0);
             return `<option value="${escapeHtml(nodeId)}">${escapeHtml(nodeName)} · ${healthyText} · 已绑 ${boundCount}</option>`;
@@ -4375,8 +4392,15 @@
       renderTokenExportHistory = () => {
         const list = $("tokenExportHistoryList");
         const empty = $("tokenExportHistoryEmpty");
+        const deleteBtn = $("tokenExportDeleteRecentBtn");
         if (!list || !empty) return;
         const items = Array.isArray(tokenExportOptions.history) ? tokenExportOptions.history : [];
+        const cleanupCount = items.filter((item) => Number(item.local_existing_token_count || 0) > 0).length;
+        if (deleteBtn) {
+          deleteBtn.disabled = cleanupCount === 0;
+          deleteBtn.classList.toggle("opacity-60", cleanupCount === 0);
+          deleteBtn.textContent = cleanupCount > 0 ? `删除最近导出Token（${cleanupCount} 条）` : "删除最近导出Token";
+        }
         if (!items.length) {
           list.innerHTML = "";
           empty.classList.remove("hidden");
@@ -4384,16 +4408,20 @@
         }
         empty.classList.add("hidden");
         list.innerHTML = items.map((item) => {
-          const nodeName = item.node_name || item.node_id || "未绑定子节点";
+          const nodeName = item.node_display_name || item.node_name || item.node_id || "未绑定子节点";
           const createdAt = formatInternalExportDateTime(item.created_at);
           const exportedCount = Number(item.exported_count || 0);
           const requestedCount = Number(item.requested_count || 0);
+          const localExistingCount = Number(item.local_existing_token_count || 0);
           const emails = Array.isArray(item.token_emails) ? item.token_emails.slice(0, 3) : [];
           const emailText = emails.length ? emails.join("、") : "-";
           const moreText = Array.isArray(item.token_emails) && item.token_emails.length > 3
             ? ` 等 ${item.token_emails.length} 个`
             : "";
-          return `<div class="p-4 space-y-1"><div class="flex items-center justify-between gap-3"><span class="font-medium">${escapeHtml(nodeName)}</span><span class="text-xs text-muted-foreground">${escapeHtml(createdAt)}</span></div><div class="text-xs text-muted-foreground">导出 ${exportedCount}/${requestedCount} 个账号</div><div class="text-xs break-all">${escapeHtml(emailText + moreText)}</div></div>`;
+          const cleanupHtml = localExistingCount > 0
+            ? `<button onclick="deleteExportedTokensByHistory(${Number(item.id || 0)})" class="inline-flex items-center justify-center rounded-md bg-red-600 text-white hover:bg-red-700 h-7 px-3 text-xs">删除本机 ${localExistingCount} 个</button>`
+            : `<span class="text-xs text-muted-foreground">本机已无可删 Token</span>`;
+          return `<div class="p-4 space-y-1"><div class="flex items-center justify-between gap-3"><span class="font-medium">${escapeHtml(nodeName)}</span><span class="text-xs text-muted-foreground">${escapeHtml(createdAt)}</span></div><div class="flex items-center justify-between gap-3"><div class="text-xs text-muted-foreground">导出 ${exportedCount}/${requestedCount} 个账号，本机待删 ${localExistingCount} 个</div>${cleanupHtml}</div><div class="text-xs break-all">${escapeHtml(emailText + moreText)}</div></div>`;
         }).join("");
       },
       updateTokenExportSummary = () => {
@@ -4419,6 +4447,16 @@
       closeTokenExportModal = () => {
         $("tokenExportModal").classList.add("hidden");
       },
+      refreshTokenExportOptions = async () => {
+        const r = await apiRequest("/api/tokens/export/options");
+        if (!r) return;
+        const d = await r.json();
+        tokenExportOptions = d || {};
+        $("tokenExportCountInput").value = Number(d?.default_count || $("tokenExportCountInput")?.value || 5);
+        renderTokenExportNodeOptions();
+        renderTokenExportHistory();
+        updateTokenExportSummary();
+      },
       openTokenExportModal = async () => {
         $("tokenExportModal").classList.remove("hidden");
         $("tokenExportSummary").textContent = "正在加载导出配置...";
@@ -4430,18 +4468,65 @@
         $("tokenExportNodeSelect").innerHTML = '<option value="">加载中...</option>';
 
         try {
-          const r = await apiRequest("/api/tokens/export/options");
-          if (!r) return;
-          const d = await r.json();
-          tokenExportOptions = d || {};
-          $("tokenExportCountInput").value = Number(d?.default_count || 5);
-          renderTokenExportNodeOptions();
-          renderTokenExportHistory();
-          updateTokenExportSummary();
+          await refreshTokenExportOptions();
         } catch (e) {
           $("tokenExportSummary").textContent = `加载失败：${e.message || "未知错误"}`;
           $("tokenExportHint").textContent = "";
           showToast("加载导出配置失败: " + (e.message || "未知错误"), "error");
+        }
+      },
+      deleteExportedTokensByHistory = async (historyId) => {
+        const value = Number(historyId || 0);
+        if (!Number.isFinite(value) || value <= 0) {
+          showToast("无效的导出记录", "error");
+          return;
+        }
+        if (!confirm("确认根据这条导出记录删除本机对应的 Token 吗？删除后不可恢复。")) return;
+        try {
+          const r = await apiRequest("/api/tokens/export/delete-local", {
+            method: "POST",
+            body: JSON.stringify({ history_ids: [value] }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok || d?.success === false) {
+            showToast(d?.detail || d?.message || "删除失败", "error");
+            return;
+          }
+          await refreshTokens();
+          await refreshTokenExportOptions();
+          showToast(d?.message || `已删除 ${d?.deleted || 0} 个Token`, "success");
+        } catch (e) {
+          showToast("删除失败: " + (e.message || "未知错误"), "error");
+        }
+      },
+      deleteRecentExportedTokens = async () => {
+        const items = Array.isArray(tokenExportOptions.history) ? tokenExportOptions.history : [];
+        const historyIds = items
+          .filter((item) => Number(item.local_existing_token_count || 0) > 0)
+          .map((item) => Number(item.id || 0))
+          .filter((value) => Number.isFinite(value) && value > 0);
+        if (!historyIds.length) {
+          showToast("最近导出记录中没有可删除的本机 Token", "info");
+          return;
+        }
+        if (!confirm(`确认按最近 ${historyIds.length} 条导出记录删除本机对应的 Token 吗？删除后不可恢复。`)) return;
+        try {
+          const r = await apiRequest("/api/tokens/export/delete-local", {
+            method: "POST",
+            body: JSON.stringify({ history_ids: historyIds }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok || d?.success === false) {
+            showToast(d?.detail || d?.message || "删除失败", "error");
+            return;
+          }
+          await refreshTokens();
+          await refreshTokenExportOptions();
+          showToast(d?.message || `已删除 ${d?.deleted || 0} 个Token`, "success");
+        } catch (e) {
+          showToast("删除失败: " + (e.message || "未知错误"), "error");
         }
       },
       submitTokenExport = async () => {
@@ -4509,6 +4594,7 @@
           URL.revokeObjectURL(url);
 
           closeTokenExportModal();
+          await refreshTokens();
           showToast(`已导出 ${exportedCount} 个Token`, "success");
         } catch (e) {
           showToast("导出失败: " + e.message, "error");

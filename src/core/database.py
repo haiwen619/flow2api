@@ -1364,6 +1364,59 @@ class Database:
             history.append(item)
         return history
 
+    async def get_token_export_history_by_ids(self, history_ids: List[int]) -> List[Dict[str, Any]]:
+        """Get token export history rows by id, newest first."""
+        normalized_ids: List[int] = []
+        seen = set()
+        for history_id in history_ids or []:
+            try:
+                value = int(history_id)
+            except Exception:
+                continue
+            if value <= 0 or value in seen:
+                continue
+            normalized_ids.append(value)
+            seen.add(value)
+
+        if not normalized_ids:
+            return []
+
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    id,
+                    node_id,
+                    node_name,
+                    requested_count,
+                    exported_count,
+                    token_ids_json,
+                    token_emails_json,
+                    created_at
+                FROM token_export_history
+                WHERE id IN ({placeholders})
+                ORDER BY created_at DESC, id DESC
+                """,
+                tuple(normalized_ids),
+            )
+            rows = await cursor.fetchall()
+
+        history: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["token_ids"] = json.loads(item.pop("token_ids_json") or "[]")
+            except Exception:
+                item["token_ids"] = []
+            try:
+                item["token_emails"] = json.loads(item.pop("token_emails_json") or "[]") or []
+            except Exception:
+                item["token_emails"] = []
+            history.append(item)
+        return history
+
     async def get_token_refresh_history(
         self,
         token_id: int,

@@ -336,7 +336,28 @@ class Config:
 
     @property
     def default_server_public_ip(self) -> str:
-        return str(self._config.get("server", {}).get("default_public_ip", "") or "").strip()
+        values = self.default_server_public_ips
+        return values[0] if values else ""
+
+    @property
+    def default_server_public_ips(self) -> List[str]:
+        server_cfg = self._config.get("server", {}) or {}
+        raw_values = server_cfg.get("default_public_ips")
+        normalized_values = self._normalize_string_list(raw_values)
+        if normalized_values:
+            result: List[str] = []
+            seen = set()
+            for item in normalized_values:
+                normalized = self._normalize_ip_text(item)
+                if not normalized or normalized in seen:
+                    continue
+                result.append(normalized)
+                seen.add(normalized)
+            if result:
+                return result
+
+        single_value = self._normalize_ip_text(server_cfg.get("default_public_ip"))
+        return [single_value] if single_value else []
 
     @property
     def detected_public_ip(self) -> str:
@@ -965,15 +986,26 @@ class Config:
             return "0.0.0.0"
 
         normalized_host = self._normalize_ip_text(host_value)
-        normalized_default = self._normalize_ip_text(
-            default_public_ip if default_public_ip is not None else self.default_server_public_ip
+        normalized_defaults = self._normalize_server_public_ip_values(
+            [default_public_ip] if default_public_ip is not None else self.default_server_public_ips
         )
         normalized_detected = self._normalize_ip_text(self.detected_public_ip)
 
-        if normalized_host and normalized_host in {normalized_default, normalized_detected}:
+        if normalized_host and normalized_host in set(normalized_defaults + ([normalized_detected] if normalized_detected else [])):
             return "0.0.0.0"
 
         return host_value
+
+    def _normalize_server_public_ip_values(self, values: Optional[List[str]]) -> List[str]:
+        result: List[str] = []
+        seen = set()
+        for value in values or []:
+            normalized = self._normalize_ip_text(value)
+            if not normalized or normalized in seen:
+                continue
+            result.append(normalized)
+            seen.add(normalized)
+        return result
 
     @staticmethod
     def _normalize_ip_text(value: Optional[str]) -> str:
@@ -1011,23 +1043,24 @@ class Config:
 
     def bootstrap_runtime_server_mode(self) -> Dict[str, Any]:
         configured_host = self.configured_server_host
-        default_public_ip = self.default_server_public_ip
+        default_public_ips = self.default_server_public_ips
+        default_public_ip = default_public_ips[0] if default_public_ips else ""
         detected_public_ip = self.detect_public_ip()
 
         self._runtime_server_host_override = None
         self._runtime_server_mode_override = None
         self._server_auto_detected = False
 
-        normalized_default = self._normalize_ip_text(default_public_ip)
         normalized_detected = self._normalize_ip_text(detected_public_ip)
+        normalized_defaults = self._normalize_server_public_ip_values(default_public_ips)
         matched_server = bool(
-            normalized_default
+            normalized_defaults
             and normalized_detected
-            and normalized_default == normalized_detected
+            and normalized_detected in normalized_defaults
         )
 
         if matched_server:
-            self._runtime_server_host_override = normalized_default
+            self._runtime_server_host_override = "0.0.0.0"
             self._runtime_server_mode_override = "server"
             self._server_auto_detected = True
 
@@ -1037,6 +1070,7 @@ class Config:
             "effective_host": self.server_host,
             "effective_mode": self.get_server_mode(),
             "default_public_ip": default_public_ip,
+            "default_public_ips": default_public_ips,
             "detected_public_ip": detected_public_ip,
         }
 
@@ -1087,10 +1121,10 @@ class Config:
         if port_value < 1 or port_value > 65535:
             raise ValueError("server port 必须在 1-65535 之间")
 
-        default_public_ip_value = str(
-            self.default_server_public_ip if default_public_ip is None else default_public_ip
-        ).strip()
-        if default_public_ip_value and not self._normalize_ip_text(default_public_ip_value):
+        default_public_ip_values = self._normalize_server_public_ip_values(
+            self.default_server_public_ips if default_public_ip is None else [default_public_ip]
+        )
+        if default_public_ip is not None and str(default_public_ip).strip() and not default_public_ip_values:
             raise ValueError("默认服务器公网IP格式无效")
 
         content = self._config_path.read_text(encoding="utf-8")
@@ -1110,7 +1144,13 @@ class Config:
             content=content,
             section="server",
             key="default_public_ip",
-            value_literal=f"\"{default_public_ip_value}\"",
+            value_literal=f"\"{(default_public_ip_values[0] if default_public_ip_values else '')}\"",
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="server",
+            key="default_public_ips",
+            value_literal="[" + ", ".join(f'\"{item}\"' for item in default_public_ip_values) + "]",
         )
         self._config_path.write_text(content, encoding="utf-8")
         self.reload_config()

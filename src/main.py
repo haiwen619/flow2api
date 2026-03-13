@@ -243,7 +243,9 @@ async def lifespan(app: FastAPI):
         print(f"[启动] 集群模式已启用: role={config.cluster_role}, node={config.cluster_node_name}")
     print("[启动] 429 自动解禁任务已启动（每小时执行一次）")
     print("[启动] AT 自动刷新任务已启动（每分钟执行一次）")
-    print(f"[启动] 服务监听地址: http://{config.server_host}:{config.server_port}")
+    print(f"[启动] 服务绑定地址: http://{config.server_host}:{config.server_port}")
+    if config.server_auto_detected and config.detected_public_ip:
+        print(f"[启动] 公网访问地址: http://{config.detected_public_ip}:{config.server_port}")
     print("=" * 60)
 
     yield

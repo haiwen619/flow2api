@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .models import (
     ProxyPoolAddProxyRequest,
+    ProxyPoolBatchTestRequest,
     ProxyPoolBindRequest,
     ProxyPoolBulkImportRequest,
     ProxyPoolDisableRequest,
@@ -127,6 +128,23 @@ def create_proxy_pool_router(
             return JSONResponse(content={"success": True, **result})
         except KeyError:
             raise HTTPException(status_code=404, detail="proxy not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @router.post("/proxypool/proxies/batch-test")
+    async def batch_test_proxies(request: ProxyPoolBatchTestRequest) -> JSONResponse:
+        try:
+            result = await service.batch_test_proxies(
+                search=request.search or None,
+                host=request.host or None,
+                only_enabled=bool(True if request.only_enabled is None else request.only_enabled),
+                timeout_s=float(request.timeout_s or 8.0),
+                concurrency=int(request.concurrency or 5),
+                limit=int(request.limit or 1000),
+            )
+            return JSONResponse(content={"success": True, **result})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:

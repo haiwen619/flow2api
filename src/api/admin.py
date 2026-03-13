@@ -670,6 +670,11 @@ class TokenExportRequest(BaseModel):
     node_name: Optional[str] = None
 
 
+class TokenExportHistoryCleanupRequest(BaseModel):
+    """按导出历史删除本机Token请求"""
+    history_ids: List[int] = Field(default_factory=list)
+
+
 # ========== Auth Middleware ==========
 
 async def verify_admin_token(
@@ -986,12 +991,30 @@ async def _list_export_worker_nodes() -> List[Dict[str, Any]]:
     return worker_nodes
 
 
+def _build_export_node_display_name(node_id: Optional[str], node_name: Optional[str], base_url: Optional[str] = None) -> str:
+    normalized_node_id = str(node_id or "").strip()
+    normalized_node_name = str(node_name or normalized_node_id or "未命名节点").strip() or "未命名节点"
+    normalized_base_url = str(base_url or "").strip()
+    suffix_parts: List[str] = []
+    if normalized_base_url:
+        suffix_parts.append(normalized_base_url)
+    elif normalized_node_id:
+        suffix_parts.append(normalized_node_id)
+    suffix_text = f"（{' | '.join(suffix_parts)}）" if suffix_parts else ""
+    return f"{normalized_node_name}{suffix_text}"
+
+
 @router.get("/api/tokens/export/options")
 async def get_token_export_options(token: str = Depends(verify_admin_token)):
     """获取 Token 导出所需的配置和历史信息。"""
     _ = token
     token_rows = await db.get_all_tokens_with_stats()
     active_rows = [row for row in token_rows if bool(row.get("is_active"))]
+    existing_token_map = {
+        int(row.get("id") or 0): row
+        for row in token_rows
+        if int(row.get("id") or 0) > 0
+    }
     bindings = await db.get_token_export_binding_map()
     active_token_ids = {int(row.get("id") or 0) for row in active_rows if int(row.get("id") or 0) > 0}
 
@@ -1010,19 +1033,31 @@ async def get_token_export_options(token: str = Depends(verify_admin_token)):
     for index, node in enumerate(worker_nodes):
         node["bound_token_count"] = int(binding_counts.get(str(node.get("node_id") or "").strip(), 0))
         node["default_selected"] = index == 0
+        node["display_name"] = _build_export_node_display_name(
+            node.get("node_id"),
+            node.get("node_name"),
+            node.get("base_url"),
+        )
 
     history_rows = await db.get_token_export_history(limit=10)
     history = []
     for row in history_rows:
         created_at = row.get("created_at")
+        bound_node_id = str(row.get("node_id") or "").strip()
+        token_ids = [int(token_id) for token_id in (row.get("token_ids") or []) if int(token_id or 0) > 0]
+        local_existing_token_ids = [token_id for token_id in token_ids if bound_node_id and token_id in existing_token_map]
         history.append(
             {
                 "id": row.get("id"),
                 "node_id": row.get("node_id"),
                 "node_name": row.get("node_name"),
+                "node_display_name": _build_export_node_display_name(row.get("node_id"), row.get("node_name")),
                 "requested_count": int(row.get("requested_count") or 0),
                 "exported_count": int(row.get("exported_count") or 0),
+                "token_ids": token_ids,
                 "token_emails": row.get("token_emails") or [],
+                "local_existing_token_count": len(local_existing_token_ids),
+                "can_cleanup_locally": len(local_existing_token_ids) > 0,
                 "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
             }
         )
@@ -1035,6 +1070,76 @@ async def get_token_export_options(token: str = Depends(verify_admin_token)):
         "unbound_token_count": max(0, len(active_rows) - active_bound_count),
         "worker_nodes": worker_nodes,
         "history": history,
+    }
+
+
+@router.post("/api/tokens/export/delete-local")
+async def delete_local_tokens_by_export_history(
+    request: TokenExportHistoryCleanupRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """根据最近导出记录删除本机仍保留的 Token，避免多处重复使用。"""
+    _ = token
+    normalized_history_ids = []
+    seen = set()
+    for history_id in request.history_ids or []:
+        try:
+            value = int(history_id)
+        except Exception:
+            continue
+        if value <= 0 or value in seen:
+            continue
+        normalized_history_ids.append(value)
+        seen.add(value)
+
+    if not normalized_history_ids:
+        raise HTTPException(status_code=400, detail="未提供有效的导出记录")
+
+    history_rows = await db.get_token_export_history_by_ids(normalized_history_ids)
+    if not history_rows:
+        raise HTTPException(status_code=404, detail="未找到对应的导出记录")
+
+    token_rows = await db.get_all_tokens_with_stats()
+    existing_token_ids = {int(row.get("id") or 0) for row in token_rows if int(row.get("id") or 0) > 0}
+    deletable_token_ids: List[int] = []
+    deletable_token_emails: List[str] = []
+    affected_history_ids: List[int] = []
+    seen_token_ids = set()
+    for row in history_rows:
+        bound_node_id = str(row.get("node_id") or "").strip()
+        if not bound_node_id:
+            continue
+        token_ids = [int(token_id) for token_id in (row.get("token_ids") or []) if int(token_id or 0) > 0]
+        matched_ids = [token_id for token_id in token_ids if token_id in existing_token_ids and token_id not in seen_token_ids]
+        if not matched_ids:
+            continue
+        affected_history_ids.append(int(row.get("id") or 0))
+        row_emails = [str(email or "").strip() for email in (row.get("token_emails") or []) if str(email or "").strip()]
+        deletable_token_emails.extend(row_emails)
+        for token_id in matched_ids:
+            seen_token_ids.add(token_id)
+            deletable_token_ids.append(token_id)
+
+    if not deletable_token_ids:
+        return {
+            "success": True,
+            "deleted": 0,
+            "history_ids": normalized_history_ids,
+            "message": "这些导出记录对应的本机 Token 已不存在，无需删除",
+        }
+
+    for token_id in deletable_token_ids:
+        await token_manager.delete_token(token_id)
+        if concurrency_manager:
+            await concurrency_manager.remove_token(token_id)
+
+    return {
+        "success": True,
+        "deleted": len(deletable_token_ids),
+        "history_ids": affected_history_ids,
+        "token_ids": deletable_token_ids,
+        "token_emails": deletable_token_emails,
+        "message": f"已根据导出记录删除本机 {len(deletable_token_ids)} 个 Token",
     }
 
 
@@ -1773,6 +1878,7 @@ async def get_server_config(token: str = Depends(verify_admin_token)):
             "configured_host": config.configured_server_host,
             "port": config.server_port,
             "default_public_ip": config.default_server_public_ip,
+            "default_public_ips": config.default_server_public_ips,
             "detected_public_ip": config.detected_public_ip,
             "server_auto_detected": config.server_auto_detected,
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
@@ -1860,6 +1966,7 @@ async def update_server_config(
             "configured_host": config.configured_server_host,
             "port": config.server_port,
             "default_public_ip": config.default_server_public_ip,
+            "default_public_ips": config.default_server_public_ips,
             "detected_public_ip": config.detected_public_ip,
             "server_auto_detected": config.server_auto_detected,
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
