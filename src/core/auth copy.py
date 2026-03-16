@@ -6,15 +6,8 @@ from fastapi import Header, HTTPException, Query, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .config import config
 
-security = HTTPBearer(
-    scheme_name="ApiKeyBearer",
-    description="Flow2API 主 API 鉴权。请填写 Authorization: Bearer <API_KEY> 中的 API_KEY 部分。",
-)
-optional_security = HTTPBearer(
-    scheme_name="ApiKeyBearerOptional",
-    description="可选主 API 鉴权。优先读取 Authorization: Bearer <API_KEY>，缺失时允许继续尝试其他来源。",
-    auto_error=False,
-)
+security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 class AuthManager:
     """Authentication manager"""

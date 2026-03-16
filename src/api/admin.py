@@ -62,6 +62,70 @@ def _mask_token(token: Optional[str]) -> str:
     return f"{token[:18]}...{token[-8:]}"
 
 
+def _truncate_text(text: Any, limit: int = 240) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit - 3]}..."
+
+
+def _extract_error_summary(payload: Any) -> str:
+    """从响应体中提取简短可读的错误摘要。"""
+    if payload is None:
+        return ""
+
+    if isinstance(payload, str):
+        raw = payload.strip()
+        if not raw:
+            return ""
+        try:
+            return _extract_error_summary(json.loads(raw))
+        except Exception:
+            return _truncate_text(raw)
+
+    if isinstance(payload, dict):
+        for key in ("error_summary", "error_message", "detail", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return _truncate_text(value)
+
+        error_value = payload.get("error")
+        if isinstance(error_value, dict):
+            for key in ("message", "detail", "reason", "code"):
+                value = error_value.get(key)
+                if isinstance(value, str) and value.strip():
+                    return _truncate_text(value)
+        elif isinstance(error_value, str) and error_value.strip():
+            return _truncate_text(error_value)
+
+        for nested_key in ("response", "data"):
+            nested = payload.get(nested_key)
+            if isinstance(nested, (dict, list, str)):
+                summary = _extract_error_summary(nested)
+                if summary:
+                    return summary
+        return ""
+
+    if isinstance(payload, list):
+        for item in payload:
+            summary = _extract_error_summary(item)
+            if summary:
+                return summary
+        return ""
+
+    return _truncate_text(payload)
+
+
+def _parse_optional_int(value: Any) -> Optional[int]:
+    try:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+
 HARD_BAN_REASON_CODES = {
     "429_rate_limit",
     "permission_denied",
@@ -3250,7 +3314,9 @@ async def get_logs(
             "status_text": log.get("status_text") or "",
             "progress": log.get("progress") or 0,
             "created_at": log.get("created_at"),
-            "updated_at": log.get("updated_at")
+            "updated_at": log.get("updated_at"),
+            "error_summary": _extract_error_summary(log.get("response_body_excerpt"))
+            if (_parse_optional_int(log.get("status_code")) or 0) >= 400 else "",
         } for log in logs],
         "pagination": {
             "page": payload.get("page", page),
@@ -3676,6 +3742,12 @@ async def update_captcha_config(
         remote_browser_timeout = max(5, int(remote_browser_timeout or 60))
     except Exception:
         return {"success": False, "message": "远程打码超时时间必须是整数秒"}
+
+    if captcha_method == "remote_browser":
+        if not (remote_browser_base_url or "").strip():
+            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务地址"}
+        if not (remote_browser_api_key or "").strip():
+            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务 API Key"}
 
     await db.update_captcha_config(
         captcha_method=captcha_method,

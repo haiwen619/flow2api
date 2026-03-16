@@ -1,46 +1,8 @@
 """Data models for Flow2API"""
-import json
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List, Union, Any, Literal
 from datetime import datetime
-
-
-SUPPORTED_CAPTCHA_METHODS_ORDER = [
-    "remote_browser",
-    "yescaptcha",
-    "capmonster",
-    "ezcaptcha",
-    "capsolver",
-    "browser",
-    "personal",
-]
-
-
-def normalize_captcha_priority_order(value: Any) -> List[str]:
-    """规范化验证码打码优先级顺序，仅保留显式启用的方法。"""
-    parsed: List[str] = []
-
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            try:
-                decoded = json.loads(text)
-                if isinstance(decoded, list):
-                    value = decoded
-                else:
-                    value = [item.strip() for item in text.split(",") if item.strip()]
-            except Exception:
-                value = [item.strip() for item in text.split(",") if item.strip()]
-        else:
-            value = []
-
-    if isinstance(value, list):
-        for item in value:
-            method = str(item or "").strip().lower()
-            if method in SUPPORTED_CAPTCHA_METHODS_ORDER and method not in parsed:
-                parsed.append(method)
-
-    return parsed or ["remote_browser"]
 
 
 class Token(BaseModel):
@@ -50,14 +12,8 @@ class Token(BaseModel):
 
     # 认证信息 (核心)
     st: str  # Session Token (__Secure-next-auth.session-token)
-    cookie: Optional[str] = None  # 完整 Cookie Header（用于 reAuth）
-    cookie_file: Optional[str] = None  # Google 域名下的 Cookie Header（step4 使用）
     at: Optional[str] = None  # Access Token (从ST转换而来)
     at_expires: Optional[datetime] = None  # AT过期时间
-    last_refresh_at: Optional[datetime] = None  # 最近刷新时间
-    last_refresh_method: Optional[str] = None  # 最近刷新方式
-    last_refresh_status: Optional[str] = None  # 最近刷新状态
-    last_refresh_detail: Optional[str] = None  # 最近刷新详情
 
     # 基础信息
     email: str
@@ -87,31 +43,9 @@ class Token(BaseModel):
     # 打码代理（token 级，可覆盖全局浏览器打码代理）
     captcha_proxy_url: Optional[str] = None
 
-    # Token 禁用/封禁相关
-    ban_reason: Optional[str] = None  # 禁用原因编码，如 429_rate_limit / permission_denied / google_account_disabled / manual_disabled 等
+    # 429禁用相关
+    ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" 或 None
     banned_at: Optional[datetime] = None  # 禁用时间
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_nullable_legacy_fields(cls, data):
-        """兼容历史数据：数据库旧行里部分字段可能为NULL。"""
-        if not isinstance(data, dict):
-            return data
-
-        normalized = dict(data)
-        defaults = {
-            "is_active": True,
-            "use_count": 0,
-            "credits": 0,
-            "image_enabled": True,
-            "video_enabled": True,
-            "image_concurrency": -1,
-            "video_concurrency": -1,
-        }
-        for field, default_value in defaults.items():
-            if normalized.get(field) is None:
-                normalized[field] = default_value
-        return normalized
 
 
 class Project(BaseModel):
@@ -141,7 +75,7 @@ class TokenStats(BaseModel):
     today_video_count: int = 0
     today_error_count: int = 0
     today_date: Optional[str] = None
-    # 连续错误计数 (仅用于统计/排障展示)
+    # 连续错误计数 (用于自动禁用判断)
     consecutive_error_count: int = 0
 
 
@@ -168,7 +102,6 @@ class RequestLog(BaseModel):
     id: Optional[int] = None
     token_id: Optional[int] = None
     operation: str
-    proxy_source: Optional[str] = None
     request_body: Optional[str] = None
     response_body: Optional[str] = None
     status_code: int
@@ -186,7 +119,7 @@ class AdminConfig(BaseModel):
     username: str
     password: str
     api_key: str
-    error_ban_threshold: int = 3  # 兼容保留字段，普通请求失败已不再自动禁用 token
+    error_ban_threshold: int = 3  # Auto-disable token after N consecutive errors
 
 
 class ProxyConfig(BaseModel):
@@ -204,7 +137,6 @@ class GenerationConfig(BaseModel):
 
     id: int = 1
     image_timeout: int = 300  # seconds
-    image_total_timeout: int = 120  # seconds
     video_timeout: int = 1500  # seconds
 
 
@@ -235,8 +167,7 @@ class CaptchaConfig(BaseModel):
     """Captcha configuration"""
 
     id: int = 1
-    captcha_method: str = "remote_browser"  # 兼容字段，实际执行以 captcha_priority_order 为准
-    captcha_priority_order: List[str] = Field(default_factory=lambda: normalize_captcha_priority_order(None))
+    captcha_method: str = "browser"  # yescaptcha/capmonster/ezcaptcha/capsolver/browser/personal/remote_browser
     yescaptcha_api_key: str = ""
     yescaptcha_base_url: str = "https://api.yescaptcha.com"
     capmonster_api_key: str = ""
@@ -248,7 +179,6 @@ class CaptchaConfig(BaseModel):
     remote_browser_base_url: str = ""
     remote_browser_api_key: str = ""
     remote_browser_timeout: int = 60
-    remote_browser_proxy_enabled: bool = False  # 远程有头打码是否允许使用系统代理/代理池
     website_key: str = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
     page_action: str = "IMAGE_GENERATION"
     browser_proxy_enabled: bool = False  # 浏览器打码是否启用代理
@@ -256,28 +186,6 @@ class CaptchaConfig(BaseModel):
     browser_count: int = 1  # 浏览器打码实例数量
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_priority_fields(cls, data):
-        if not isinstance(data, dict):
-            return data
-
-        normalized = dict(data)
-        method = str(normalized.get("captcha_method") or "").strip().lower()
-        order = normalize_captcha_priority_order(normalized.get("captcha_priority_order"))
-
-        # 兼容旧版本：历史上“优先级列表”会默认包含全部方法，实际只想表达首选方式。
-        if order == SUPPORTED_CAPTCHA_METHODS_ORDER:
-            order = [method] if method in SUPPORTED_CAPTCHA_METHODS_ORDER else ["remote_browser"]
-        elif method in SUPPORTED_CAPTCHA_METHODS_ORDER and method in order:
-            order = [method] + [item for item in order if item != method]
-        elif method in SUPPORTED_CAPTCHA_METHODS_ORDER and not order:
-            order = [method]
-
-        normalized["captcha_priority_order"] = order
-        normalized["captcha_method"] = order[0]
-        return normalized
 
 
 class PluginConfig(BaseModel):
@@ -356,9 +264,9 @@ class GeminiGenerateContentRequest(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """Chat completion request (OpenAI compatible)"""
+    """Chat completion request (OpenAI compatible + Gemini extension)"""
 
-    model: Optional[str] = None
+    model: str
     messages: Optional[List[ChatMessage]] = None
     stream: bool = False
     temperature: Optional[float] = None
@@ -366,7 +274,7 @@ class ChatCompletionRequest(BaseModel):
     # Flow2API specific parameters
     image: Optional[str] = None  # Base64 encoded image (deprecated, use messages)
     video: Optional[str] = None  # Base64 encoded video (deprecated)
-    # Gemini style compatible fields and native extension parameters.
+    # Gemini extension parameters (from extra_body or top-level)
     generationConfig: Optional[GenerationConfigParam] = None
     contents: Optional[List[Any]] = None  # Gemini native contents
 

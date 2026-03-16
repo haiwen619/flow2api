@@ -2,26 +2,22 @@
 import asyncio
 import base64
 import json
+import mimetypes
 import re
 import time
-from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import Response, StreamingResponse, JSONResponse
-from typing import List, Optional, Dict, Any, Tuple, Set
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
+
 import httpx
 from curl_cffi.requests import AsyncSession
-from ..core.auth import verify_api_key_header
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from ..core.auth import verify_api_key_flexible, verify_api_key_header
 from ..core.config import config
-from ..core.models import ChatCompletionRequest, RequestLog
-from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 from ..core.logger import debug_logger
-from ..core.model_resolver import get_base_model_aliases, resolve_model_name
-from ..core.models import (
-    ChatCompletionRequest,
-    ChatMessage,
-    GeminiContent,
-    GeminiGenerateContentRequest,
-)
+from ..core.model_resolver import get_base_model_aliases
+from ..core.models import ChatCompletionRequest, GeminiGenerateContentRequest, RequestLog
 from ..services.generation_handler import MODEL_CONFIG, GenerationHandler
 
 router = APIRouter()
@@ -656,15 +652,83 @@ async def retrieve_image_data(url: str) -> Optional[bytes]:
     return None
 
 
-@router.get(
-    "/v1/models",
-    tags=["OpenAI API"],
-    summary="获取可用模型列表",
-    description="返回当前服务支持的图片与视频模型，兼容 OpenAI 风格模型列表格式。",
-)
-async def list_models():
-    """List available models"""
-    models = []
+def _build_model_description(model_config: Dict[str, Any]) -> str:
+    """Build a human-readable description for model listing endpoints."""
+    description = f"{model_config['type'].capitalize()} generation"
+    if model_config["type"] == "image":
+        description += f" - {model_config['model_name']}"
+    else:
+        description += f" - {model_config['model_key']}"
+    return description
+
+
+def _get_openai_model_catalog() -> List[Dict[str, str]]:
+    """Collect OpenAI-compatible model list entries."""
+    return [
+        {
+            "id": model_id,
+            "description": _build_model_description(model_config),
+        }
+        for model_id, model_config in MODEL_CONFIG.items()
+    ]
+
+
+def _get_gemini_model_catalog() -> Dict[str, str]:
+    """Collect Gemini-compatible model metadata for /models endpoints."""
+    catalog: Dict[str, str] = {}
+
+    for alias_id, description in get_base_model_aliases().items():
+        catalog[alias_id] = description
+
+    for model_id, model_config in MODEL_CONFIG.items():
+        catalog.setdefault(model_id, _build_model_description(model_config))
+
+    return catalog
+
+
+def _build_gemini_model_resource(model_id: str, description: str) -> Dict[str, Any]:
+    """Build a Gemini-compatible model resource payload."""
+    return {
+        "name": f"models/{model_id}",
+        "displayName": model_id,
+        "description": description,
+        "version": "flow2api",
+        "inputTokenLimit": 0,
+        "outputTokenLimit": 0,
+        "supportedGenerationMethods": [
+            "generateContent",
+            "streamGenerateContent",
+        ],
+    }
+
+
+def _decode_data_url(data_url: str) -> Tuple[str, bytes]:
+    match = DATA_URL_RE.match(data_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid data URL")
+    return match.group("mime"), base64.b64decode(match.group("data"))
+
+
+def _detect_image_mime_type(image_bytes: bytes, fallback: str = "image/png") -> str:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"GIF87a") or image_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return fallback
+
+
+def _guess_mime_type(uri: str, fallback: str) -> str:
+    guessed, _ = mimetypes.guess_type(urlparse(uri).path)
+    return guessed or fallback
+
+
+async def _load_image_bytes_from_uri(uri: str) -> bytes:
+    if not uri:
+        raise HTTPException(status_code=400, detail="Image URI cannot be empty")
 
     if uri.startswith("data:image"):
         _, image_bytes = _decode_data_url(uri)
@@ -677,6 +741,82 @@ async def list_models():
         raise HTTPException(status_code=400, detail=f"Failed to load image from {uri}")
 
     raise HTTPException(status_code=400, detail=f"Unsupported image URI: {uri}")
+
+
+@router.get(
+    "/v1/models",
+    tags=["OpenAI API"],
+    summary="获取可用模型列表",
+    description="返回当前服务支持的图片与视频模型，兼容 OpenAI 风格模型列表格式。",
+)
+async def list_models(api_key: str = Depends(verify_api_key_flexible)):
+    """List available models."""
+    _ = api_key
+    models = [
+        {
+            "id": model["id"],
+            "object": "model",
+            "owned_by": "flow2api",
+            "description": model["description"],
+        }
+        for model in _get_openai_model_catalog()
+    ]
+    return {"object": "list", "data": models}
+
+
+@router.get("/v1/models/aliases")
+async def list_model_aliases(api_key: str = Depends(verify_api_key_flexible)):
+    """List simplified model aliases for generationConfig-based resolution."""
+    _ = api_key
+    aliases = get_base_model_aliases()
+    alias_models = []
+    for alias_id, description in aliases.items():
+        alias_models.append(
+            {
+                "id": alias_id,
+                "object": "model",
+                "owned_by": "flow2api",
+                "description": description,
+                "is_alias": True,
+            }
+        )
+    return {"object": "list", "data": alias_models}
+
+
+@router.get("/v1beta/models")
+@router.get("/models")
+async def list_gemini_models(api_key: str = Depends(verify_api_key_flexible)):
+    """List available models using Gemini-compatible response shape."""
+    _ = api_key
+    catalog = _get_gemini_model_catalog()
+    return {
+        "models": [
+            _build_gemini_model_resource(model_id, description)
+            for model_id, description in catalog.items()
+        ]
+    }
+
+
+@router.get("/v1beta/models/{model}")
+@router.get("/models/{model}")
+async def get_gemini_model(model: str, api_key: str = Depends(verify_api_key_flexible)):
+    """Return a single model using Gemini-compatible response shape."""
+    _ = api_key
+    catalog = _get_gemini_model_catalog()
+    description = catalog.get(model)
+    if not description:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": 404,
+                    "message": f"Model not found: {model}",
+                    "status": GEMINI_STATUS_MAP.get(404, "UNKNOWN"),
+                }
+            },
+        )
+
+    return _build_gemini_model_resource(model, description)
 
 async def verify_internal_cluster_request(
     x_cluster_key: Optional[str] = Header(None, alias="X-Cluster-Key"),
@@ -1001,23 +1141,17 @@ async def _execute_local_chat_completion(
                         prompt_parts.append(text)
                 elif item.get("type") == "image_url":
                     image_url = item.get("image_url", {}).get("url", "")
-                    if image_url.startswith("data:image"):
-                        match = re.search(r"base64,(.+)", image_url)
-                        if match:
-                            images.append(base64.b64decode(match.group(1)))
-                    elif image_url.startswith("http://") or image_url.startswith("https://"):
-                        debug_logger.log_info(f"[IMAGE_URL] 下载远程图片: {image_url}")
+                    if image_url:
+                        debug_logger.log_info(f"[IMAGE_URL] 加载图片: {image_url}")
                         try:
-                            downloaded_bytes = await retrieve_image_data(image_url)
-                            if downloaded_bytes and len(downloaded_bytes) > 0:
+                            downloaded_bytes = await _load_image_bytes_from_uri(image_url)
+                            if downloaded_bytes:
                                 images.append(downloaded_bytes)
                                 debug_logger.log_info(
-                                    f"[IMAGE_URL] ✅ 远程图片下载成功: {len(downloaded_bytes)} 字节"
+                                    f"[IMAGE_URL] ✅ 图片加载成功: {len(downloaded_bytes)} 字节"
                                 )
-                            else:
-                                debug_logger.log_warning(f"[IMAGE_URL] ⚠️ 远程图片下载失败或为空: {image_url}")
                         except Exception as exc:
-                            debug_logger.log_error(f"[IMAGE_URL] ❌ 远程图片下载异常: {str(exc)}")
+                            debug_logger.log_error(f"[IMAGE_URL] ❌ 图片加载异常: {str(exc)}")
             prompt = "\n".join(prompt_parts).strip()
     elif request.contents:
         prompt_parts = []
@@ -1046,29 +1180,23 @@ async def _execute_local_chat_completion(
                 file_data = part.get("fileData") or part.get("file_data")
                 if isinstance(file_data, dict):
                     image_url = file_data.get("fileUri") or file_data.get("file_uri")
-                    if isinstance(image_url, str) and (
-                        image_url.startswith("http://") or image_url.startswith("https://")
-                    ):
-                        debug_logger.log_info(f"[FILE_IMAGE] 下载远程图片: {image_url}")
+                    if isinstance(image_url, str) and image_url:
+                        debug_logger.log_info(f"[FILE_IMAGE] 加载图片: {image_url}")
                         try:
-                            downloaded_bytes = await retrieve_image_data(image_url)
-                            if downloaded_bytes and len(downloaded_bytes) > 0:
+                            downloaded_bytes = await _load_image_bytes_from_uri(image_url)
+                            if downloaded_bytes:
                                 images.append(downloaded_bytes)
                                 debug_logger.log_info(
-                                    f"[FILE_IMAGE] ✅ 远程图片下载成功: {len(downloaded_bytes)} 字节"
+                                    f"[FILE_IMAGE] ✅ 图片加载成功: {len(downloaded_bytes)} 字节"
                                 )
-                            else:
-                                debug_logger.log_warning(f"[FILE_IMAGE] ⚠️ 远程图片下载失败或为空: {image_url}")
                         except Exception as exc:
-                            debug_logger.log_error(f"[FILE_IMAGE] ❌ 远程图片下载异常: {str(exc)}")
+                            debug_logger.log_error(f"[FILE_IMAGE] ❌ 图片加载异常: {str(exc)}")
         prompt = "\n".join(prompt_parts).strip()
     else:
         raise HTTPException(status_code=400, detail="Messages or contents cannot be empty")
 
-    if request.image and not images and request.image.startswith("data:image"):
-        match = re.search(r"base64,(.+)", request.image)
-        if match:
-            images.append(base64.b64decode(match.group(1)))
+    if request.image and not images:
+        images.append(await _load_image_bytes_from_uri(request.image))
 
     model_config = MODEL_CONFIG.get(resolved_model)
     generation_config_for_log = request.generationConfig if isinstance(request.generationConfig, dict) else {}
@@ -1229,6 +1357,343 @@ async def _handle_chat_completion_request(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=_describe_unexpected_chat_exception(exc)) from exc
+
+
+def _get_error_status_code(payload: Dict[str, Any]) -> int:
+    error = payload.get("error")
+    if isinstance(error, dict):
+        status_code = error.get("status_code")
+        if isinstance(status_code, int):
+            return status_code
+        if isinstance(status_code, str) and status_code.isdigit():
+            return int(status_code)
+        return 400
+    return 200
+
+
+def _build_gemini_error_payload(status_code: int, message: str) -> Dict[str, Any]:
+    return {
+        "error": {
+            "code": status_code,
+            "message": message,
+            "status": GEMINI_STATUS_MAP.get(status_code, "UNKNOWN"),
+        }
+    }
+
+
+def _build_gemini_error_response_from_handler(payload: Dict[str, Any]) -> JSONResponse:
+    error = payload.get("error", {})
+    status_code = _get_error_status_code(payload)
+    message = error.get("message", "Generation failed")
+    return JSONResponse(
+        status_code=status_code,
+        content=_build_gemini_error_payload(status_code, message),
+    )
+
+
+def _extract_openai_message_content(payload: Dict[str, Any]) -> str:
+    choices = payload.get("choices", [])
+    if not choices:
+        return payload.get("result", "")
+
+    message = choices[0].get("message", {})
+    content = message.get("content", "")
+    return content if isinstance(content, str) else ""
+
+
+async def _build_image_parts_from_uri(uri: str) -> List[Dict[str, Any]]:
+    if uri.startswith("data:image"):
+        mime_type, _ = _decode_data_url(uri)
+        match = DATA_URL_RE.match(uri)
+        if match:
+            return [{"inlineData": {"mimeType": mime_type, "data": match.group("data")}}]
+
+    image_bytes = await retrieve_image_data(uri)
+    if image_bytes:
+        mime_type = _detect_image_mime_type(
+            image_bytes,
+            fallback=_guess_mime_type(uri, "image/png"),
+        )
+        return [
+            {
+                "inlineData": {
+                    "mimeType": mime_type,
+                    "data": base64.b64encode(image_bytes).decode("ascii"),
+                }
+            }
+        ]
+
+    return [
+        {
+            "fileData": {
+                "mimeType": _guess_mime_type(uri, "image/png"),
+                "fileUri": uri,
+            }
+        },
+        {"text": uri},
+    ]
+
+
+def _build_video_parts_from_uri(uri: str) -> List[Dict[str, Any]]:
+    return [
+        {
+            "fileData": {
+                "mimeType": _guess_mime_type(uri, "video/mp4"),
+                "fileUri": uri,
+            }
+        }
+    ]
+
+
+async def _build_gemini_parts_from_output(output: str) -> List[Dict[str, Any]]:
+    if not output:
+        return []
+
+    image_matches = MARKDOWN_IMAGE_RE.findall(output)
+    if image_matches:
+        parts: List[Dict[str, Any]] = []
+        for uri in image_matches:
+            parts.extend(await _build_image_parts_from_uri(uri))
+        return parts
+
+    video_matches = HTML_VIDEO_RE.findall(output)
+    if video_matches:
+        parts: List[Dict[str, Any]] = []
+        for uri in video_matches:
+            parts.extend(_build_video_parts_from_uri(uri))
+        return parts
+
+    return [{"text": output}]
+
+
+async def _build_gemini_success_payload(
+    payload: Dict[str, Any],
+    response_model: str,
+) -> Dict[str, Any]:
+    output = _extract_openai_message_content(payload)
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "role": "model",
+                    "parts": await _build_gemini_parts_from_output(output),
+                },
+                "finishReason": "STOP",
+                "index": 0,
+            }
+        ],
+        "modelVersion": response_model,
+    }
+
+
+def _normalize_finish_reason(reason: Optional[str]) -> Optional[str]:
+    if reason is None:
+        return None
+    mapping = {
+        "stop": "STOP",
+        "length": "MAX_TOKENS",
+        "content_filter": "SAFETY",
+    }
+    return mapping.get(reason, "STOP")
+
+
+async def _convert_openai_stream_chunk_to_gemini_event(
+    payload: Dict[str, Any],
+    response_model: str,
+) -> Optional[str]:
+    choices = payload.get("choices", [])
+    if not choices:
+        return None
+
+    choice = choices[0]
+    delta = choice.get("delta", {})
+    text = delta.get("reasoning_content") or delta.get("content") or ""
+    finish_reason = _normalize_finish_reason(choice.get("finish_reason"))
+
+    candidate: Dict[str, Any] = {"index": choice.get("index", 0)}
+    if text:
+        candidate["content"] = {
+            "role": "model",
+            "parts": await _build_gemini_parts_from_output(text),
+        }
+    if finish_reason:
+        candidate["finishReason"] = finish_reason
+
+    if len(candidate) == 1:
+        return None
+
+    chunk = {
+        "candidates": [candidate],
+        "modelVersion": response_model,
+    }
+    return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+
+async def _iterate_sse_data_events(body_iterator: AsyncIterator[Any]) -> AsyncIterator[str]:
+    buffer = ""
+    async for chunk in body_iterator:
+        text = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, bytes) else str(chunk)
+        if not text:
+            continue
+        buffer += text
+        while "\n\n" in buffer:
+            raw_event, buffer = buffer.split("\n\n", 1)
+            data_lines = []
+            for line in raw_event.splitlines():
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+            if data_lines:
+                yield "\n".join(data_lines).strip()
+
+    if buffer.strip():
+        data_lines = []
+        for line in buffer.splitlines():
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if data_lines:
+            yield "\n".join(data_lines).strip()
+
+
+def _parse_response_payload_bytes(body: bytes) -> Dict[str, Any]:
+    if not body:
+        return {}
+    try:
+        return json.loads(body)
+    except Exception:
+        return {"result": body.decode("utf-8", errors="ignore")}
+
+
+def _build_chat_completion_request_from_gemini(
+    model: str,
+    request: GeminiGenerateContentRequest,
+    *,
+    stream: bool,
+) -> ChatCompletionRequest:
+    contents: List[Any] = []
+    if request.systemInstruction:
+        contents.append(request.systemInstruction.model_dump(exclude_none=True))
+    contents.extend(content.model_dump(exclude_none=True) for content in request.contents)
+
+    generation_config = (
+        request.generationConfig.model_dump(exclude_none=True)
+        if request.generationConfig is not None
+        else None
+    )
+
+    return ChatCompletionRequest(
+        model=model,
+        contents=contents,
+        generationConfig=generation_config,
+        stream=stream,
+    )
+
+
+async def _execute_gemini_request(
+    model: str,
+    request: GeminiGenerateContentRequest,
+) -> Response:
+    translated_request = _build_chat_completion_request_from_gemini(
+        model,
+        request,
+        stream=False,
+    )
+    return await _handle_chat_completion_request(translated_request, allow_cluster_dispatch=True)
+
+
+async def _iterate_gemini_stream_from_openai_response(
+    response: StreamingResponse,
+    response_model: str,
+) -> AsyncIterator[str]:
+    async for payload_text in _iterate_sse_data_events(response.body_iterator):
+        if payload_text == "[DONE]":
+            break
+
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            payload = {"result": payload_text}
+
+        if "error" in payload:
+            yield (
+                f"data: {json.dumps(_build_gemini_error_payload(_get_error_status_code(payload), payload['error'].get('message', 'Generation failed')), ensure_ascii=False)}\n\n"
+            )
+            return
+
+        event = await _convert_openai_stream_chunk_to_gemini_event(payload, response_model)
+        if event:
+            yield event
+
+
+@router.post("/v1beta/models/{model}:generateContent")
+@router.post("/models/{model}:generateContent")
+async def generate_content(
+    model: str,
+    request: GeminiGenerateContentRequest,
+    api_key: str = Depends(verify_api_key_flexible),
+):
+    """Gemini official generateContent endpoint."""
+    _ = api_key
+    try:
+        response = await _execute_gemini_request(model, request)
+        payload = _parse_response_payload_bytes(response.body)
+        if "error" in payload:
+            return _build_gemini_error_response_from_handler(payload)
+        return JSONResponse(content=await _build_gemini_success_payload(payload, model))
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_build_gemini_error_payload(exc.status_code, str(exc.detail)),
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content=_build_gemini_error_payload(500, str(exc)),
+        )
+
+
+@router.post("/v1beta/models/{model}:streamGenerateContent")
+@router.post("/models/{model}:streamGenerateContent")
+async def stream_generate_content(
+    model: str,
+    request: GeminiGenerateContentRequest,
+    alt: Optional[str] = Query(None),
+    api_key: str = Depends(verify_api_key_flexible),
+):
+    """Gemini official streamGenerateContent endpoint."""
+    _ = alt
+    _ = api_key
+    try:
+        translated_request = _build_chat_completion_request_from_gemini(
+            model,
+            request,
+            stream=True,
+        )
+        response = await _handle_chat_completion_request(translated_request, allow_cluster_dispatch=True)
+        if not isinstance(response, StreamingResponse):
+            payload = _parse_response_payload_bytes(response.body)
+            if "error" in payload:
+                return _build_gemini_error_response_from_handler(payload)
+            return JSONResponse(content=await _build_gemini_success_payload(payload, model))
+
+        return StreamingResponse(
+            _iterate_gemini_stream_from_openai_response(response, model),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_build_gemini_error_payload(exc.status_code, str(exc.detail)),
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content=_build_gemini_error_payload(500, str(exc)),
+        )
 
 
 @router.post(

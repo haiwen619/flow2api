@@ -31,6 +31,13 @@
       transition: all 0.2s ease;
     }
 
+    .line-clamp-2 {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+    }
+
     .token-list-table th {
       white-space: nowrap;
     }
@@ -7578,6 +7585,77 @@
       }
     }
 
+    function truncateLogText(text, limit = 240) {
+      const value = String(text ?? "").trim().replace(/\s+/g, " ");
+      if (!value) return "";
+      return value.length <= limit ? value : `${value.slice(0, limit - 3)}...`;
+    }
+
+    function extractLogErrorSummary(log, responseBodyObj) {
+      const direct = log && typeof log.error_summary === "string" ? log.error_summary.trim() : "";
+      if (direct) return truncateLogText(direct);
+      const payload = responseBodyObj === undefined ? parseLogJson(log && log.response_body) : responseBodyObj;
+      const visit = (value) => {
+        if (value === null || value === undefined) return "";
+        if (typeof value === "string") return truncateLogText(value);
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            const nested = visit(item);
+            if (nested) return nested;
+          }
+          return "";
+        }
+        if (typeof value === "object") {
+          for (const key of ["error_summary", "error_message", "detail", "message"]) {
+            if (typeof value[key] === "string" && value[key].trim()) return truncateLogText(value[key]);
+          }
+          const errorValue = value.error;
+          if (typeof errorValue === "string" && errorValue.trim()) return truncateLogText(errorValue);
+          if (errorValue && typeof errorValue === "object") {
+            for (const key of ["message", "detail", "reason", "code"]) {
+              if (typeof errorValue[key] === "string" && errorValue[key].trim()) return truncateLogText(errorValue[key]);
+            }
+          }
+          for (const key of ["response", "data", "performance"]) {
+            const nested = visit(value[key]);
+            if (nested) return nested;
+          }
+        }
+        return "";
+      };
+      const summary = visit(payload);
+      if (summary) return summary;
+      if (log && log.response_body && !payload) return truncateLogText(log.response_body);
+      return "";
+    }
+
+    function extractLogPrimaryUrl(responseBodyObj) {
+      if (!responseBodyObj || typeof responseBodyObj !== "object") return null;
+      return responseBodyObj.url
+        || ((responseBodyObj.data && responseBodyObj.data[0] && responseBodyObj.data[0].url) ? responseBodyObj.data[0].url : null)
+        || (responseBodyObj.generated_assets && responseBodyObj.generated_assets.final_video_url)
+        || ((responseBodyObj.generated_assets && responseBodyObj.generated_assets.upscaled_image && responseBodyObj.generated_assets.upscaled_image.local_url) ? responseBodyObj.generated_assets.upscaled_image.local_url : null)
+        || ((responseBodyObj.generated_assets && responseBodyObj.generated_assets.upscaled_image && responseBodyObj.generated_assets.upscaled_image.url) ? responseBodyObj.generated_assets.upscaled_image.url : null)
+        || (responseBodyObj.generated_assets && responseBodyObj.generated_assets.final_image_url)
+        || null;
+    }
+
+    function extractLogSuccessSummary(log, responseBodyObj) {
+      if ((log && Number(log.status_code)) !== 200) return "";
+      if (!responseBodyObj || typeof responseBodyObj !== "object") return "生成成功，已返回结果";
+      const assets = responseBodyObj.generated_assets;
+      if (assets && typeof assets === "object" && assets.upscaled_image && typeof assets.upscaled_image === "object") {
+        return `生成成功，已返回${assets.upscaled_image.resolution || "高清"}结果`;
+      }
+      const directUrl = extractLogPrimaryUrl(responseBodyObj);
+      if (directUrl) {
+        if (isVideoUrl(directUrl)) return "生成成功，已返回视频结果";
+        if (isImageUrl(directUrl)) return "生成成功，已返回图片结果";
+        return "生成成功，已返回结果地址";
+      }
+      return responseBodyObj.status === "success" ? "生成成功" : "生成成功，已返回结果";
+    }
+
     function formatLogPayload(raw) {
       const parsed = parseLogJson(raw);
       if (parsed) {
@@ -7659,12 +7737,28 @@
       return key;
     }
 
+    function normalizeLogMediaUrl(url) {
+      if (!url) return "";
+      const text = String(url).trim();
+      if (!text || /^data:/i.test(text)) return text;
+      try {
+        const parsed = new URL(text, window.location.origin);
+        if (parsed.pathname.startsWith("/tmp/")) {
+          return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+        return parsed.toString();
+      } catch (_) {
+        return text;
+      }
+    }
+
     function renderLogLink(label, url) {
       if (!url) return "";
-      if (/^data:/i.test(String(url))) {
-        return `<p class="text-xs"><span class="font-medium">${label}:</span> <span class="text-muted-foreground">data URL（长度 ${String(url).length}）</span></p>`;
+      const normalizedUrl = normalizeLogMediaUrl(url);
+      if (/^data:/i.test(String(normalizedUrl))) {
+        return `<p class="text-xs"><span class="font-medium">${label}:</span> <span class="text-muted-foreground">data URL（长度 ${String(normalizedUrl).length}）</span></p>`;
       }
-      const safeUrl = escapeLogHtml(url);
+      const safeUrl = escapeLogHtml(normalizedUrl);
       return `<p class="text-xs"><span class="font-medium">${label}:</span> <a href="${safeUrl}" target="_blank" class="text-blue-600 hover:underline break-all">${safeUrl}</a></p>`;
     }
 
@@ -7690,17 +7784,25 @@
 
     function renderMediaPreview(label, url, withUrl = true, previewKey = "") {
       if (!url) return "";
-      const mediaType = isVideoUrl(url)
+      const previewUrl = normalizeLogMediaUrl(url);
+      const mediaType = isVideoUrl(previewUrl)
         ? "video"
-        : isImageUrl(url)
+        : isImageUrl(previewUrl)
           ? "image"
           : "";
-      const mediaKey = mediaType ? cacheLogMediaUrl(url) : "";
+      const mediaKey = mediaType ? cacheLogMediaUrl(previewUrl) : "";
       const safePreviewKey = previewKey || `${mediaType}:${label}`;
       const previewTrigger = mediaType
         ? `<button onclick="loadLogMediaPreview(this)" data-media-key="${mediaKey}" data-label="${escapeLogHtml(label)}" data-media-type="${mediaType}" data-preview-key="${escapeLogHtml(safePreviewKey)}" class="inline-flex items-center justify-center rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">点击加载预览</button><div class="space-y-2"></div>`
         : "";
-      return `<div class="space-y-2"><p class="text-xs font-medium">${escapeLogHtml(label)}</p>${withUrl ? renderLogLink("URL", url) : ""}${previewTrigger}</div>`;
+      return `<div class="space-y-2"><p class="text-xs font-medium">${escapeLogHtml(label)}</p>${withUrl ? renderLogLink("URL", previewUrl) : ""}${previewTrigger}</div>`;
+    }
+
+    function handleLogMediaPreviewError(node) {
+      if (!node) return;
+      const mediaUrl = node.dataset.mediaUrl || "";
+      const mediaLabel = node.dataset.mediaLabel || "媒体";
+      node.outerHTML = `<div class="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 space-y-2"><p>${escapeLogHtml(mediaLabel)}预览加载失败，请直接打开链接查看。</p>${renderLogLink("URL", mediaUrl)}</div>`;
     }
 
     function loadLogMediaPreview(button) {
@@ -7718,9 +7820,9 @@
         setLogDetailToggleState(logId, previewKey, true);
       }
       if (mediaType === "video") {
-        container.innerHTML = `<video src="${escapeLogHtml(url)}" controls preload="metadata" class="w-full max-h-80 rounded-md border border-border bg-black"></video>`;
+        container.innerHTML = `<video src="${escapeLogHtml(url)}" controls preload="metadata" data-media-url="${escapeLogHtml(url)}" data-media-label="${escapeLogHtml(label)}" onerror="handleLogMediaPreviewError(this)" class="w-full max-h-80 rounded-md border border-border bg-black"></video>`;
       } else {
-        container.innerHTML = `<img src="${escapeLogHtml(url)}" alt="${escapeLogHtml(label)}" loading="lazy" decoding="async" class="max-h-80 rounded-md border border-border object-contain bg-background">`;
+        container.innerHTML = `<img src="${escapeLogHtml(url)}" alt="${escapeLogHtml(label)}" loading="lazy" decoding="async" data-media-url="${escapeLogHtml(url)}" data-media-label="${escapeLogHtml(label)}" onerror="handleLogMediaPreviewError(this)" class="max-h-80 rounded-md border border-border object-contain bg-background">`;
       }
       button.remove();
     }
@@ -7736,19 +7838,18 @@
       const requestPayloadText = formatLogPayload(log.request_body);
       const responsePayloadText = formatLogPayload(log.response_body);
       const toggleLogId = String(log.id ?? "");
+      const errorSummary = extractLogErrorSummary(log, responseBodyObj);
+      const successSummary = extractLogSuccessSummary(log, responseBodyObj);
       let detailHtml = "";
 
       detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm">请求数据</h4><pre class="rounded-md border border-border p-3 bg-muted/30 text-xs overflow-x-auto">${escapeLogHtml(requestPayloadText)}</pre></div>`;
 
       if (log.status_code === 200) {
+        if (successSummary) {
+          detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm text-green-700">结果摘要</h4><div class="rounded-md border border-green-200 p-3 bg-green-50"><p class="text-sm text-green-700">${escapeLogHtml(successSummary)}</p></div></div>`;
+        }
         if (responseBodyObj) {
-          const directUrl =
-            responseBodyObj.url ||
-            (responseBodyObj.data &&
-              responseBodyObj.data[0] &&
-              responseBodyObj.data[0].url
-              ? responseBodyObj.data[0].url
-              : null);
+          const directUrl = extractLogPrimaryUrl(responseBodyObj);
           if (directUrl) {
             detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm">生成结果</h4><div class="rounded-md border border-border p-3 bg-muted/30 space-y-3">${renderMediaPreview("主结果", directUrl, true, "preview_main_result")}</div></div>`;
           }
@@ -7801,8 +7902,8 @@
           detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm">响应数据</h4><pre class="rounded-md border border-border p-3 bg-muted/30 text-xs overflow-x-auto">${escapeLogHtml(responsePayloadText)}</pre></div>`;
         }
       } else {
-        if (responseBodyObj && responseBodyObj.error) {
-          detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm text-red-600">错误原因</h4><div class="rounded-md border border-red-200 p-3 bg-red-50"><p class="text-sm text-red-700">${escapeLogHtml(responseBodyObj.error.message || responseBodyObj.error || "未知错误")}</p></div></div>`;
+        if (errorSummary) {
+          detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm text-red-600">错误原因</h4><div class="rounded-md border border-red-200 p-3 bg-red-50"><p class="text-sm text-red-700 break-all">${escapeLogHtml(errorSummary)}</p></div></div>`;
         }
         detailHtml += `<div class="space-y-2"><h4 class="font-medium text-sm text-red-600">错误响应</h4><pre class="rounded-md border border-red-200 p-3 bg-red-50 text-xs overflow-x-auto">${escapeLogHtml(responsePayloadText)}</pre></div>`;
       }
