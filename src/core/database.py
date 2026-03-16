@@ -2761,10 +2761,40 @@ class Database:
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            # 取最近 N 分钟、已完成的日志（status_code 200 或 500）
-            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
-                "%Y-%m-%d %H:%M:%S"
+
+            now_utc = datetime.now(timezone.utc)
+            requested_window_start = now_utc - timedelta(minutes=minutes)
+
+            latest_cursor = await db.execute(
+                """
+                SELECT MAX(created_at) AS latest_created_at
+                FROM request_logs
+                WHERE status_code IN (200, 500)
+                """
             )
+            latest_row = await latest_cursor.fetchone()
+            latest_created_at_raw = latest_row["latest_created_at"] if latest_row else None
+
+            latest_created_at: Optional[datetime] = None
+            if latest_created_at_raw:
+                try:
+                    latest_created_at = datetime.strptime(
+                        str(latest_created_at_raw),
+                        "%Y-%m-%d %H:%M:%S",
+                    ).replace(tzinfo=timezone.utc)
+                except Exception:
+                    latest_created_at = None
+
+            anchor_end = now_utc
+            anchored_to_latest_available = False
+            if latest_created_at and latest_created_at < requested_window_start:
+                anchor_end = latest_created_at
+                anchored_to_latest_available = True
+
+            cutoff_dt = anchor_end - timedelta(minutes=minutes)
+            cutoff = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+            anchor_end_text = anchor_end.strftime("%Y-%m-%d %H:%M:%S")
+
             cursor = await db.execute(
                 """
                 SELECT rl.id, rl.token_id, rl.operation, rl.status_code,
@@ -2773,11 +2803,12 @@ class Database:
                 FROM request_logs rl
                 LEFT JOIN tokens t ON rl.token_id = t.id
                 WHERE rl.created_at >= ?
+                  AND rl.created_at <= ?
                   AND rl.status_code IN (200, 500)
                 ORDER BY rl.created_at DESC
                 LIMIT ?
                 """,
-                (cutoff, limit),
+                (cutoff, anchor_end_text, limit),
             )
             rows = await cursor.fetchall()
 
@@ -2983,6 +3014,13 @@ class Database:
 
         return {
             "minutes": minutes,
+            "window": {
+                "requested_end_at": now_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                "start_at": cutoff,
+                "end_at": anchor_end_text,
+                "anchored_to_latest_available": anchored_to_latest_available,
+                "latest_log_at": latest_created_at.strftime("%Y-%m-%d %H:%M:%S") if latest_created_at else None,
+            },
             "total_records": len(records),
             "success_count": len(success_records),
             "failed_count": len(failed_records),

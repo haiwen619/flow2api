@@ -28,6 +28,8 @@ class RequestRecord:
     ensure_project_ms: int = 0
     generation_pipeline_ms: int = 0
     slot_wait_ms: int = 0
+    current_phase: str = "started"
+    waiting_on_image_slot: bool = False
 
 
 class PerfMonitor:
@@ -120,6 +122,26 @@ class PerfMonitor:
             self._inflight[request_id] = rec
             self._total_requests += 1
 
+    async def on_request_progress(
+        self,
+        request_id: str,
+        *,
+        token_id: Optional[int] = None,
+        current_phase: Optional[str] = None,
+        waiting_on_image_slot: Optional[bool] = None,
+    ) -> None:
+        """Update an in-flight request with lightweight real-time progress metadata."""
+        async with self._lock:
+            rec = self._inflight.get(request_id)
+            if rec is None:
+                return
+            if token_id is not None:
+                rec.token_id = token_id
+            if current_phase is not None:
+                rec.current_phase = str(current_phase or "").strip() or rec.current_phase
+            if waiting_on_image_slot is not None:
+                rec.waiting_on_image_slot = bool(waiting_on_image_slot)
+
     async def on_request_end(
         self,
         request_id: str,
@@ -143,6 +165,7 @@ class PerfMonitor:
                 rec.ensure_project_ms = perf_trace.get("ensure_project_ms", 0)
                 rec.generation_pipeline_ms = perf_trace.get("generation_pipeline_ms", 0)
                 rec.slot_wait_ms = perf_trace.get("slot_wait_ms", 0)
+            rec.waiting_on_image_slot = False
             if success:
                 self._total_success += 1
             else:
@@ -166,8 +189,12 @@ class PerfMonitor:
                     "operation": rec.operation,
                     "token_id": rec.token_id,
                     "elapsed_ms": elapsed_ms,
+                    "current_phase": rec.current_phase,
+                    "waiting_on_image_slot": rec.waiting_on_image_slot,
                 })
             inflight_list.sort(key=lambda x: -x["elapsed_ms"])
+
+            image_slot_waiting = [item for item in inflight_list if item.get("waiting_on_image_slot")]
 
             # Sliding window stats
             cutoff = now - self._window_seconds
@@ -242,6 +269,10 @@ class PerfMonitor:
                 "inflight": {
                     "count": len(inflight_list),
                     "requests": inflight_list[:20],  # cap display
+                },
+                "queues": {
+                    "image_slot_waiting_count": len(image_slot_waiting),
+                    "image_slot_waiting_requests": image_slot_waiting[:20],
                 },
                 "totals": {
                     "requests": self._total_requests,

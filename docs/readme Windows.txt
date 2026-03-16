@@ -10,6 +10,10 @@ $Python312InstallerUrl = "https://www.python.org/ftp/python/3.12.0/python-3.12.0
 $Python312InstallerPath = Join-Path $env:TEMP "python-3.12.0-amd64.exe"
 $FirewallRuleName = "Flow2API-8000"
 $ListenPort = 8000
+$RunSQLiteToMySQLMigration = $false
+$MySqlUrl = "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4"
+$SQLiteMainPath = Join-Path $ProjectRoot "data\flow.db"
+$SQLiteAccountPoolPath = Join-Path $ProjectRoot "data\accountpool.db"
 
 # ===== 2. 基础检查 =====
 if (-not (Test-Path $ProjectRoot)) {
@@ -124,7 +128,50 @@ Write-Host '  - host = "0.0.0.0"' -ForegroundColor Cyan
 Write-Host "  - port = 8000" -ForegroundColor Cyan
 Write-Host "  - api_key / 管理员账号密码 / 集群配置（如有）" -ForegroundColor Cyan
 
-# ===== 8. 默认放行 8000 端口 =====
+# ===== 8. 可选：SQLite 数据迁移到 MySQL =====
+if ($RunSQLiteToMySQLMigration) {
+    $MigrationScript = Join-Path $ProjectRoot "scripts\migrate_sqlite_to_mysql.py"
+
+    if (!(Test-Path $MigrationScript)) {
+        Write-Host "未找到迁移脚本: $MigrationScript" -ForegroundColor Red
+        return
+    }
+
+    if (!(Test-Path $SQLiteMainPath)) {
+        Write-Host "未找到主库 SQLite 文件: $SQLiteMainPath" -ForegroundColor Red
+        return
+    }
+
+    if (!(Test-Path $SQLiteAccountPoolPath)) {
+        Write-Host "未找到账号池 SQLite 文件: $SQLiteAccountPoolPath" -ForegroundColor Red
+        return
+    }
+
+    Write-Host "开始执行 SQLite -> MySQL 数据迁移..." -ForegroundColor Green
+    & $VenvPython (Join-Path $ProjectRoot "scripts\migrate_sqlite_to_mysql.py") `
+        --mysql-url $MySqlUrl `
+        --sqlite-main $SQLiteMainPath `
+        --sqlite-accountpool $SQLiteAccountPoolPath
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "数据迁移失败，请先排查 MySQL 连接或权限问题。" -ForegroundColor Red
+        return
+    }
+
+    Write-Host "数据迁移完成。" -ForegroundColor Green
+}
+else {
+    Write-Host "如需迁移 SQLite 数据到 MySQL，可将 `$RunSQLiteToMySQLMigration 改为 `$true。" -ForegroundColor Yellow
+    Write-Host "PowerShell 推荐直接一行：" -ForegroundColor Yellow
+    Write-Host 'python scripts/migrate_sqlite_to_mysql.py --mysql-url "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4" --sqlite-main data/flow.db --sqlite-accountpool data/accountpool.db' -ForegroundColor Yellow
+    Write-Host "CMD 多行写法：" -ForegroundColor Yellow
+    Write-Host 'python scripts/migrate_sqlite_to_mysql.py ^' -ForegroundColor Yellow
+    Write-Host '  --mysql-url "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4" ^' -ForegroundColor Yellow
+    Write-Host '  --sqlite-main data/flow.db ^' -ForegroundColor Yellow
+    Write-Host '  --sqlite-accountpool data/accountpool.db' -ForegroundColor Yellow
+}
+
+# ===== 9. 默认放行 8000 端口 =====
 try {
     $existingRule = Get-NetFirewallRule -DisplayName $FirewallRuleName -ErrorAction SilentlyContinue
     if (-not $existingRule) {
@@ -141,11 +188,11 @@ catch {
     Write-Host 'New-NetFirewallRule -DisplayName "Flow2API-8000" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8000' -ForegroundColor Yellow
 }
 
-# ===== 9. 启动服务 =====
+# ===== 10. 启动服务 =====
 Write-Host "开始启动 Flow2API..." -ForegroundColor Green
 & $VenvPython (Join-Path $ProjectRoot "main.py")
 
-# ===== 10. 启动后可手动验证 =====
+# ===== 11. 启动后可手动验证 =====
 # 健康检查：
 #   curl http://127.0.0.1:8000/health
 #
@@ -159,3 +206,12 @@ Write-Host "开始启动 Flow2API..." -ForegroundColor Green
 #   & "$ProjectRoot\.venv\Scripts\Activate.ps1"
 #
 # 如果当前机器只跑 master，且不需要本地浏览器能力，可改为按你的实际依赖裁剪安装。
+#
+# 数据迁移（CMD 多行）：
+#   python scripts/migrate_sqlite_to_mysql.py ^
+#     --mysql-url "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4" ^
+#     --sqlite-main data/flow.db ^
+#     --sqlite-accountpool data/accountpool.db
+#
+# 数据迁移（PowerShell 推荐一行）：
+#   python scripts/migrate_sqlite_to_mysql.py --mysql-url "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4" --sqlite-main data/flow.db --sqlite-accountpool data/accountpool.db

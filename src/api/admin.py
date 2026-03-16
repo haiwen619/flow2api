@@ -2867,7 +2867,7 @@ async def get_diagnostics(token: str = Depends(verify_admin_token)):
 
 @router.get("/api/diagnostics/history")
 async def get_diagnostics_history(
-    minutes: int = Query(60, ge=5, le=1440, description="分析最近多少分钟的数据"),
+    minutes: int = Query(60, ge=5, le=10080, description="分析最近多少分钟的数据"),
     token: str = Depends(verify_admin_token),
 ):
     """从数据库历史日志分析各阶段性能瓶颈。

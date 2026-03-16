@@ -899,6 +899,12 @@ class GenerationHandler:
         debug_logger.log_info(f"[GENERATION] 已选择Token: {token.id} ({token.email})")
         if self.load_balancer:
             pending_token_state["active"] = True
+        await perf_monitor.on_request_progress(
+            request_id,
+            token_id=token.id,
+            current_phase="token_selected",
+            waiting_on_image_slot=False,
+        )
         await self._update_request_log_progress(
             request_log_state,
             token_id=token.id,
@@ -952,6 +958,12 @@ class GenerationHandler:
                 status_text="project_ready",
                 progress=22,
                 response_extra={"project_id": project_id},
+            )
+            await perf_monitor.on_request_progress(
+                request_id,
+                token_id=token.id,
+                current_phase="project_ready",
+                waiting_on_image_slot=False,
             )
 
             # 5. 根据类型处理
@@ -1178,20 +1190,93 @@ class GenerationHandler:
         """处理图片生成 (同步返回)"""
 
         image_trace: Optional[Dict[str, Any]] = None
+        hard_slot_acquired = False
+        request_id = str(perf_trace.get("request_id") or "").strip() if isinstance(perf_trace, dict) else ""
         if isinstance(perf_trace, dict):
             image_trace = perf_trace.setdefault("image_generation", {})
             image_trace["input_image_count"] = len(images) if images else 0
 
-        # 不在本地等待图片硬并发槽位；请求一到就直接向上游提交。
         normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
 
         if image_trace is not None:
             image_trace["slot_wait_ms"] = 0
 
+        if self.concurrency_manager and getattr(token, "id", None) is not None:
+            slot_wait_timeout = float(config.flow_image_slot_wait_timeout)
+            await self._update_request_log_progress(
+                request_log_state,
+                token_id=token.id,
+                status_text="waiting_image_slot",
+                progress=24,
+            )
+            if request_id:
+                await perf_monitor.on_request_progress(
+                    request_id,
+                    token_id=token.id,
+                    current_phase="waiting_image_slot",
+                    waiting_on_image_slot=True,
+                )
+            if stream:
+                yield self._create_stream_chunk("等待图片并发槽位...\n")
+
+            acquired, waited_ms = await self.concurrency_manager.wait_acquire_image(
+                token.id,
+                slot_wait_timeout,
+            )
+            if image_trace is not None:
+                image_trace["slot_wait_ms"] = waited_ms
+
+            if not acquired:
+                error_msg = f"图片并发槽位等待超时（超过 {int(slot_wait_timeout)} 秒）"
+                await self._update_request_log_progress(
+                    request_log_state,
+                    token_id=token.id,
+                    status_text="image_slot_timeout",
+                    progress=request_log_state.get("progress", 24),
+                    response_extra={"error": error_msg, "slot_wait_ms": waited_ms},
+                )
+                self._mark_generation_failed(generation_result, error_msg)
+                if stream:
+                    yield self._create_stream_chunk(f"❌ {error_msg}\n")
+                yield self._create_error_response(error_msg)
+                return
+
+            hard_slot_acquired = True
+            if pending_token_state and pending_token_state.get("active") and self.load_balancer:
+                await self.load_balancer.release_pending(
+                    token.id,
+                    for_image_generation=True,
+                )
+                pending_token_state["active"] = False
+
+            await self._update_request_log_progress(
+                request_log_state,
+                token_id=token.id,
+                status_text="image_slot_acquired",
+                progress=26,
+                response_extra={"slot_wait_ms": waited_ms},
+            )
+            if request_id:
+                await perf_monitor.on_request_progress(
+                    request_id,
+                    token_id=token.id,
+                    current_phase="image_slot_acquired",
+                    waiting_on_image_slot=False,
+                )
+            if stream and waited_ms > 0:
+                yield self._create_stream_chunk(f"已获取图片并发槽位（等待 {waited_ms} ms）\n")
+
         if images and len(images) > 0:
             await self._update_request_log_progress(request_log_state, token_id=token.id, status_text="uploading_images", progress=28)
         else:
             await self._update_request_log_progress(request_log_state, token_id=token.id, status_text="submitting_image", progress=28)
+        if request_id:
+            await perf_monitor.on_request_progress(
+                request_id,
+                token_id=token.id,
+                current_phase="submitting_image",
+                waiting_on_image_slot=False,
+            )
 
         try:
             # 上传图片 (如果有)
@@ -1415,7 +1500,8 @@ class GenerationHandler:
                 )
 
         finally:
-            pass
+            if hard_slot_acquired and self.concurrency_manager and getattr(token, "id", None) is not None:
+                await self.concurrency_manager.release_image(token.id)
 
     async def _handle_video_generation(
         self,

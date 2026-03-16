@@ -1997,6 +1997,8 @@
               <option value="360">最近 6 小时</option>
               <option value="720">最近 12 小时</option>
               <option value="1440">最近 24 小时</option>
+              <option value="2880">最近 48 小时</option>
+              <option value="10080">最近 7 天</option>
             </select>
             <button onclick="loadHistoryDiag()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border hover:bg-accent transition-colors">
               <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
@@ -2004,6 +2006,7 @@
             </button>
           </div>
         </div>
+        <div id="histWindowInfo" class="text-xs text-muted-foreground mb-3"></div>
 
         <!-- 历史汇总指标 -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -8165,6 +8168,16 @@
     }
 
     function renderHistoryDiag(data) {
+      const windowInfo = data.window || {};
+      const startAt = windowInfo.start_at || "-";
+      const endAt = windowInfo.end_at || "-";
+      const latestLogAt = windowInfo.latest_log_at || "-";
+      if ($("histWindowInfo")) {
+        $("histWindowInfo").textContent = windowInfo.anchored_to_latest_available
+          ? `当前时间窗无新日志，已自动回看最后一段有数据的区间：${startAt} ~ ${endAt}（最后日志时间：${latestLogAt}）`
+          : `当前分析区间：${startAt} ~ ${endAt}`;
+      }
+
       const totalStats = data.phase_stats?.total_ms || {};
       $("histTotal").textContent = data.total_records || 0;
       $("histSuccFail").textContent = `✓${data.success_count || 0} ✗${data.failed_count || 0}`;
