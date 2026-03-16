@@ -216,6 +216,7 @@
         <button id="ppReloadBtn" class="pp-btn pp-btn-primary">刷新列表</button>
         <button id="ppBatchTestBtn" class="pp-btn">批量测试</button>
         <button id="ppBulkOpenBtn" class="pp-btn">批量导入</button>
+        <button id="ppDeleteAllBtn" class="pp-btn text-red-600 border-red-200 hover:bg-red-50">删除全部</button>
       </div>
     </div>
 
@@ -684,6 +685,30 @@
       const q = document.getElementById('ppSearch').value.trim();
       ppPage = 1;
       loadList({ page: 1, search: q }).catch(showTopError);
+    });
+    document.getElementById('ppDeleteAllBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('ppDeleteAllBtn');
+      if (!confirm('确认删除代理池中的全部代理吗？该操作不可恢复。')) return;
+      if (!confirm('请再次确认：将删除全部代理记录，并解除所有当前绑定关系。是否继续？')) return;
+
+      btn.disabled = true;
+      const oldText = btn.textContent;
+      btn.textContent = '删除中...';
+      try {
+        const data = await apiFetch('/proxypool/proxies', { method: 'DELETE' });
+        const deleted = Number(data && data.deleted) || 0;
+        const batchMsg = document.getElementById('ppBatchMsg');
+        if (batchMsg) {
+          batchMsg.textContent = `已删除全部代理，共 ${deleted} 条`;
+        }
+        ppPage = 1;
+        await loadList({ page: 1, search: '' });
+      } catch (err) {
+        showTopError(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
     });
     document.getElementById('ppBulkOpenBtn').addEventListener('click', openBulkModal);
     document.getElementById('ppBulkClose').addEventListener('click', closeBulkModal);

@@ -101,6 +101,14 @@ def create_proxy_pool_router(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
+    @router.delete("/proxypool/proxies")
+    async def delete_all_proxies() -> JSONResponse:
+        try:
+            result = await service.delete_all_proxies()
+            return JSONResponse(content={"success": True, **result})
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
     @router.post("/proxypool/proxies/bulk")
     async def bulk_import(request: ProxyPoolBulkImportRequest) -> JSONResponse:
         try:

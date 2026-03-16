@@ -1,7 +1,7 @@
 {
-  "version": "v1.1.9",
-  "build": "2026.03.11",
-  "release_date": "2026-03-11",
+  "version": "v1.1.10",
+  "build": "2026.03.16",
+  "release_date": "2026-03-16",
   "channel": "stable",
-  "notes": "更新自动刷新防重试、打码优先级回退、Token 全部删除、RPA projectId 补建与诊断日志。"
+  "notes": "更新图片硬并发控制、服务负载历史分析回看逻辑，以及 Windows 一键部署补充 SQLite 到 MySQL 数据迁移说明。"
 }

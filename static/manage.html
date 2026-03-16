@@ -1837,6 +1837,104 @@
         </div>
       </div>
 
+      <div class="rounded-lg border border-border bg-background p-4 mb-4">
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 class="text-sm font-semibold">🧪 图片并发自测</h3>
+            <p class="text-xs text-muted-foreground mt-1">
+              后台按固定节奏持续发起图片生成请求。默认目标：1 分钟内发起 200 次；模型和提示词都可以随机生成。
+            </p>
+          </div>
+          <div id="imageLoadTestSummary" class="text-xs text-muted-foreground"></div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 mt-4">
+          <label class="text-xs text-muted-foreground">
+            <span class="block mb-1">模型</span>
+            <input id="iltModel" type="text" value="random" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="留空或 random 表示随机图片模型" />
+          </label>
+          <label class="text-xs text-muted-foreground">
+            <span class="block mb-1">总请求数</span>
+            <input id="iltTotalRequests" type="number" min="1" max="1000" value="200" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+          </label>
+          <label class="text-xs text-muted-foreground">
+            <span class="block mb-1">发起时长(秒)</span>
+            <input id="iltDurationSeconds" type="number" min="10" max="3600" value="60" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+          </label>
+          <label class="text-xs text-muted-foreground">
+            <span class="block mb-1">最大并发</span>
+            <input id="iltMaxConcurrency" type="number" min="1" max="200" value="30" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+          </label>
+          <label class="text-xs text-muted-foreground">
+            <span class="block mb-1">单请求超时(秒)</span>
+            <input id="iltTimeoutSeconds" type="number" min="30" max="3600" value="180" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" />
+          </label>
+          <label class="text-xs text-muted-foreground">
+            <span class="block mb-1">提示词前缀</span>
+            <input id="iltPromptPrefix" type="text" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" placeholder="可选，例如 高清壁纸风格" />
+          </label>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 mt-4">
+          <button id="iltStartBtn" onclick="startImageLoadTest()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground h-9 px-4 text-sm hover:opacity-90">
+            启动自测
+          </button>
+          <button id="iltStopBtn" onclick="stopImageLoadTest()" class="inline-flex items-center justify-center rounded-md border border-border h-9 px-4 text-sm hover:bg-accent">
+            停止任务
+          </button>
+          <button onclick="loadImageLoadTestStatus()" class="inline-flex items-center justify-center rounded-md border border-border h-9 px-4 text-sm hover:bg-accent">
+            刷新状态
+          </button>
+          <span id="iltStatusBadge" class="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs">暂无任务</span>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mt-4">
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">已发起</div>
+            <div id="iltLaunched" class="text-lg font-semibold">0</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">已完成</div>
+            <div id="iltCompleted" class="text-lg font-semibold">0</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">成功</div>
+            <div id="iltSucceeded" class="text-lg font-semibold text-green-600">0</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">失败</div>
+            <div id="iltFailed" class="text-lg font-semibold text-red-600">0</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">处理中</div>
+            <div id="iltInflight" class="text-lg font-semibold">0</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">成功率</div>
+            <div id="iltSuccessRate" class="text-lg font-semibold">0%</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">平均耗时</div>
+            <div id="iltAvgDuration" class="text-lg font-semibold">0 ms</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">P95 耗时</div>
+            <div id="iltP95Duration" class="text-lg font-semibold">0 ms</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+          <div>
+            <div class="text-xs font-medium mb-2">最近随机提示词</div>
+            <textarea id="iltRecentPrompts" class="w-full min-h-[140px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
+          </div>
+          <div>
+            <div class="text-xs font-medium mb-2">最近错误</div>
+            <textarea id="iltRecentErrors" class="w-full min-h-[140px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
+          </div>
+        </div>
+      </div>
+
       <!-- 核心指标卡片 -->
       <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-4">
         <!-- 实时 RPM -->
@@ -7169,6 +7267,7 @@
           startClusterAutoRefresh();
         } else if (t === "loadAnalysis") {
           loadDiagnostics();
+          loadImageLoadTestStatus();
           startDiagAutoRefresh();
           loadHistoryDiag(); // 同时加载历史分析
         }
@@ -7795,6 +7894,7 @@
           return;
         }
         loadDiagnostics();
+        loadImageLoadTestStatus();
       }, 5000);
     }
 
@@ -7817,6 +7917,153 @@
       } catch (e) {
         console.error("diagnostics fetch failed", e);
       }
+    }
+
+    function fmtLoadTestDuration(ms) {
+      const value = Number(ms || 0);
+      if (value <= 0) return "0 ms";
+      if (value < 1000) return `${value} ms`;
+      return `${(value / 1000).toFixed(1)} s`;
+    }
+
+    function fmtDateTimeText(value) {
+      if (!value) return "-";
+      try {
+        return new Date(value).toLocaleString();
+      } catch (_) {
+        return value;
+      }
+    }
+
+    function setImageLoadTestBusy(busy) {
+      const button = $("iltStartBtn");
+      if (!button) return;
+      button.disabled = !!busy;
+      button.classList.toggle("opacity-60", !!busy);
+    }
+
+    async function startImageLoadTest() {
+      const payload = {
+        model: String($("iltModel")?.value || "").trim() || "random",
+        total_requests: Number($("iltTotalRequests")?.value || 200),
+        duration_seconds: Number($("iltDurationSeconds")?.value || 60),
+        max_concurrency: Number($("iltMaxConcurrency")?.value || 30),
+        timeout_seconds: Number($("iltTimeoutSeconds")?.value || 180),
+        prompt_prefix: String($("iltPromptPrefix")?.value || "").trim() || null,
+      };
+      if (!confirm(`确定开始图片并发自测吗？\n目标：${payload.duration_seconds} 秒内发起 ${payload.total_requests} 次请求。`)) return;
+
+      try {
+        setImageLoadTestBusy(true);
+        const resp = await apiRequest("/api/loadtest/image/start", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        if (!resp) return;
+        const data = await resp.json();
+        if (!resp.ok || data.success === false) {
+          throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+        }
+        renderImageLoadTestStatus(data);
+        showToast("图片并发自测已启动", "success");
+      } catch (error) {
+        showToast(`启动自测失败：${error.message || error}`, "error");
+      } finally {
+        setImageLoadTestBusy(false);
+      }
+    }
+
+    async function stopImageLoadTest() {
+      if (!confirm("确定停止当前图片并发自测任务吗？已发起的请求会继续等待结束。")) return;
+      try {
+        const resp = await apiRequest("/api/loadtest/image/stop", { method: "POST" });
+        if (!resp) return;
+        const data = await resp.json();
+        if (!resp.ok || data.success === false) {
+          throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+        }
+        renderImageLoadTestStatus(data);
+        showToast("已请求停止图片并发自测", "info");
+      } catch (error) {
+        showToast(`停止自测失败：${error.message || error}`, "error");
+      }
+    }
+
+    async function loadImageLoadTestStatus() {
+      try {
+        const resp = await apiRequest("/api/loadtest/image/status");
+        if (!resp) return;
+        const data = await resp.json();
+        renderImageLoadTestStatus(data);
+      } catch (error) {
+        console.error("image loadtest fetch failed", error);
+      }
+    }
+
+    function renderImageLoadTestStatus(data) {
+      const job = data?.job || null;
+      if (!job) {
+        $("iltStatusBadge").textContent = "暂无任务";
+        $("iltStatusBadge").className = "inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs";
+        $("imageLoadTestSummary").textContent = "";
+        $("iltLaunched").textContent = "0";
+        $("iltCompleted").textContent = "0";
+        $("iltSucceeded").textContent = "0";
+        $("iltFailed").textContent = "0";
+        $("iltInflight").textContent = "0";
+        $("iltSuccessRate").textContent = "0%";
+        $("iltAvgDuration").textContent = "0 ms";
+        $("iltP95Duration").textContent = "0 ms";
+        $("iltRecentPrompts").value = "";
+        $("iltRecentErrors").value = "";
+        return;
+      }
+
+      const toneMap = {
+        queued: "bg-slate-100 text-slate-700",
+        running: "bg-blue-100 text-blue-700",
+        stopping: "bg-amber-100 text-amber-700",
+        completed: "bg-green-100 text-green-700",
+        cancelled: "bg-orange-100 text-orange-700",
+        failed: "bg-red-100 text-red-700",
+      };
+      const labelMap = {
+        queued: "排队中",
+        running: "运行中",
+        stopping: "停止中",
+        completed: "已完成",
+        cancelled: "已停止",
+        failed: "失败",
+      };
+      const status = String(job.status || "queued");
+      $("iltStatusBadge").textContent = labelMap[status] || status;
+      $("iltStatusBadge").className = `inline-flex items-center rounded-full px-2.5 py-1 text-xs ${toneMap[status] || toneMap.queued}`;
+      $("iltLaunched").textContent = `${job.launched || 0}/${job.total_requests || 0}`;
+      $("iltCompleted").textContent = `${job.completed || 0}/${job.total_requests || 0}`;
+      $("iltSucceeded").textContent = String(job.succeeded || 0);
+      $("iltFailed").textContent = String(job.failed || 0);
+      $("iltInflight").textContent = String(job.in_flight || 0);
+      $("iltSuccessRate").textContent = `${Number(job.success_rate || 0).toFixed(1)}%`;
+      $("iltAvgDuration").textContent = fmtLoadTestDuration(job.avg_duration_ms || 0);
+      $("iltP95Duration").textContent = fmtLoadTestDuration(job.p95_duration_ms || 0);
+
+      const prompts = Array.isArray(job.recent_prompts) ? job.recent_prompts : [];
+      const errors = Array.isArray(job.recent_errors) ? job.recent_errors : [];
+      $("iltRecentPrompts").value = prompts.length ? prompts.join("\n\n") : "暂无提示词样本";
+      $("iltRecentErrors").value = errors.length ? errors.join("\n\n") : "暂无错误";
+
+      const summaryParts = [
+        `模型 ${job.model || "-"}`,
+        `目标 ${job.duration_seconds || 0} 秒内 ${job.total_requests || 0} 次`,
+        `计划速率 ${job.target_rps || 0} req/s`,
+        `最大发起并发 ${job.max_concurrency || 0}`,
+        `已运行 ${job.elapsed_seconds || 0} 秒`,
+        `开始 ${fmtDateTimeText(job.started_at || job.created_at)}`,
+      ];
+      if (job.finished_at) summaryParts.push(`结束 ${fmtDateTimeText(job.finished_at)}`);
+      if (job.last_error) summaryParts.push(`最近错误：${job.last_error}`);
+      if (job.summary) summaryParts.unshift(job.summary);
+      $("imageLoadTestSummary").textContent = summaryParts.join(" · ");
     }
 
     function fmtMs(ms) {

@@ -26,6 +26,7 @@ from ..core.config import config
 from ..core.database import Database
 from ..core.models import normalize_captcha_priority_order
 from ..services.concurrency_manager import ConcurrencyManager
+from ..services.image_load_test_service import image_load_test_service
 from ..services.load_balancer import LoadBalancer
 from ..services.perf_monitor import perf_monitor
 from ..services.proxy_manager import ProxyManager
@@ -709,6 +710,15 @@ class TokenExportRequest(BaseModel):
 class TokenExportHistoryCleanupRequest(BaseModel):
     """按导出历史删除本机Token请求"""
     history_ids: List[int] = Field(default_factory=list)
+
+
+class ImageLoadTestStartRequest(BaseModel):
+    model: Optional[str] = "random"
+    total_requests: int = Field(default=200, ge=1, le=1000)
+    duration_seconds: int = Field(default=60, ge=10, le=3600)
+    max_concurrency: int = Field(default=30, ge=1, le=200)
+    timeout_seconds: int = Field(default=180, ge=30, le=3600)
+    prompt_prefix: Optional[str] = None
 
 
 # ========== Auth Middleware ==========
@@ -2863,6 +2873,44 @@ async def get_diagnostics(token: str = Depends(verify_admin_token)):
     throughput timeline, slow requests, event loop lag, and system resource usage.
     """
     return await perf_monitor.get_diagnostics()
+
+
+@router.get("/api/loadtest/image/status")
+async def get_image_loadtest_status(token: str = Depends(verify_admin_token)):
+    """获取图片并发自测任务状态。"""
+    return await image_load_test_service.get_status()
+
+
+@router.post("/api/loadtest/image/start")
+async def start_image_loadtest(
+    request: ImageLoadTestStartRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """启动图片并发自测任务。"""
+    _ = token
+    model = str(request.model or "random").strip() or "random"
+
+    try:
+        snapshot = await image_load_test_service.start_job(
+            model=model,
+            total_requests=request.total_requests,
+            duration_seconds=request.duration_seconds,
+            max_concurrency=request.max_concurrency,
+            timeout_seconds=request.timeout_seconds,
+            prompt_prefix=request.prompt_prefix,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return {"success": True, "job": snapshot}
+
+
+@router.post("/api/loadtest/image/stop")
+async def stop_image_loadtest(token: str = Depends(verify_admin_token)):
+    """请求停止当前图片并发自测任务。"""
+    _ = token
+    result = await image_load_test_service.stop_job()
+    return {"success": True, **result}
 
 
 @router.get("/api/diagnostics/history")

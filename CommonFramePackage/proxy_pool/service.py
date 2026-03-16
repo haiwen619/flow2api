@@ -75,6 +75,10 @@ class ProxyPoolService:
     async def delete_proxy(self, *, proxy_key: str) -> None:
         await self.repo.delete_proxy(proxy_key=proxy_key)
 
+    async def delete_all_proxies(self) -> Dict[str, Any]:
+        deleted = await self.repo.delete_all_proxies()
+        return {"deleted": int(deleted)}
+
     async def bulk_import(
         self,
         *,

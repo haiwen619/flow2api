@@ -329,6 +329,15 @@ class ProxyPoolRepository:
             await db.execute("DELETE FROM proxy_pool_proxies WHERE proxy_key = ?", (key,))
             await db.commit()
 
+    async def delete_all_proxies(self) -> int:
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute("SELECT COUNT(1) FROM proxy_pool_proxies") as cursor:
+                row = await cursor.fetchone()
+            deleted = int(row[0] if row else 0)
+            await db.execute("DELETE FROM proxy_pool_proxies")
+            await db.commit()
+        return deleted
+
     async def set_test_result(
         self,
         *,
