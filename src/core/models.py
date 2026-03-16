@@ -45,6 +45,7 @@ def normalize_captcha_priority_order(value: Any) -> List[str]:
 
 class Token(BaseModel):
     """Token model for Flow2API"""
+
     id: Optional[int] = None
 
     # 认证信息 (核心)
@@ -115,6 +116,7 @@ class Token(BaseModel):
 
 class Project(BaseModel):
     """Project model for VideoFX"""
+
     id: Optional[int] = None
     project_id: str  # VideoFX项目UUID
     token_id: int  # 关联的Token ID
@@ -126,6 +128,7 @@ class Project(BaseModel):
 
 class TokenStats(BaseModel):
     """Token statistics"""
+
     token_id: int
     image_count: int = 0
     video_count: int = 0
@@ -144,6 +147,7 @@ class TokenStats(BaseModel):
 
 class Task(BaseModel):
     """Generation task"""
+
     id: Optional[int] = None
     task_id: str  # Flow API返回的operation name
     token_id: int
@@ -160,6 +164,7 @@ class Task(BaseModel):
 
 class RequestLog(BaseModel):
     """API request log"""
+
     id: Optional[int] = None
     token_id: Optional[int] = None
     operation: str
@@ -176,6 +181,7 @@ class RequestLog(BaseModel):
 
 class AdminConfig(BaseModel):
     """Admin configuration"""
+
     id: int = 1
     username: str
     password: str
@@ -185,6 +191,7 @@ class AdminConfig(BaseModel):
 
 class ProxyConfig(BaseModel):
     """Proxy configuration"""
+
     id: int = 1
     enabled: bool = False  # 请求代理开关
     proxy_url: Optional[str] = None  # 请求代理地址
@@ -194,6 +201,7 @@ class ProxyConfig(BaseModel):
 
 class GenerationConfig(BaseModel):
     """Generation timeout configuration"""
+
     id: int = 1
     image_timeout: int = 300  # seconds
     image_total_timeout: int = 120  # seconds
@@ -202,6 +210,7 @@ class GenerationConfig(BaseModel):
 
 class CacheConfig(BaseModel):
     """Cache configuration"""
+
     id: int = 1
     cache_enabled: bool = False
     cache_timeout: int = 7200  # seconds (2 hours), 0 means never expire
@@ -212,6 +221,7 @@ class CacheConfig(BaseModel):
 
 class DebugConfig(BaseModel):
     """Debug configuration"""
+
     id: int = 1
     enabled: bool = False
     log_requests: bool = True
@@ -223,6 +233,7 @@ class DebugConfig(BaseModel):
 
 class CaptchaConfig(BaseModel):
     """Captcha configuration"""
+
     id: int = 1
     captcha_method: str = "remote_browser"  # 兼容字段，实际执行以 captcha_priority_order 为准
     captcha_priority_order: List[str] = Field(default_factory=lambda: normalize_captcha_priority_order(None))
@@ -271,6 +282,7 @@ class CaptchaConfig(BaseModel):
 
 class PluginConfig(BaseModel):
     """Plugin connection configuration"""
+
     id: int = 1
     connection_token: str = ""  # 插件连接token
     auto_enable_on_update: bool = True  # 更新token时自动启用（默认开启）
@@ -281,8 +293,66 @@ class PluginConfig(BaseModel):
 # OpenAI Compatible Request Models
 class ChatMessage(BaseModel):
     """Chat message"""
+
     role: str
     content: Union[str, List[dict]]  # string or multimodal array
+
+
+class ImageConfig(BaseModel):
+    """Gemini imageConfig parameters"""
+
+    aspectRatio: Optional[str] = None  # "16:9", "9:16", "1:1", "4:3", "3:4"
+    imageSize: Optional[str] = None  # "2k", "4k"
+
+
+class GenerationConfigParam(BaseModel):
+    """Gemini generationConfig parameters (for model name resolution)"""
+
+    responseModalities: Optional[List[str]] = None  # ["IMAGE", "TEXT"]
+    imageConfig: Optional[ImageConfig] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class GeminiInlineData(BaseModel):
+    """Gemini inline binary data."""
+
+    mimeType: str
+    data: str
+
+
+class GeminiFileData(BaseModel):
+    """Gemini file reference."""
+
+    fileUri: str
+    mimeType: Optional[str] = None
+
+
+class GeminiPart(BaseModel):
+    """Gemini content part."""
+
+    text: Optional[str] = None
+    inlineData: Optional[GeminiInlineData] = None
+    fileData: Optional[GeminiFileData] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class GeminiContent(BaseModel):
+    """Gemini content block."""
+
+    role: Optional[Literal["user", "model"]] = None
+    parts: List[GeminiPart]
+
+
+class GeminiGenerateContentRequest(BaseModel):
+    """Gemini official generateContent request."""
+
+    contents: List[GeminiContent]
+    generationConfig: Optional[GenerationConfigParam] = None
+    systemInstruction: Optional[GeminiContent] = None
+
+    model_config = ConfigDict(extra="allow")
 
 
 class ChatCompletionRequest(BaseModel):
@@ -298,3 +368,8 @@ class ChatCompletionRequest(BaseModel):
     # Flow2API specific parameters
     image: Optional[str] = None  # Base64 encoded image (deprecated, use messages)
     video: Optional[str] = None  # Base64 encoded video (deprecated)
+    # Gemini extension parameters (from extra_body or top-level)
+    generationConfig: Optional[GenerationConfigParam] = None
+    contents: Optional[List[Any]] = None  # Gemini native contents
+
+    model_config = ConfigDict(extra="allow")  # Allow extra fields like extra_body passthrough

@@ -3272,6 +3272,8 @@ async def get_log_detail(
     if not log:
         raise HTTPException(status_code=404, detail="日志不存在")
 
+    error_summary = _extract_error_summary(log.get("response_body"))
+
     return {
         "id": log.get("id"),
         "token_id": log.get("token_id"),
@@ -3284,6 +3286,7 @@ async def get_log_detail(
         "progress": log.get("progress") or 0,
         "created_at": log.get("created_at"),
         "updated_at": log.get("updated_at"),
+        "error_summary": error_summary,
         "request_body": log.get("request_body"),
         "response_body": log.get("response_body")
     }

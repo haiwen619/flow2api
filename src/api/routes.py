@@ -15,8 +15,32 @@ from ..core.config import config
 from ..core.models import ChatCompletionRequest, RequestLog
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 from ..core.logger import debug_logger
+from ..core.model_resolver import get_base_model_aliases, resolve_model_name
+from ..core.models import (
+    ChatCompletionRequest,
+    ChatMessage,
+    GeminiContent,
+    GeminiGenerateContentRequest,
+)
+from ..services.generation_handler import MODEL_CONFIG, GenerationHandler
 
 router = APIRouter()
+
+MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
+HTML_VIDEO_RE = re.compile(r"<video[^>]+src=['\"](.*?)['\"]", re.IGNORECASE)
+DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", re.DOTALL)
+GEMINI_STATUS_MAP = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    409: "ABORTED",
+    429: "RESOURCE_EXHAUSTED",
+    500: "INTERNAL",
+    502: "UNAVAILABLE",
+    503: "UNAVAILABLE",
+    504: "DEADLINE_EXCEEDED",
+}
 
 # Dependency injection will be set up in main.py
 generation_handler: GenerationHandler = None
@@ -38,7 +62,7 @@ def _describe_unexpected_chat_exception(exc: BaseException) -> str:
 
 
 def set_generation_handler(handler: GenerationHandler):
-    """Set generation handler instance"""
+    """Set generation handler instance."""
     global generation_handler
     generation_handler = handler
 
@@ -583,35 +607,51 @@ def _resolve_model_from_image_config(model: str, generation_config: Optional[Dic
 
 
 async def retrieve_image_data(url: str) -> Optional[bytes]:
-    """
-    智能获取图片数据：
-    1. 优先检查是否为本地 /tmp/ 缓存文件，如果是则直接读取磁盘
-    2. 如果本地不存在或是外部链接，则进行网络下载
-    """
-    # 优先尝试本地读取
+    """Read image bytes from local /tmp cache or remote URL."""
+    file_cache = getattr(generation_handler, "file_cache", None)
     try:
-        if "/tmp/" in url and generation_handler and generation_handler.file_cache:
+        if "/tmp/" in url and file_cache:
             path = urlparse(url).path
             filename = path.split("/tmp/")[-1]
-            local_file_path = generation_handler.file_cache.cache_dir / filename
+            local_file_path = file_cache.cache_dir / filename
 
             if local_file_path.exists() and local_file_path.is_file():
                 data = local_file_path.read_bytes()
                 if data:
                     return data
-    except Exception as e:
-        debug_logger.log_warning(f"[CONTEXT] 本地缓存读取失败: {str(e)}")
+    except Exception as exc:
+        debug_logger.log_warning(f"[CONTEXT] 本地缓存读取失败: {str(exc)}")
 
-    # 回退逻辑：网络下载
+    proxy_url = None
+    try:
+        if file_cache and hasattr(file_cache, "_resolve_download_proxy"):
+            proxy_url = await file_cache._resolve_download_proxy("image")
+    except Exception as exc:
+        debug_logger.log_warning(f"[CONTEXT] 图片下载代理解析失败: {str(exc)}")
+
     try:
         async with AsyncSession() as session:
-            response = await session.get(url, timeout=30, impersonate="chrome110", verify=False)
-            if response.status_code == 200:
+            response = await session.get(
+                url,
+                timeout=60,
+                proxies={"http": proxy_url, "https": proxy_url} if proxy_url else None,
+                headers={
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                    "Referer": "https://labs.google/",
+                },
+                impersonate="chrome120",
+                verify=False,
+            )
+            if response.status_code == 200 and response.content:
                 return response.content
-            else:
-                debug_logger.log_warning(f"[CONTEXT] 图片下载失败，状态码: {response.status_code}")
-    except Exception as e:
-        debug_logger.log_error(f"[CONTEXT] 图片下载异常: {str(e)}")
+            debug_logger.log_warning(
+                f"[CONTEXT] 图片下载失败，状态码: {response.status_code}"
+            )
+    except Exception as exc:
+        debug_logger.log_error(f"[CONTEXT] 图片下载异常: {str(exc)}")
 
     return None
 
@@ -626,24 +666,17 @@ async def list_models():
     """List available models"""
     models = []
 
-    for model_id, config in MODEL_CONFIG.items():
-        description = f"{config['type'].capitalize()} generation"
-        if config['type'] == 'image':
-            description += f" - {config['model_name']}"
-        else:
-            description += f" - {config['model_key']}"
+    if uri.startswith("data:image"):
+        _, image_bytes = _decode_data_url(uri)
+        return image_bytes
 
-        models.append({
-            "id": model_id,
-            "object": "model",
-            "owned_by": "flow2api",
-            "description": description
-        })
+    if uri.startswith("http://") or uri.startswith("https://") or "/tmp/" in uri:
+        image_bytes = await retrieve_image_data(uri)
+        if image_bytes:
+            return image_bytes
+        raise HTTPException(status_code=400, detail=f"Failed to load image from {uri}")
 
-    return {
-        "object": "list",
-        "data": models
-    }
+    raise HTTPException(status_code=400, detail=f"Unsupported image URI: {uri}")
 
 async def verify_internal_cluster_request(
     x_cluster_key: Optional[str] = Header(None, alias="X-Cluster-Key"),
