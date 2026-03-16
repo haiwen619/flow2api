@@ -190,6 +190,17 @@ class FlowClient:
 
         return user_agent
 
+    # 支持的 Chrome 模拟版本池（近期版本，避免使用过旧版本被检测）
+    _IMPERSONATE_POOL = ["chrome119", "chrome120", "chrome123", "chrome124"]
+
+    def _pick_impersonate(self, account_id: Optional[str]) -> str:
+        """根据账号 ID 固定选择一个 Chrome 模拟版本，保证同账号 TLS 指纹一致。"""
+        if not account_id:
+            return self._IMPERSONATE_POOL[0]
+        import hashlib
+        idx = int(hashlib.md5(account_id.encode()).hexdigest()[:4], 16) % len(self._IMPERSONATE_POOL)
+        return self._IMPERSONATE_POOL[idx]
+
     def _set_request_fingerprint(self, fingerprint: Optional[Dict[str, Any]]):
         """设置当前请求链路的浏览器指纹上下文。"""
         self._request_fingerprint_ctx.set(dict(fingerprint) if fingerprint else None)
@@ -399,7 +410,7 @@ class FlowClient:
                         headers=headers,
                         proxy=proxy_url,
                         timeout=request_timeout,
-                        impersonate="chrome110"
+                        impersonate=self._pick_impersonate(account_id)
                     )
                 else:  # POST
                     response = await session.post(
@@ -408,7 +419,7 @@ class FlowClient:
                         json=json_data,
                         proxy=proxy_url,
                         timeout=request_timeout,
-                        impersonate="chrome110"
+                        impersonate=self._pick_impersonate(account_id)
                     )
 
                 duration_ms = (time.time() - start_time) * 1000
