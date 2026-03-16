@@ -19,9 +19,13 @@ class LoadBalancer:
     def __init__(self, token_manager, concurrency_manager: Optional[ConcurrencyManager] = None):
         self.token_manager = token_manager
         self.concurrency_manager = concurrency_manager
+        self.cluster_manager = None
         self._image_pending: Dict[int, int] = {}
         self._video_pending: Dict[int, int] = {}
         self._pending_lock = asyncio.Lock()
+
+    def set_cluster_manager(self, cluster_manager):
+        self.cluster_manager = cluster_manager
 
     async def _get_pending_count(self, token_id: int, for_image_generation: bool, for_video_generation: bool) -> int:
         async with self._pending_lock:
@@ -238,6 +242,13 @@ class LoadBalancer:
         active_tokens = await self.token_manager.get_active_tokens()
         debug_logger.log_info(f"[LOAD_BALANCER] 获取到 {len(active_tokens)} 个活跃Token")
 
+        worker_used_emails = set()
+        if self.cluster_manager and self.cluster_manager.is_master():
+            try:
+                worker_used_emails = await self.cluster_manager.get_worker_used_token_emails()
+            except Exception as exc:
+                debug_logger.log_warning(f"[LOAD_BALANCER] 获取子节点 Token 占用状态失败: {exc}")
+
         if not active_tokens:
             debug_logger.log_info(f"[LOAD_BALANCER] ❌ 没有活跃的Token")
             return None
@@ -247,6 +258,10 @@ class LoadBalancer:
         required_tier = get_required_paygate_tier_for_model(model)
 
         for token in active_tokens:
+            token_email = str(getattr(token, "email", "") or "").strip().lower()
+            if token_email and token_email in worker_used_emails:
+                filtered_reasons[token.id] = "已被子节点占用"
+                continue
             normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
             if model and not supports_model_for_tier(model, normalized_tier):
                 filtered_reasons[token.id] = '账号等级不足，需要 ' + get_paygate_tier_label(required_tier)

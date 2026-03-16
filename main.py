@@ -14,12 +14,14 @@ if __name__ == "__main__":
             pass
 
     from src.core.config import config
+    from src.core.docker_headed_runtime import prepare_local_headed_runtime
     from src.main import app
 
     runtime_server_info = config.bootstrap_runtime_server_mode()
     detected_public_ip = str(runtime_server_info.get("detected_public_ip") or "").strip()
     default_public_ip = str(runtime_server_info.get("default_public_ip") or "").strip()
     default_public_ips = runtime_server_info.get("default_public_ips") or []
+    docker_headed_env = runtime_server_info.get("docker_headed_env") or {}
     default_public_ip_text = ",".join(str(item or "").strip() for item in default_public_ips if str(item or "").strip()) or default_public_ip
     public_access_url = f"http://{detected_public_ip}:{config.server_port}" if detected_public_ip else ""
     if runtime_server_info.get("matched_server"):
@@ -38,6 +40,26 @@ if __name__ == "__main__":
         print(
             f"[startup] 未检测到公网IP，沿用配置监听地址={config.server_host}"
         )
+
+    if docker_headed_env.get("applied"):
+        print(
+            f"[startup] 检测到 Linux 服务器公网IP={detected_public_ip}，已自动设置 ALLOW_DOCKER_HEADED_CAPTCHA=true"
+        )
+    elif docker_headed_env.get("enabled") and docker_headed_env.get("reason") == "preconfigured":
+        print("[startup] 已检测到预设 ALLOW_DOCKER_HEADED_CAPTCHA=true")
+
+    if docker_headed_env.get("matched_linux_server") and not sys.platform.startswith("win"):
+        print("[startup] 当前 Linux 服务器节点已强制仅使用 remote_browser 打码，不再回退到 browser/personal/API")
+
+    headed_runtime = prepare_local_headed_runtime()
+    if headed_runtime.get("display_applied"):
+        print(f"[startup] Docker 有头浏览器已自动设置 DISPLAY={headed_runtime.get('display')}")
+    if headed_runtime.get("xvfb_started"):
+        print(f"[startup] Docker 有头浏览器已自动启动 Xvfb ({headed_runtime.get('display')})")
+    elif headed_runtime.get("xvfb_already_running"):
+        print(f"[startup] 检测到已有 Xvfb/显示服务可用 ({headed_runtime.get('display')})")
+    elif headed_runtime.get("allow_headed") and headed_runtime.get("reason") not in {"", "not_docker", "headed_not_allowed", "windows"}:
+        print(f"[startup] Docker 有头浏览器运行时未完全就绪: reason={headed_runtime.get('reason')}")
 
     uvicorn.run(
         app,

@@ -3,6 +3,7 @@ import asyncio
 import base64
 import json
 import time
+from contextlib import suppress
 from typing import Optional, AsyncGenerator, List, Dict, Any
 from ..core.logger import debug_logger
 from .perf_monitor import perf_monitor
@@ -732,6 +733,35 @@ class GenerationHandler:
             generation_result["error_message"] = None
             generation_result["error_emitted"] = False
 
+    async def _iterate_async_generator_with_timeout(
+        self,
+        generator: AsyncGenerator,
+        total_timeout_seconds: int,
+    ) -> AsyncGenerator:
+        """按总耗时限制迭代异步生成器。"""
+        deadline = time.monotonic() + max(1, int(total_timeout_seconds or 1))
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+
+                next_task = asyncio.create_task(generator.__anext__())
+                try:
+                    chunk = await asyncio.wait_for(next_task, timeout=remaining)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    next_task.cancel()
+                    with suppress(Exception):
+                        await next_task
+                    raise
+
+                yield chunk
+        finally:
+            with suppress(Exception):
+                await generator.aclose()
+
     async def check_token_availability(self, is_image: bool, is_video: bool) -> bool:
         """检查Token可用性
 
@@ -928,14 +958,41 @@ class GenerationHandler:
             generation_pipeline_started_at = time.time()
             if generation_type == "image":
                 debug_logger.log_info(f"[GENERATION] 开始图片生成流程...")
-                async for chunk in self._handle_image_generation(
-                    token, project_id, model_config, prompt, images, stream,
-                    perf_trace=perf_trace,
-                    generation_result=generation_result,
-                    request_log_state=request_log_state,
-                    pending_token_state=pending_token_state
-                ):
-                    yield chunk
+                image_total_timeout = max(30, int(config.image_total_timeout or 120))
+                try:
+                    async for chunk in self._iterate_async_generator_with_timeout(
+                        self._handle_image_generation(
+                            token, project_id, model_config, prompt, images, stream,
+                            perf_trace=perf_trace,
+                            generation_result=generation_result,
+                            request_log_state=request_log_state,
+                            pending_token_state=pending_token_state
+                        ),
+                        image_total_timeout,
+                    ):
+                        yield chunk
+                except asyncio.TimeoutError:
+                    error_msg = f"图片生成超时了（总耗时超过 {image_total_timeout} 秒）"
+                    debug_logger.log_warning(f"[GENERATION] {error_msg}")
+                    perf_trace["status"] = "timeout"
+                    perf_trace["error"] = error_msg
+                    perf_trace["image_total_timeout_seconds"] = image_total_timeout
+                    image_perf = perf_trace.setdefault("image_generation", {}) if isinstance(perf_trace, dict) else None
+                    if isinstance(image_perf, dict):
+                        image_perf["timed_out"] = True
+                        image_perf["overall_timeout_seconds"] = image_total_timeout
+                    await self._update_request_log_progress(
+                        request_log_state,
+                        token_id=token.id,
+                        status_text="image_total_timeout",
+                        progress=request_log_state.get("progress", 0),
+                        response_extra={"error": error_msg},
+                    )
+                    self._mark_generation_failed(generation_result, error_msg)
+                    if stream:
+                        yield self._create_stream_chunk(f"❌ {error_msg}\n")
+                    yield self._create_error_response(error_msg)
+                    return
             else:  # video
                 debug_logger.log_info(f"[GENERATION] 开始视频生成流程...")
                 async for chunk in self._handle_video_generation(

@@ -322,7 +322,7 @@ class ValidateOptions:
     # - bitbrowser_auto_delete=True 时：结束后 deleteBrowser(id)
     bitbrowser: bool = True
     bitbrowser_id: Optional[str] = None
-        bitbrowser_auto_create: Optional[bool] = None
+    bitbrowser_auto_create: Optional[bool] = None
     bitbrowser_auto_delete: bool = False
     reuse_test_bitbrowser_id: bool = True
 
@@ -547,6 +547,19 @@ async def _collect_google_labs_cookies(context, *, entry_url: str) -> list[dict]
         except Exception:
             continue
     return list(uniq.values())
+
+
+def _is_google_flow_target_url(url: Optional[str]) -> bool:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return False
+    return bool(
+        re.match(
+            r"^https://labs\.google/(?:fx|flow)(?:/|\?|$)",
+            raw_url,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _cookie_header_for_domain(cookies: list[dict], domain_keyword: str) -> str:
@@ -1129,7 +1142,7 @@ async def validate_antigravity_account(
         }
 
     timeout_ms = max(1, int(options.timeout_sec)) * 1000
-    target_re = re.compile(r"^https://labs\.google/fx(?:/|\?|$)", re.IGNORECASE)
+    target_re = re.compile(r"^https://labs\.google/(?:fx|flow)(?:/|\?|$)", re.IGNORECASE)
     _print_and_log(f"将在 {options.timeout_sec} 秒内等待进入目标页: {entry_url}")
 
     async with async_playwright() as p:
@@ -2558,7 +2571,7 @@ async def _detect_google_labs_onboarding_modal(page) -> Optional[dict]:
     except Exception:
         raw_url = ""
     url = raw_url.lower()
-    if "labs.google/fx/tools/flow" not in url:
+    if not _is_google_flow_target_url(raw_url):
         return None
 
     container_selectors = [
@@ -2622,7 +2635,7 @@ async def _detect_flow_access_denied_reason(page) -> Optional[dict]:
     except Exception:
         raw_url = ""
     url = raw_url.lower()
-    if "labs.google/fx/tools/flow" not in url:
+    if not _is_google_flow_target_url(raw_url):
         return None
 
     selectors = [
@@ -2697,7 +2710,7 @@ async def _raise_if_flow_access_denied(
                 f"终止本次任务：{marker}.{snippet_msg}{stage_msg}"
             )
         try:
-            if "labs.google/fx/tools/flow" not in str(page.url or "").lower():
+            if not _is_google_flow_target_url(page.url):
                 return
         except Exception:
             pass

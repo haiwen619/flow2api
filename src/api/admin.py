@@ -89,7 +89,7 @@ def _format_disable_reason_label(reason_code: str) -> str:
         "import_disabled": "导入时设为禁用",
         "token_expired": "Token已过期",
         "refresh_failed": "刷新失败后自动禁用",
-        "consecutive_error_limit": "连续错误达到阈值自动禁用",
+        "consecutive_error_limit": "连续错误阈值停用(历史记录)",
         "unknown_inactive": "已禁用(原因未记录)",
     }
     return reason_map.get(code, code or "未禁用")
@@ -113,8 +113,6 @@ def _build_disable_reason_meta(row: Dict[str, Any], error_ban_threshold: int) ->
         detail_lower = last_refresh_detail.lower()
         if not reason_code and ("自动禁用" in detail_lower or "auto-disable" in detail_lower):
             reason_code = "refresh_failed"
-        if not reason_code and error_ban_threshold > 0 and consecutive_error_count >= error_ban_threshold:
-            reason_code = "consecutive_error_limit"
         if not reason_code:
             reason_code = "unknown_inactive"
 
@@ -131,11 +129,11 @@ def _build_disable_reason_meta(row: Dict[str, Any], error_ban_threshold: int) ->
     elif reason_code == "consecutive_error_limit":
         if error_ban_threshold > 0:
             detail = (
-                f"连续错误次数 {consecutive_error_count} 已达到自动禁用阈值 "
-                f"{error_ban_threshold}"
+                f"历史记录：该 Token 曾因连续错误次数 {consecutive_error_count} "
+                f"达到旧阈值 {error_ban_threshold} 而被自动停用"
             )
         else:
-            detail = "连续错误次数达到自动禁用阈值"
+            detail = "历史记录：该 Token 曾因连续错误达到旧自动停用阈值而被停用"
     elif reason_code == "cookie_invalid_need_relogin":
         detail = last_refresh_detail or "Cookie 已失效，需要重新自动登录恢复"
     elif reason_code == "429_rate_limit":
@@ -561,6 +559,7 @@ class ServerConfigRequest(BaseModel):
     port: Optional[int] = None
     default_public_ip: Optional[str] = None
     default_public_ips: Optional[List[str]] = None
+    linux_headed_public_ips: Optional[List[str]] = None
     rpa_test_bitbrowser_id_local: Optional[str] = None
     rpa_test_bitbrowser_id_server: Optional[str] = None
     rpa_test_bitbrowser_ids_local: Optional[List[str]] = None
@@ -587,6 +586,7 @@ class ClusterHeartbeatRequest(BaseModel):
     node_id: str
     node_name: Optional[str] = None
     base_url: Optional[str] = None
+    server_port: Optional[int] = None
     role: Optional[str] = "worker"
     enabled: bool = True
     active_requests: int = 0
@@ -596,10 +596,16 @@ class ClusterHeartbeatRequest(BaseModel):
     reported_roundtrip_ms: Optional[int] = None
     reported_at: Optional[str] = None
     load_summary: Dict[str, Any] = Field(default_factory=dict)
+    worker_tokens: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ClusterDeleteNodeRequest(BaseModel):
     node_id: str
+
+
+class ClusterSetNodeEnabledRequest(BaseModel):
+    node_id: str
+    enabled: bool
 
 
 class ClusterDelegatedAutoLoginRequest(BaseModel):
@@ -626,8 +632,9 @@ class ClusterDelegatedAutoLoginResultRequest(BaseModel):
 
 
 class GenerationConfigRequest(BaseModel):
-    image_timeout: int
-    video_timeout: int
+    image_timeout: int = Field(default=300, ge=60, le=3600)
+    image_total_timeout: int = Field(default=120, ge=30, le=3600)
+    video_timeout: int = Field(default=1500, ge=60, le=7200)
 
 
 class LogCleanupRequest(BaseModel):
@@ -1029,6 +1036,11 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
     """Get all tokens with statistics"""
     _ = token
     token_rows = await db.get_all_tokens_with_stats()
+    worker_usage_map = (
+        await cluster_manager.get_worker_token_usage_map()
+        if cluster_manager and cluster_manager.is_master()
+        else {}
+    )
     admin_config = await db.get_admin_config()
     error_ban_threshold = int(getattr(admin_config, "error_ban_threshold", 0) or 0)
     to_iso = lambda value: value.isoformat() if hasattr(value, "isoformat") else value
@@ -1074,6 +1086,36 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
                 pass
 
         disable_reason_meta = _build_disable_reason_meta(row, error_ban_threshold)
+        email_key = str(row.get("email") or "").strip().lower()
+        cluster_worker_usages = list(worker_usage_map.get(email_key) or [])
+        cluster_worker_nodes = []
+        for usage in cluster_worker_usages:
+            node_label = str(usage.get("node_name") or usage.get("node_id") or "").strip()
+            if node_label and node_label not in cluster_worker_nodes:
+                cluster_worker_nodes.append(node_label)
+        cluster_worker_occupied = bool(cluster_worker_usages)
+        effective_is_active = bool(row.get("is_active")) and not cluster_worker_occupied
+        if cluster_worker_occupied and bool(row.get("is_active")):
+            occupied_time = next(
+                (
+                    usage.get("reported_at")
+                    for usage in cluster_worker_usages
+                    if str(usage.get("reported_at") or "").strip()
+                ),
+                None,
+            )
+            node_text = "、".join(cluster_worker_nodes[:3])
+            if len(cluster_worker_nodes) > 3:
+                node_text += f" 等{len(cluster_worker_nodes)}个节点"
+            disable_reason_meta = {
+                "disable_reason_code": "cluster_worker_in_use",
+                "disable_reason_label": "子节点占用中",
+                "disable_reason_detail": (
+                    f"当前 Token 正被子节点使用：{node_text}" if node_text else "当前 Token 正被子节点使用"
+                ),
+                "disable_hard_banned": False,
+                "disable_effective_at": occupied_time,
+            }
 
         result.append({
             "id": row.get("id"),
@@ -1091,6 +1133,7 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             "name": row.get("name"),
             "remark": row.get("remark"),
             "is_active": bool(row.get("is_active")),
+            "is_effectively_active": bool(effective_is_active),
             "ban_reason": row.get("ban_reason"),
             "banned_at": to_iso(row.get("banned_at")) if row.get("banned_at") else None,
             "created_at": to_iso(row.get("created_at")) if row.get("created_at") else None,
@@ -1111,6 +1154,10 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             "today_error_count": row.get("today_error_count", 0),
             "consecutive_error_count": row.get("consecutive_error_count", 0),
             "last_error_at": to_iso(row.get("last_error_at")) if row.get("last_error_at") else None,
+            "cluster_worker_occupied": cluster_worker_occupied,
+            "cluster_worker_nodes": cluster_worker_nodes,
+            "cluster_worker_usage_count": len(cluster_worker_usages),
+            "cluster_worker_usages": cluster_worker_usages,
             **disable_reason_meta,
         })
 
@@ -1805,6 +1852,10 @@ async def enable_token(
     token: str = Depends(verify_admin_token)
 ):
     """Enable token"""
+    if cluster_manager and cluster_manager.is_master():
+        token_obj = await token_manager.get_token(token_id)
+        if token_obj and await cluster_manager.is_token_email_used_by_worker(token_obj.email):
+            raise HTTPException(status_code=400, detail="当前 Token 正被子节点使用，无法在主节点启用")
     await token_manager.enable_token(token_id)
     return {"success": True, "message": "Token已启用"}
 
@@ -2169,6 +2220,7 @@ async def import_tokens(
 @router.get("/api/server/config")
 async def get_server_config(token: str = Depends(verify_admin_token)):
     """Get server runtime mode and bind config from setting.toml."""
+    docker_headed_auto = config.configure_runtime_docker_headed_captcha()
     return {
         "success": True,
         "config": {
@@ -2178,8 +2230,10 @@ async def get_server_config(token: str = Depends(verify_admin_token)):
             "port": config.server_port,
             "default_public_ip": config.default_server_public_ip,
             "default_public_ips": config.default_server_public_ips,
+            "linux_headed_public_ips": config.linux_headed_server_public_ips,
             "detected_public_ip": config.detected_public_ip,
             "server_auto_detected": config.server_auto_detected,
+            "docker_headed_auto_allowed": bool(docker_headed_auto.get("enabled")),
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
             "rpa_test_bitbrowser_ids_local": config.get_rpa_test_bitbrowser_ids_local(),
@@ -2216,6 +2270,11 @@ async def update_server_config(
         normalized_default_public_ips.insert(0, default_public_ip)
     if not default_public_ip and normalized_default_public_ips:
         default_public_ip = normalized_default_public_ips[0]
+    linux_headed_public_ips = (
+        [str(v or "").strip() for v in (request.linux_headed_public_ips or [])]
+        if request.linux_headed_public_ips is not None
+        else config.linux_headed_server_public_ips
+    )
     if not host:
         host = "127.0.0.1" if mode == "local" else "0.0.0.0"
     host = config.normalize_server_host_for_mode(
@@ -2254,6 +2313,7 @@ async def update_server_config(
             port=port,
             default_public_ip=default_public_ip,
             default_public_ips=normalized_default_public_ips,
+            linux_headed_public_ips=linux_headed_public_ips,
         )
         config.update_rpa_test_bitbrowser_ids(
             local_ids=local_bit_ids,
@@ -2277,8 +2337,10 @@ async def update_server_config(
             "port": config.server_port,
             "default_public_ip": config.default_server_public_ip,
             "default_public_ips": config.default_server_public_ips,
+            "linux_headed_public_ips": config.linux_headed_server_public_ips,
             "detected_public_ip": config.detected_public_ip,
             "server_auto_detected": config.server_auto_detected,
+            "docker_headed_auto_allowed": bool(config.configure_runtime_docker_headed_captcha().get("enabled")),
             "rpa_test_bitbrowser_id_local": config.get_rpa_test_bitbrowser_id_local(),
             "rpa_test_bitbrowser_id_server": config.get_rpa_test_bitbrowser_id_server(),
             "rpa_test_bitbrowser_ids_local": config.get_rpa_test_bitbrowser_ids_local(),
@@ -2404,6 +2466,35 @@ async def delete_cluster_node(
         "deleted": bool(deleted),
         "node_id": request.node_id,
         "message": "节点记录已删除" if deleted else "节点记录不存在，可能已被清理",
+        "snapshot": await cluster_manager.get_cluster_snapshot(),
+    }
+
+
+@router.post("/api/cluster/set-node-enabled")
+async def set_cluster_node_enabled(
+    request: ClusterSetNodeEnabledRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """Enable or disable a specific remote node on the master."""
+    _ = token
+    if not cluster_manager or not cluster_manager.is_enabled():
+        raise HTTPException(status_code=400, detail="当前未启用集群模式")
+    if not cluster_manager.is_master():
+        raise HTTPException(status_code=403, detail="只有主节点可以管理子节点状态")
+
+    try:
+        updated = await cluster_manager.set_node_enabled(request.node_id, request.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="节点记录不存在")
+
+    return {
+        "success": True,
+        "node_id": request.node_id,
+        "enabled": bool(request.enabled),
+        "message": "节点已启用" if request.enabled else "节点已禁用",
         "snapshot": await cluster_manager.get_cluster_snapshot(),
     }
 
@@ -2687,6 +2778,7 @@ async def get_generation_config(token: str = Depends(verify_admin_token)):
         "success": True,
         "config": {
             "image_timeout": config.image_timeout,
+            "image_total_timeout": config.image_total_timeout,
             "video_timeout": config.video_timeout
         }
     }
@@ -2698,7 +2790,11 @@ async def update_generation_config(
     token: str = Depends(verify_admin_token)
 ):
     """Update generation timeout configuration"""
-    await db.update_generation_config(request.image_timeout, request.video_timeout)
+    await db.update_generation_config(
+        request.image_timeout,
+        request.image_total_timeout,
+        request.video_timeout,
+    )
 
     # 🔥 Hot reload: sync database config to memory
     await db.reload_config_to_memory()
@@ -2992,6 +3088,9 @@ async def update_api_key(
     # Update API key in database
     await db.update_admin_config(api_key=request.new_api_key)
 
+    # Also persist to setting.toml so upgrades/new sqlite files keep the latest key.
+    config.persist_api_key(request.new_api_key)
+
     # 🔥 Hot reload: sync database config to memory
     await db.reload_config_to_memory()
 
@@ -3033,7 +3132,11 @@ async def update_generation_timeout(
     token: str = Depends(verify_admin_token)
 ):
     """Update generation timeout configuration"""
-    await db.update_generation_config(request.image_timeout, request.video_timeout)
+    await db.update_generation_config(
+        request.image_timeout,
+        request.image_total_timeout,
+        request.video_timeout,
+    )
 
     # 🔥 Hot reload: sync database config to memory
     await db.reload_config_to_memory()

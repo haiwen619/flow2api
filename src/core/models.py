@@ -142,7 +142,7 @@ class TokenStats(BaseModel):
     today_video_count: int = 0
     today_error_count: int = 0
     today_date: Optional[str] = None
-    # 连续错误计数 (用于自动禁用判断)
+    # 连续错误计数 (仅用于统计/排障展示)
     consecutive_error_count: int = 0
 
 
@@ -184,7 +184,7 @@ class AdminConfig(BaseModel):
     username: str
     password: str
     api_key: str
-    error_ban_threshold: int = 3  # Auto-disable token after N consecutive errors
+    error_ban_threshold: int = 3  # 兼容保留字段，普通请求失败已不再自动禁用 token
 
 
 class ProxyConfig(BaseModel):
@@ -200,6 +200,7 @@ class GenerationConfig(BaseModel):
     """Generation timeout configuration"""
     id: int = 1
     image_timeout: int = 300  # seconds
+    image_total_timeout: int = 120  # seconds
     video_timeout: int = 1500  # seconds
 
 

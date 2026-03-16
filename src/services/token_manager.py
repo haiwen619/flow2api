@@ -498,6 +498,65 @@ class TokenManager:
         )
         return {"success": False, "status": status_text, "token_id": int(token_id), "email": token_email}
 
+    async def _handle_worker_browser_refresh_fallback(
+        self,
+        *,
+        token_id: int,
+        token: Token,
+        refresh_source: str,
+        failure_detail: Optional[str] = None,
+    ) -> bool:
+        """On worker nodes, delegate browser-based recovery to master instead of running local RPA."""
+        from ..core.config import config
+
+        if not (config.cluster_enabled and config.cluster_role == "worker"):
+            return False
+
+        base_detail = str(failure_detail or "").strip() or "ST直刷/reAuth纯协议刷新均失败，需要浏览器登录恢复"
+        trigger_msg = await self._trigger_accountpool_auto_login_if_enabled(
+            token_id,
+            getattr(token, "email", None),
+        )
+        auto_login_triggered = self._is_auto_login_triggered_message(trigger_msg)
+
+        if auto_login_triggered:
+            pending_detail = (
+                f"{base_detail}；当前节点为子节点，不执行本机浏览器刷新；"
+                f"{trigger_msg}；等待主节点完成自动登录后回传新的 Token/Cookie"
+            )
+            await self.db.update_token(
+                token_id,
+                is_active=False,
+                ban_reason="refresh_failed",
+                banned_at=datetime.now(timezone.utc),
+            )
+            await self._record_refresh_event(
+                token_id,
+                f"{refresh_source}:CLUSTER_MASTER_AUTO_LOGIN_PENDING",
+                "PENDING",
+                pending_detail,
+            )
+            debug_logger.log_info(
+                f"[AT_REFRESH] Token {token_id}: 子节点已跳过本机浏览器刷新并委托主节点处理"
+            )
+            return True
+
+        failed_detail = (
+            f"{base_detail}；当前节点为子节点，未执行本机浏览器刷新；"
+            f"{trigger_msg or '主节点自动登录委托未触发'}"
+        )
+        await self._record_refresh_event(
+            token_id,
+            f"{refresh_source}:WORKER_BROWSER_REFRESH_SKIPPED",
+            "FAILED",
+            failed_detail,
+        )
+        await self.disable_token(token_id, reason="refresh_failed")
+        debug_logger.log_warning(
+            f"[AT_REFRESH] Token {token_id}: 子节点无法执行浏览器刷新且未成功委托主节点 - {failed_detail}"
+        )
+        return True
+
     async def _record_refresh_event(
         self,
         token_id: int,
@@ -1093,6 +1152,17 @@ class TokenManager:
             else:
                 debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: reAuth 恢复已禁用（flow.enable_reauth_refresh=false），跳过")
 
+            worker_fallback_detail = "ST直刷/reAuth恢复均失败，需要浏览器登录恢复"
+            if reauth_detail:
+                worker_fallback_detail = f"{worker_fallback_detail}；reAuth详情={str(reauth_detail)[:240]}"
+            if await self._handle_worker_browser_refresh_fallback(
+                token_id=token_id,
+                token=token,
+                refresh_source=refresh_source,
+                failure_detail=worker_fallback_detail,
+            ):
+                return False
+
             # 继续尝试 personal 模式浏览器刷新 ST
             debug_logger.log_info(f"[AT_REFRESH] Token {token_id}: 尝试浏览器刷新 ST...")
             new_st = await self._try_refresh_st(token_id, token)
@@ -1661,19 +1731,21 @@ class TokenManager:
             await self.db.increment_token_stats(token_id, "image")
 
     async def record_error(self, token_id: int):
-        """Record token error and auto-disable if threshold reached"""
+        """Record token error statistics without auto-disabling the token."""
         await self.db.increment_token_stats(token_id, "error")
 
-        # Check if should auto-disable token (based on consecutive errors)
-        stats = await self.db.get_token_stats(token_id)
-        admin_config = await self.db.get_admin_config()
-
-        if stats and stats.consecutive_error_count >= admin_config.error_ban_threshold:
+        try:
+            stats = await self.db.get_token_stats(token_id)
+            if stats:
+                debug_logger.log_warning(
+                    f"[TOKEN_ERROR] Token {token_id} consecutive_error_count="
+                    f"{stats.consecutive_error_count}, error_count={stats.error_count}, "
+                    "仅记录统计，不因普通请求失败自动禁用"
+                )
+        except Exception as exc:
             debug_logger.log_warning(
-                f"[TOKEN_BAN] Token {token_id} consecutive error count ({stats.consecutive_error_count}) "
-                f"reached threshold ({admin_config.error_ban_threshold}), auto-disabling"
+                f"[TOKEN_ERROR] Token {token_id}: 读取错误统计失败，但已完成错误计数累加 - {exc}"
             )
-            await self.disable_token(token_id, reason="consecutive_error_limit")
 
     async def record_success(self, token_id: int):
         """Record successful request (reset consecutive error count)

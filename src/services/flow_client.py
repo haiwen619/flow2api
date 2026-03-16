@@ -2,6 +2,7 @@
 import asyncio
 import json
 import contextvars
+import os
 import time
 import uuid
 import random
@@ -1907,11 +1908,29 @@ class FlowClient:
         base_url = (config.remote_browser_base_url or "").strip().rstrip("/")
         api_key = (config.remote_browser_api_key or "").strip()
         timeout = max(5, int(config.remote_browser_timeout or 60))
+        method_order = normalize_captcha_priority_order(config.captcha_priority_order)
+        has_base_url = bool(base_url)
+        has_api_key = bool(api_key)
 
         if not base_url:
-            raise RuntimeError("remote_browser 服务地址未配置")
+            debug_logger.log_warning(
+                "[reCAPTCHA RemoteBrowser] remote_browser 配置缺失: "
+                f"base_url={has_base_url}, api_key={has_api_key}, order={method_order}"
+            )
+            raise RuntimeError(
+                "remote_browser 服务地址未配置"
+                "（请检查后台“验证码配置”里的 remote_browser 地址是否已保存；"
+                "服务启动后会优先加载数据库 captcha_config，而不是仅使用 setting.toml）"
+            )
         if not api_key:
-            raise RuntimeError("remote_browser API Key 未配置")
+            debug_logger.log_warning(
+                "[reCAPTCHA RemoteBrowser] remote_browser 配置缺失: "
+                f"base_url={has_base_url}, api_key={has_api_key}, order={method_order}"
+            )
+            raise RuntimeError(
+                "remote_browser API Key 未配置"
+                "（请检查后台“验证码配置”里的 API Key 是否已保存到数据库 captcha_config）"
+            )
 
         if not (base_url.startswith("http://") or base_url.startswith("https://")):
             raise RuntimeError("remote_browser 服务地址格式错误")
@@ -2022,6 +2041,9 @@ class FlowClient:
         token_id: Optional[int],
     ) -> tuple[Optional[str], Optional[Union[int, str]], str]:
         method = str(captcha_method or "").strip().lower()
+
+        if self._should_skip_local_browser_captcha_method(method):
+            return None, None, "[skip] Docker 环境未启用本地有头浏览器打码"
 
         if method == "personal":
             try:
@@ -2144,6 +2166,47 @@ class FlowClient:
         self._set_request_fingerprint(None)
         return None, None, f"未知的打码方式: {method}"
 
+    @staticmethod
+    def _is_running_in_docker() -> bool:
+        if os.name == "nt":
+            return False
+        if os.path.exists("/.dockerenv"):
+            return True
+        try:
+            with open("/proc/1/cgroup", "r", encoding="utf-8", errors="ignore") as handle:
+                content = handle.read()
+            if any(marker in content for marker in ("docker", "kubepods", "containerd")):
+                return True
+        except Exception:
+            pass
+        return bool(os.environ.get("DOCKER_CONTAINER") or os.environ.get("KUBERNETES_SERVICE_HOST"))
+
+    def _should_skip_local_browser_captcha_method(self, method: str) -> bool:
+        normalized = str(method or "").strip().lower()
+        if normalized not in {"browser", "personal"}:
+            return False
+        if not self._is_running_in_docker():
+            return False
+        allow_value = str(os.getenv("ALLOW_DOCKER_HEADED_CAPTCHA", "") or "").strip().lower()
+        return allow_value not in {"1", "true", "yes", "on"}
+
+    def _should_force_remote_browser_only(self) -> bool:
+        if os.name == "nt":
+            return False
+        return bool(config.should_auto_allow_docker_headed_captcha())
+
+    def _resolve_effective_captcha_method_order(self) -> List[str]:
+        configured_order = normalize_captcha_priority_order(config.captcha_priority_order)
+        if not self._should_force_remote_browser_only():
+            return configured_order
+
+        if configured_order != ["remote_browser"]:
+            debug_logger.log_info(
+                "[reCAPTCHA] 当前 Linux 服务器节点已强制仅使用 remote_browser 打码，"
+                f"忽略其余回退方式: {configured_order}"
+            )
+        return ["remote_browser"]
+
     async def _get_recaptcha_token(
         self,
         project_id: str,
@@ -2166,7 +2229,7 @@ class FlowClient:
             - 其他模式: browser_id 为 None
         """
         self._set_request_captcha_state(None)
-        method_order = normalize_captcha_priority_order(config.captcha_priority_order)
+        method_order = self._resolve_effective_captcha_method_order()
         last_errors: List[str] = []
 
         for index, captcha_method in enumerate(method_order, start=1):
@@ -2184,6 +2247,11 @@ class FlowClient:
                 return token, browser_id
 
             detail_text = str(error_detail or "未返回 token").strip()
+            if detail_text.startswith("[skip]"):
+                debug_logger.log_info(
+                    f"[reCAPTCHA] 跳过当前打码方式: {captcha_method}, detail={detail_text[6:].strip()}"
+                )
+                continue
             last_errors.append(f"{captcha_method}: {detail_text}")
             debug_logger.log_warning(
                 f"[reCAPTCHA] 打码方式失败，准备切换下一个: {captcha_method}, detail={detail_text}"

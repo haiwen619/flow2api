@@ -834,6 +834,15 @@
               </p>
             </div>
             <div>
+              <label class="text-sm font-medium mb-2 block">Linux 有头打码公网IP列表</label>
+              <textarea id="cfgServerLinuxHeadedPublicIps" rows="4"
+                class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                placeholder="每行一个 Linux 服务器公网IP，例如：&#10;104.129.59.235&#10;107.174.210.147"></textarea>
+              <p class="text-xs text-muted-foreground mt-1">
+                启动时若检测到公网IP命中此列表，并且当前为 Linux，则自动设置 <code>ALLOW_DOCKER_HEADED_CAPTCHA=true</code>
+              </p>
+            </div>
+            <div>
               <label class="text-sm font-medium mb-2 block">监听地址</label>
               <input id="cfgServerHost"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
@@ -991,6 +1000,15 @@
               </p>
             </div>
             <div>
+              <label class="text-sm font-medium mb-2 block">图片生成总超时时间（秒）</label>
+              <input id="cfgImageTotalTimeout" type="number"
+                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="120"
+                min="30" max="3600" />
+              <p class="text-xs text-muted-foreground mt-1">
+                整条图片生成流程总耗时上限，默认 120 秒；超过后会直接中断本次生成并返回“图片生成超时了”
+              </p>
+            </div>
+            <div>
               <label class="text-sm font-medium mb-2 block">视频生成超时时间（秒）</label>
               <input id="cfgVideoTimeout" type="number"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -1012,12 +1030,12 @@
           <h3 class="text-lg font-semibold mb-4">错误处理配置</h3>
           <div class="space-y-4 flex-1">
             <div>
-              <label class="text-sm font-medium mb-2 block">错误封禁阈值</label>
+              <label class="text-sm font-medium mb-2 block">连续失败计数阈值</label>
               <input id="cfgErrorBan" type="number"
                 class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 placeholder="3" />
               <p class="text-xs text-muted-foreground mt-1">
-                Token 连续错误达到此次数后自动禁用
+                该值仅作兼容保留与统计参考，普通请求失败不会再自动禁用 Token
               </p>
             </div>
           </div>
@@ -1745,7 +1763,7 @@
           <span id="clusterNodeSummary" class="text-xs text-muted-foreground">-</span>
         </div>
         <div class="overflow-x-auto">
-          <table class="min-w-[1640px] w-full text-sm">
+          <table class="min-w-[1820px] w-full text-sm">
             <thead class="text-xs text-muted-foreground border-b border-border">
               <tr>
                 <th class="py-2 text-left">节点ID</th>
@@ -1753,6 +1771,7 @@
                 <th class="py-2 text-left">角色</th>
                 <th class="py-2 text-left">地址</th>
                 <th class="py-2 text-left">健康</th>
+                <th class="py-2 text-left">占用 Token</th>
                 <th class="py-2 text-right">活跃请求</th>
                 <th class="py-2 text-right">节点并发上限</th>
                 <th class="py-2 text-right">空闲槽位</th>
@@ -3233,6 +3252,13 @@
         ["429_rate_limit", "permission_denied", "google_account_disabled"].includes(
           String(reasonRaw || "").trim()
         ),
+      isClusterWorkerOccupiedToken = (t) => Boolean(t?.cluster_worker_occupied),
+      isTokenEffectivelyActive = (t) => {
+        if (typeof t?.is_effectively_active === "boolean") {
+          return t.is_effectively_active;
+        }
+        return Boolean(t?.is_active);
+      },
       isBannedToken = (t) => {
         if (t?.disable_hard_banned === true) return true;
         const reason = String(
@@ -3285,11 +3311,28 @@
         if (reason === "import_disabled") return "导入时设为禁用";
         if (reason === "token_expired") return "Token已过期";
         if (reason === "refresh_failed") return "刷新失败后自动禁用";
-        if (reason === "consecutive_error_limit") return "连续错误达到阈值自动禁用";
+        if (reason === "consecutive_error_limit") return "连续错误阈值停用(历史记录)";
         if (reason === "unknown_inactive") return "已禁用(原因未记录)";
         return reason;
       },
       formatBanStatusInfo = (t) => {
+        const clusterOccupied = isClusterWorkerOccupiedToken(t);
+        if (clusterOccupied) {
+          const nodes = Array.isArray(t?.cluster_worker_nodes)
+            ? t.cluster_worker_nodes.filter(Boolean)
+            : [];
+          const label = "子节点占用中";
+          const nodeText = nodes.length ? `节点：${nodes.join("、")}` : "当前 Token 正被子节点使用";
+          return {
+            isBanned: false,
+            isDisabled: true,
+            label,
+            text: nodeText,
+            detail: nodeText,
+            time: "-",
+            badgeClass: "bg-sky-100 text-sky-800",
+          };
+        }
         const reason = String(
           t?.disable_reason_code || t?.ban_reason || ""
         ).trim();
@@ -3506,6 +3549,8 @@
       },
       buildTokenRow = (t, options = {}) => {
         const hardBanned = Boolean(options.hardBanned) || isBannedToken(t);
+        const clusterOccupied = isClusterWorkerOccupiedToken(t);
+        const effectiveActive = isTokenEffectivelyActive(t);
         const emailRaw = String(t.email || "-");
         const emailShort =
           emailRaw.length > 24 ? `${emailRaw.substring(0, 24)}...` : emailRaw;
@@ -3544,39 +3589,46 @@
         const refreshStatusLabel = statusMeta.statusLabel;
         const statusClass = hardBanned
           ? banInfo.badgeClass
+          : clusterOccupied
+            ? banInfo.badgeClass
           : isCookieInvalidNeedReloginToken(t)
             ? "bg-amber-100 text-amber-800"
-            : t.is_active
+            : effectiveActive
               ? "bg-green-50 text-green-700"
               : "bg-gray-100 text-gray-700";
         const statusText = hardBanned
           ? "封禁"
+          : clusterOccupied
+            ? "子节点占用"
           : isCookieInvalidNeedReloginToken(t)
             ? "待重登"
-            : t.is_active
+            : effectiveActive
               ? "活跃"
               : "禁用";
         const statusReasonText =
-          !t.is_active && banInfo.label && banInfo.label !== "未封禁"
+          !effectiveActive && banInfo.label && banInfo.label !== "未封禁"
             ? banInfo.text
             : "";
         const statusReasonDetail =
-          !t.is_active && banInfo.detail
+          !effectiveActive && banInfo.detail
             ? banInfo.detail
             : statusReasonText;
         const statusCellHtml = `<td class="py-2.5 px-3"><div class="flex flex-col gap-1"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs w-fit ${statusClass}">${statusText}</span>${statusReasonText ? `<div class="max-w-[190px] text-[11px] leading-4 text-muted-foreground whitespace-normal break-words" title="${escapeHtml(statusReasonDetail || statusReasonText)}">${escapeHtml(statusReasonText)}</div>` : ""}</div></td>`;
-        const creditsCellHtml = hardBanned
+        const tokenLocked = hardBanned || clusterOccupied;
+        const creditsCellHtml = tokenLocked
           ? `<span class="text-sm text-muted-foreground">${escapeHtml(creditsDisplay)}</span>`
           : `<button onclick="refreshTokenCredits(${t.id})" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 text-sm" title="点击刷新余额"><span>${creditsDisplay}</span><svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M15 4.5l3.5 3.5L22 4.5"/></svg></button>`;
-        const refreshAtBtn = hardBanned
+        const refreshAtBtn = tokenLocked
           ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-muted-foreground cursor-not-allowed" title="已封禁，禁止刷新AT" disabled>更新</button>`
           : `<button onclick="refreshTokenAT(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-blue-50 hover:text-blue-700 h-7 px-2 text-xs mr-1" title="刷新AT">更新</button>`;
-        const refreshCookieBtn = hardBanned
+        const refreshCookieBtn = tokenLocked
           ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-muted-foreground cursor-not-allowed" title="已封禁，禁止刷新Cookie" disabled>刷Cookie</button>`
           : `<button onclick="refreshTokenCookie(${t.id})" class="inline-flex items-center justify-center rounded-md hover:bg-amber-50 hover:text-amber-700 h-7 px-2 text-xs mr-1" title="仅 reAuth 刷新 Cookie">刷Cookie</button>`;
         const toggleBtn = hardBanned
           ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-muted-foreground cursor-not-allowed" title="已封禁，无法启用" disabled>已封禁</button>`
-          : `<button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button>`;
+          : clusterOccupied
+            ? `<button class="inline-flex items-center justify-center rounded-md h-7 px-2 text-xs mr-1 text-sky-700 bg-sky-50 cursor-not-allowed" title="当前 Token 正被子节点占用，主节点不可启用或使用" disabled>子节点占用</button>`
+            : `<button onclick="toggleToken(${t.id},${t.is_active})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs mr-1">${t.is_active ? "禁用" : "启用"}</button>`;
         refreshRecordMap[t.id] = {
           email: emailRaw,
           time: formatRefreshTime(t.last_refresh_at),
@@ -4008,6 +4060,12 @@
       },
       toggleToken = async (id, isActive) => {
         const action = isActive ? "disable" : "enable";
+        const token = Array.isArray(allTokens)
+          ? allTokens.find((item) => Number(item?.id) === Number(id))
+          : null;
+        if (action === "enable" && token && isClusterWorkerOccupiedToken(token)) {
+          return showToast("该 Token 当前正被子节点占用，主节点不可启用", "info");
+        }
         try {
           const r = await apiRequest(`/api/tokens/${id}/${action}`, {
             method: "POST",
@@ -4031,12 +4089,12 @@
         const actionText = targetActive ? "启用" : "禁用";
         const filteredTokens = filterTokensByEmail(allTokens);
         const candidates = filteredTokens.filter(
-          (t) => t && t.id && t.is_active !== targetActive && (!targetActive || !isBannedToken(t)),
+          (t) => t && t.id && t.is_active !== targetActive && (!targetActive || (!isBannedToken(t) && !isClusterWorkerOccupiedToken(t))),
         );
 
         if (candidates.length === 0) {
-          if (targetActive && filteredTokens.some((t) => t && isBannedToken(t))) {
-            return showToast("封禁Token不会参与批量启用", "info");
+          if (targetActive && filteredTokens.some((t) => t && (isBannedToken(t) || isClusterWorkerOccupiedToken(t)))) {
+            return showToast("封禁Token和子节点占用Token不会参与批量启用", "info");
           }
           return showToast(`当前搜索结果中的Token已${actionText}`, "info");
         }
@@ -5715,6 +5773,10 @@
         "104.129.59.235",
         "107.174.210.147",
       ]),
+      DEFAULT_LINUX_HEADED_PUBLIC_IPS = Object.freeze([
+        "104.129.59.235",
+        "107.174.210.147",
+      ]),
       parseServerPublicIpList = (raw) => {
         const seen = new Set();
         return String(raw || "")
@@ -5750,18 +5812,23 @@
           const defaultPublicIps = Array.isArray(d.config.default_public_ips) && d.config.default_public_ips.length
             ? d.config.default_public_ips
             : DEFAULT_SERVER_PUBLIC_IPS;
+          const linuxHeadedPublicIps = Array.isArray(d.config.linux_headed_public_ips) && d.config.linux_headed_public_ips.length
+            ? d.config.linux_headed_public_ips
+            : DEFAULT_LINUX_HEADED_PUBLIC_IPS;
           $("cfgServerDefaultPublicIp").value =
             d.config.default_public_ip || defaultPublicIps[0] || "23.159.248.139";
           $("cfgServerDefaultPublicIps").value = defaultPublicIps.join("\n");
+          $("cfgServerLinuxHeadedPublicIps").value = linuxHeadedPublicIps.join("\n");
           const detectedIp = String(d.config.detected_public_ip || "").trim();
           const autoDetected = Boolean(d.config.server_auto_detected);
+          const autoAllowDockerHeaded = Boolean(d.config.docker_headed_auto_allowed);
           const ipListText = defaultPublicIps.length
             ? `配置列表: ${defaultPublicIps.join(", ")}`
             : "当前未配置服务器公网IP列表";
           $("cfgServerDetectedIpHint").textContent = detectedIp
             ? autoDetected
-              ? `当前检测公网IP: ${detectedIp}，已命中服务器公网IP列表并按服务器模式运行；${ipListText}`
-              : `当前检测公网IP: ${detectedIp}，未命中服务器公网IP列表；${ipListText}`
+              ? `当前检测公网IP: ${detectedIp}，已命中服务器公网IP列表并按服务器模式运行；${ipListText}${autoAllowDockerHeaded ? "；已自动启用 Docker 有头打码" : ""}`
+              : `当前检测公网IP: ${detectedIp}，未命中服务器公网IP列表；${ipListText}${autoAllowDockerHeaded ? "；已自动启用 Docker 有头打码" : ""}`
             : `启动时会检测本机公网IP，命中列表中的任意一个时自动按服务器模式运行；${ipListText}`;
           renderRpaBitbrowserIdRows(
             "local",
@@ -5786,6 +5853,7 @@
         const host = $("cfgServerHost").value.trim();
         const port = parseInt($("cfgServerPort").value, 10) || 8000;
         const parsedPublicIpList = parseServerPublicIpList($("cfgServerDefaultPublicIps").value);
+        const linuxHeadedPublicIps = parseServerPublicIpList($("cfgServerLinuxHeadedPublicIps").value);
         const defaultPublicIp = $("cfgServerDefaultPublicIp").value.trim() || parsedPublicIpList[0] || "";
         const defaultPublicIps = defaultPublicIp
           ? [defaultPublicIp, ...parsedPublicIpList.filter((item) => item !== defaultPublicIp)]
@@ -5809,6 +5877,7 @@
               port: port,
               default_public_ip: defaultPublicIp || null,
               default_public_ips: defaultPublicIps,
+              linux_headed_public_ips: linuxHeadedPublicIps,
               rpa_test_bitbrowser_ids_local: localBitIds,
               rpa_test_bitbrowser_ids_server: serverBitIds,
               block_gemini_25_flash_image: blockGemini25FlashImage,
@@ -5883,10 +5952,13 @@
           console.log("生成超时配置数据:", d);
           if (d.success && d.config) {
             const imageTimeout = d.config.image_timeout || 300;
+            const imageTotalTimeout = d.config.image_total_timeout || 120;
             const videoTimeout = d.config.video_timeout || 1500;
             console.log("设置图片超时:", imageTimeout);
+            console.log("设置图片总超时:", imageTotalTimeout);
             console.log("设置视频超时:", videoTimeout);
             $("cfgImageTimeout").value = imageTimeout;
+            $("cfgImageTotalTimeout").value = imageTotalTimeout;
             $("cfgVideoTimeout").value = videoTimeout;
             console.log("生成超时配置加载成功");
           } else {
@@ -5969,10 +6041,13 @@
       },
       saveGenerationTimeout = async () => {
         const imageTimeout = parseInt($("cfgImageTimeout").value) || 300,
+          imageTotalTimeout = parseInt($("cfgImageTotalTimeout").value) || 120,
           videoTimeout = parseInt($("cfgVideoTimeout").value) || 1500;
-        console.log("保存生成超时配置:", { imageTimeout, videoTimeout });
+        console.log("保存生成超时配置:", { imageTimeout, imageTotalTimeout, videoTimeout });
         if (imageTimeout < 60 || imageTimeout > 3600)
           return showToast("图片超时时间必须在 60-3600 秒之间", "error");
+        if (imageTotalTimeout < 30 || imageTotalTimeout > 3600)
+          return showToast("图片生成总超时时间必须在 30-3600 秒之间", "error");
         if (videoTimeout < 60 || videoTimeout > 7200)
           return showToast("视频超时时间必须在 60-7200 秒之间", "error");
         try {
@@ -5980,6 +6055,7 @@
             method: "POST",
             body: JSON.stringify({
               image_timeout: imageTimeout,
+              image_total_timeout: imageTotalTimeout,
               video_timeout: videoTimeout,
             }),
           });
@@ -7527,6 +7603,31 @@
       }
     }
 
+    async function setClusterNodeEnabled(nodeId, enabled) {
+      const target = String(nodeId || "").trim();
+      if (!target) return;
+      const actionText = enabled ? "启用" : "禁用";
+      if (!confirm(`确定${actionText}该子节点？\n\n${target}`)) return;
+      try {
+        const resp = await fetch("/api/cluster/set-node-enabled", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("adminToken")}`,
+          },
+          body: JSON.stringify({ node_id: target, enabled: !!enabled }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        showToast(data.message || `节点已${enabled ? "启用" : "禁用"}`, "success");
+        renderClusterDiagnostics(data.snapshot || {});
+        $("clusterLastUpdate").textContent = "更新于 " + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error("setClusterNodeEnabled failed", e);
+        showToast(`${actionText}节点失败: ` + (e.message || "未知错误"), "error");
+      }
+    }
+
     function renderClusterDiagnostics(snapshot) {
       $("clusterRoleBadge").textContent = clusterRoleLabel(snapshot.role || "standalone");
       $("clusterNodeNameText").textContent = snapshot.node_name || "-";
@@ -7557,11 +7658,18 @@
       const tbody = $("clusterNodeTableBody");
       const empty = $("clusterNodeEmpty");
       const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+      const workerTokenUsageTotal = nodes.reduce((total, node) => {
+        if (String(node?.role || "").trim().toLowerCase() !== "worker") return total;
+        const workerTokens = Array.isArray(node?.worker_tokens) ? node.worker_tokens : [];
+        return total + workerTokens.length;
+      }, 0);
       tbody.innerHTML = "";
       empty.classList.toggle("hidden", nodes.length > 0);
+      $("clusterNodeSummary").textContent = `健康 ${snapshot.healthy_nodes || 0} / 总计 ${snapshot.total_nodes || 0} · 累计分流 ${snapshot.remote_dispatch_total || 0} · 子节点占用 Token ${workerTokenUsageTotal}`;
 
       nodes.forEach((node) => {
         const healthy = !!node.healthy;
+        const enabled = node.enabled !== false;
         const isLocalNode = String(node.node_id || "") === String(snapshot.node_id || "");
         const dispatchStats = node.dispatch_stats || {};
         const dispatchCount = Number(dispatchStats.dispatch_count || 0);
@@ -7570,10 +7678,41 @@
         const trafficShare = Number(dispatchStats.traffic_share || 0);
         const avgDuration = dispatchStats.avg_duration_ms != null ? dispatchStats.avg_duration_ms : "-";
         const recentDispatch = dispatchStats.last_dispatch_at ? fmtClusterTime(dispatchStats.last_dispatch_at) : "-";
+        const workerTokens = Array.isArray(node.worker_tokens) ? node.worker_tokens : [];
+        const workerTokenCount = workerTokens.length;
+        const workerTokenEmails = workerTokens
+          .map((item) => String(item?.email || "").trim())
+          .filter(Boolean);
+        const workerTokenPreview = workerTokenEmails.slice(0, 3);
+        const workerTokenRemain = Math.max(0, workerTokenEmails.length - workerTokenPreview.length);
+        const workerTokenTitle = workerTokenEmails.length
+          ? escapeLogHtml(workerTokenEmails.join("\n"))
+          : "";
+        const workerTokenHtml = String(node.role || "").trim().toLowerCase() !== "worker"
+          ? `<span class="text-xs text-muted-foreground">-</span>`
+          : workerTokenCount > 0
+            ? `<div class="flex flex-col gap-1 min-w-[220px]">
+                <div class="inline-flex items-center rounded px-2 py-0.5 text-xs w-fit bg-sky-100 text-sky-800">${workerTokenCount} 个</div>
+                <div class="text-xs leading-5 text-muted-foreground break-all" title="${workerTokenTitle}">${escapeLogHtml(workerTokenPreview.join("、"))}${workerTokenRemain > 0 ? `<span class="text-sky-700"> 等${workerTokenEmails.length}个</span>` : ""}</div>
+              </div>`
+            : `<span class="text-xs text-muted-foreground">0 个</span>`;
         const safeNodeIdAttr = escapeLogHtml(String(node.node_id || ""));
         const actionHtml = isLocalNode
           ? `<span class="text-xs text-muted-foreground">当前节点</span>`
-          : `<button data-node-id="${safeNodeIdAttr}" onclick="deleteClusterNode(this.dataset.nodeId)" class="inline-flex items-center justify-center rounded-md bg-red-600 text-white hover:bg-red-700 h-8 px-3 text-xs">删除</button>`;
+          : `<div class="flex items-center justify-end gap-2">
+              <button
+                data-node-id="${safeNodeIdAttr}"
+                data-enabled="${enabled ? "false" : "true"}"
+                onclick="setClusterNodeEnabled(this.dataset.nodeId, this.dataset.enabled === 'true')"
+                class="inline-flex items-center justify-center rounded-md ${enabled ? "bg-amber-500 hover:bg-amber-600" : "bg-emerald-600 hover:bg-emerald-700"} text-white h-8 px-3 text-xs"
+              >${enabled ? "禁用" : "启用"}</button>
+              <button data-node-id="${safeNodeIdAttr}" onclick="deleteClusterNode(this.dataset.nodeId)" class="inline-flex items-center justify-center rounded-md bg-red-600 text-white hover:bg-red-700 h-8 px-3 text-xs">删除</button>
+            </div>`;
+        const healthBadgeHtml = !enabled
+          ? `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-slate-200 text-slate-700">已禁用</span>`
+          : healthy
+            ? `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-green-100 text-green-700">健康</span>`
+            : `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-red-100 text-red-700">异常</span>`;
         const row = document.createElement("tr");
         row.innerHTML = `
           <td class="py-2 pr-3 font-mono text-xs break-all">${escapeLogHtml(node.node_id || "-")}</td>
@@ -7581,10 +7720,9 @@
           <td class="py-2 pr-3">${escapeLogHtml(clusterRoleLabel(node.role || "standalone"))}</td>
           <td class="py-2 pr-3 break-all">${escapeLogHtml(node.base_url || "-")}</td>
           <td class="py-2 pr-3">
-            <span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${healthy ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}">
-              ${healthy ? "健康" : "异常"}
-            </span>
+            ${healthBadgeHtml}
           </td>
+          <td class="py-2 pr-3">${workerTokenHtml}</td>
           <td class="py-2 pr-3 text-right">${node.active_requests ?? 0}</td>
           <td class="py-2 pr-3 text-right">${node.node_max_concurrency ?? 0}</td>
           <td class="py-2 pr-3 text-right">${node.available_slots ?? "-"}</td>

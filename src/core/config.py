@@ -1,6 +1,7 @@
 """Configuration management for Flow2API"""
 import ipaddress
 import json
+import os
 import secrets
 import tomli
 import re
@@ -360,6 +361,24 @@ class Config:
         return [single_value] if single_value else []
 
     @property
+    def linux_headed_server_public_ips(self) -> List[str]:
+        server_cfg = self._config.get("server", {}) or {}
+        raw_values = server_cfg.get("linux_headed_public_ips")
+        normalized_values = self._normalize_string_list(raw_values)
+        if normalized_values:
+            result: List[str] = []
+            seen = set()
+            for item in normalized_values:
+                normalized = self._normalize_ip_text(item)
+                if not normalized or normalized in seen:
+                    continue
+                result.append(normalized)
+                seen.add(normalized)
+            if result:
+                return result
+        return []
+
+    @property
     def detected_public_ip(self) -> str:
         return str(self._detected_public_ip or "").strip()
 
@@ -407,17 +426,41 @@ class Config:
         value = str(self._config.get("cluster", {}).get("node_public_base_url", "") or "").strip().rstrip("/")
         return value
 
+    def _resolve_cluster_public_base_url(self, configured_url: str) -> str:
+        base_url = str(configured_url or "").strip().rstrip("/")
+        fallback_host = self.default_server_public_ip or self.detected_public_ip
+        if not base_url:
+            return ""
+
+        try:
+            parsed = urlparse(base_url)
+        except Exception:
+            return base_url
+
+        hostname = str(parsed.hostname or "").strip().lower()
+        if hostname not in {"127.0.0.1", "localhost", "0.0.0.0", "::", "[::]"}:
+            return base_url
+
+        if self.get_server_mode() != "server" or not fallback_host:
+            return base_url
+
+        netloc = fallback_host
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+
+        return parsed._replace(netloc=netloc).geturl().rstrip("/")
+
     @property
     def cluster_effective_node_public_base_url(self) -> str:
         explicit = self.cluster_node_public_base_url
         if explicit:
-            return explicit
+            return self._resolve_cluster_public_base_url(explicit)
 
         host = str(self.configured_server_host or self.server_host or "").strip()
         if host.lower() in {"", "0.0.0.0", "::", "[::]"}:
             host = self.default_server_public_ip or self.detected_public_ip
-        if host.lower() in {"localhost", "127.0.0.1"} and self.default_server_public_ip:
-            host = self.default_server_public_ip
+        if host.lower() in {"localhost", "127.0.0.1"} and (self.default_server_public_ip or self.detected_public_ip):
+            host = self.default_server_public_ip or self.detected_public_ip
         if not host:
             return ""
         return f"http://{host}:{int(self.server_port)}"
@@ -502,6 +545,19 @@ class Config:
     @api_key.setter
     def api_key(self, value: str):
         self._config["global"]["api_key"] = value
+
+    def persist_api_key(self, value: str):
+        """Persist API key into setting.toml so fresh databases keep the latest key."""
+        normalized_value = str(value or "").strip()
+        content = self._config_path.read_text(encoding="utf-8")
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="global",
+            key="api_key",
+            value_literal=json.dumps(normalized_value, ensure_ascii=False),
+        )
+        self._config_path.write_text(content, encoding="utf-8")
+        self.reload_config()
 
     @property
     def admin_password(self) -> str:
@@ -626,6 +682,17 @@ class Config:
         if "generation" not in self._config:
             self._config["generation"] = {}
         self._config["generation"]["image_timeout"] = timeout
+
+    @property
+    def image_total_timeout(self) -> int:
+        """Get image generation overall timeout in seconds"""
+        return self._config.get("generation", {}).get("image_total_timeout", 120)
+
+    def set_image_total_timeout(self, timeout: int):
+        """Set image generation overall timeout in seconds"""
+        if "generation" not in self._config:
+            self._config["generation"] = {}
+        self._config["generation"]["image_total_timeout"] = timeout
 
     @property
     def video_timeout(self) -> int:
@@ -1041,10 +1108,58 @@ class Config:
         self._detected_public_ip = ""
         return ""
 
+    @staticmethod
+    def _is_running_in_docker() -> bool:
+        if os.name == "nt":
+            return False
+        if os.path.exists("/.dockerenv"):
+            return True
+        try:
+            with open("/proc/1/cgroup", "r", encoding="utf-8", errors="ignore") as handle:
+                content = handle.read()
+            if any(marker in content for marker in ("docker", "kubepods", "containerd")):
+                return True
+        except Exception:
+            pass
+        return bool(os.environ.get("DOCKER_CONTAINER") or os.environ.get("KUBERNETES_SERVICE_HOST"))
+
+    def should_auto_allow_docker_headed_captcha(self, detected_public_ip: Optional[str] = None) -> bool:
+        normalized_detected = self._normalize_ip_text(detected_public_ip or self.detected_public_ip)
+        if not normalized_detected:
+            return False
+        return normalized_detected in set(self.linux_headed_server_public_ips)
+
+    def configure_runtime_docker_headed_captcha(self, detected_public_ip: Optional[str] = None) -> Dict[str, Any]:
+        normalized_detected = self._normalize_ip_text(detected_public_ip or self.detected_public_ip)
+        allow_value = str(os.getenv("ALLOW_DOCKER_HEADED_CAPTCHA", "") or "").strip().lower()
+        already_enabled = allow_value in {"1", "true", "yes", "on"}
+        matched_linux_server = self.should_auto_allow_docker_headed_captcha(normalized_detected)
+        is_docker = self._is_running_in_docker()
+        applied = False
+        reason = ""
+
+        if matched_linux_server and os.name != "nt":
+            if not already_enabled:
+                os.environ["ALLOW_DOCKER_HEADED_CAPTCHA"] = "true"
+                applied = True
+            reason = "linux_server_public_ip"
+        elif already_enabled:
+            reason = "preconfigured"
+
+        return {
+            "detected_public_ip": normalized_detected,
+            "matched_linux_server": matched_linux_server,
+            "is_docker": is_docker,
+            "enabled": applied or already_enabled,
+            "applied": applied,
+            "reason": reason,
+        }
+
     def bootstrap_runtime_server_mode(self) -> Dict[str, Any]:
         configured_host = self.configured_server_host
         default_public_ips = self.default_server_public_ips
         default_public_ip = default_public_ips[0] if default_public_ips else ""
+        linux_headed_public_ips = self.linux_headed_server_public_ips
         detected_public_ip = self.detect_public_ip()
 
         self._runtime_server_host_override = None
@@ -1064,6 +1179,10 @@ class Config:
             self._runtime_server_mode_override = "server"
             self._server_auto_detected = True
 
+        docker_headed_env = self.configure_runtime_docker_headed_captcha(
+            detected_public_ip=normalized_detected,
+        )
+
         return {
             "matched_server": matched_server,
             "configured_host": configured_host,
@@ -1071,7 +1190,9 @@ class Config:
             "effective_mode": self.get_server_mode(),
             "default_public_ip": default_public_ip,
             "default_public_ips": default_public_ips,
+            "linux_headed_public_ips": linux_headed_public_ips,
             "detected_public_ip": detected_public_ip,
+            "docker_headed_env": docker_headed_env,
         }
 
     def get_rpa_test_bitbrowser_ids_local(self) -> List[str]:
@@ -1118,6 +1239,7 @@ class Config:
         port: int,
         default_public_ip: Optional[str] = None,
         default_public_ips: Optional[List[str]] = None,
+        linux_headed_public_ips: Optional[List[str]] = None,
     ):
         """Persist [server] host/port/default_public_ip(s) into setting.toml, then reload memory config."""
         host_value = str(host or "").strip()
@@ -1147,6 +1269,11 @@ class Config:
             if normalized_single_ip not in default_public_ip_values:
                 default_public_ip_values.insert(0, normalized_single_ip)
 
+        if linux_headed_public_ips is not None:
+            linux_headed_ip_values = self._normalize_server_public_ip_values(linux_headed_public_ips)
+        else:
+            linux_headed_ip_values = self.linux_headed_server_public_ips
+
         content = self._config_path.read_text(encoding="utf-8")
         content = self._upsert_toml_key_in_section(
             content=content,
@@ -1171,6 +1298,12 @@ class Config:
             section="server",
             key="default_public_ips",
             value_literal="[" + ", ".join(f'\"{item}\"' for item in default_public_ip_values) + "]",
+        )
+        content = self._upsert_toml_key_in_section(
+            content=content,
+            section="server",
+            key="linux_headed_public_ips",
+            value_literal="[" + ", ".join(f'\"{item}\"' for item in linux_headed_ip_values) + "]",
         )
         self._config_path.write_text(content, encoding="utf-8")
         self.reload_config()

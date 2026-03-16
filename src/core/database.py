@@ -287,17 +287,19 @@ class Database:
         count = await cursor.fetchone()
         if count[0] == 0:
             image_timeout = 300
+            image_total_timeout = 120
             video_timeout = 1500
 
             if config_dict:
                 generation_config = config_dict.get("generation", {})
                 image_timeout = generation_config.get("image_timeout", 300)
+                image_total_timeout = generation_config.get("image_total_timeout", 120)
                 video_timeout = generation_config.get("video_timeout", 1500)
 
             await db.execute("""
-                INSERT INTO generation_config (id, image_timeout, video_timeout)
-                VALUES (1, ?, ?)
-            """, (image_timeout, video_timeout))
+                INSERT INTO generation_config (id, image_timeout, image_total_timeout, video_timeout)
+                VALUES (1, ?, ?, ?)
+            """, (image_timeout, image_total_timeout, video_timeout))
 
         # Ensure cache_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM cache_config")
@@ -567,6 +569,20 @@ class Database:
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
+            # Check and add missing columns to generation_config table
+            if await self._table_exists(db, "generation_config"):
+                generation_columns_to_add = [
+                    ("image_total_timeout", "INTEGER DEFAULT 120"),
+                ]
+
+                for col_name, col_type in generation_columns_to_add:
+                    if not await self._column_exists(db, "generation_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE generation_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to generation_config table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
             # Check and add missing columns to captcha_config table
             if await self._table_exists(db, "captcha_config"):
                 captcha_columns_to_add = [
@@ -806,6 +822,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS generation_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     image_timeout INTEGER DEFAULT 300,
+                    image_total_timeout INTEGER DEFAULT 120,
                     video_timeout INTEGER DEFAULT 1500,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1815,14 +1832,14 @@ class Database:
                 return GenerationConfig(**dict(row))
             return None
 
-    async def update_generation_config(self, image_timeout: int, video_timeout: int):
+    async def update_generation_config(self, image_timeout: int, image_total_timeout: int, video_timeout: int):
         """Update generation configuration"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 UPDATE generation_config
-                SET image_timeout = ?, video_timeout = ?, updated_at = CURRENT_TIMESTAMP
+                SET image_timeout = ?, image_total_timeout = ?, video_timeout = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            """, (image_timeout, video_timeout))
+            """, (image_timeout, image_total_timeout, video_timeout))
             await db.commit()
 
     # Request log operations
@@ -2441,6 +2458,7 @@ class Database:
         generation_config = await self.get_generation_config()
         if generation_config:
             config.set_image_timeout(generation_config.image_timeout)
+            config.set_image_total_timeout(generation_config.image_total_timeout)
             config.set_video_timeout(generation_config.video_timeout)
 
         # Reload debug config

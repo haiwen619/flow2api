@@ -22,6 +22,8 @@ newapi.apishop.cc
 https://newapi.apishop.cc/
 
 
+& C:\Flow2API\.venv\Scripts\Activate.ps1
+
 
 https://docs.cqtai.com/nano%E7%94%9F%E6%88%90/
 

@@ -364,10 +364,11 @@ class TokenBrowser:
         (3200, 1800), (2304, 1440), (1800, 1200),
     ]
     
-    def __init__(self, token_id: int, user_data_dir: str, db=None):
+    def __init__(self, token_id: int, user_data_dir: str, db=None, allow_browser_config_proxy: bool = True):
         self.token_id = token_id
         self.user_data_dir = user_data_dir
         self.db = db
+        self._allow_browser_config_proxy = bool(allow_browser_config_proxy)
         self._semaphore = asyncio.Semaphore(1)  # Only one active solve task is allowed per slot.
         self._solve_count = 0
         self._error_count = 0
@@ -1739,6 +1740,8 @@ class BrowserCaptchaService:
     def set_allow_browser_config_proxy(self, enabled: bool) -> None:
         """Control whether browser_proxy_enabled/browser_proxy_url may be used implicitly."""
         self._allow_browser_config_proxy = bool(enabled)
+        for browser in self._browsers.values():
+            browser._allow_browser_config_proxy = self._allow_browser_config_proxy
     
     def _check_available(self):
         """检查服务是否可用"""
@@ -1906,7 +1909,12 @@ class BrowserCaptchaService:
         async with self._browsers_lock:
             if browser_id not in self._browsers:
                 user_data_dir = os.path.join(self.base_user_data_dir, f"browser_{browser_id}")
-                browser = TokenBrowser(browser_id, user_data_dir, db=self.db)
+                browser = TokenBrowser(
+                    browser_id,
+                    user_data_dir,
+                    db=self.db,
+                    allow_browser_config_proxy=self._allow_browser_config_proxy,
+                )
                 self._browsers[browser_id] = browser
                 debug_logger.log_info(f"[BrowserCaptcha] 创建浏览器实例 {browser_id}")
             return self._browsers[browser_id]

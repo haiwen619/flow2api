@@ -36,6 +36,7 @@ host = "0.0.0.0"
 port = 8000
 default_public_ip = "23.159.248.139"
 default_public_ips = ["23.159.248.139", "38.150.35.162", "38.49.55.204", "38.49.55.206", "104.129.59.235", "107.174.210.147"]
+linux_headed_public_ips = ["104.129.59.235", "107.174.210.147"]
 
 [cluster]
 role = "standalone"  # standalone / master / worker
@@ -63,6 +64,7 @@ proxy_url = ""
 
 [generation]
 image_timeout = 300
+image_total_timeout = 120
 video_timeout = 1500
 
 [admin]

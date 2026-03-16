@@ -668,9 +668,41 @@ def _resolve_requested_model_id(request: ChatCompletionRequest) -> tuple[str, st
     return resolved_model, model_config["type"], original_model, auto_defaulted_model
 
 
+def _resolve_cluster_target_base_url(target_node: Dict[str, Any]) -> str:
+    base_url = str(target_node.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        return ""
+
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return base_url
+
+    if parsed.port:
+        return base_url
+
+    try:
+        reported_port = int(target_node.get("server_port") or 0)
+    except Exception:
+        reported_port = 0
+
+    if reported_port <= 0:
+        return base_url
+
+    if (parsed.scheme == "http" and reported_port == 80) or (parsed.scheme == "https" and reported_port == 443):
+        return base_url
+
+    hostname = str(parsed.hostname or "").strip()
+    if not hostname:
+        return base_url
+
+    netloc = f"{hostname}:{reported_port}"
+    return parsed._replace(netloc=netloc).geturl().rstrip("/")
+
+
 async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decision: Dict[str, Any]):
     target_node = dict(decision.get("node") or {})
-    base_url = str(target_node.get("base_url") or "").strip().rstrip("/")
+    base_url = _resolve_cluster_target_base_url(target_node)
     if not base_url:
         raise HTTPException(status_code=503, detail="选中的子节点缺少可访问地址")
 

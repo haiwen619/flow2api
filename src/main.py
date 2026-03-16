@@ -14,6 +14,7 @@ from typing import Dict, Optional
 
 from .core.config import config
 from .core.database import Database
+from .core.docker_headed_runtime import prepare_local_headed_runtime, stop_managed_xvfb
 from .services.flow_client import FlowClient
 from .services.proxy_manager import ProxyManager
 from .services.token_manager import TokenManager
@@ -102,6 +103,51 @@ async def lifespan(app: FastAPI):
     print("Flow2API 正在启动...")
     print("=" * 60)
 
+    runtime_server_info = config.bootstrap_runtime_server_mode()
+    detected_public_ip = str(runtime_server_info.get("detected_public_ip") or "").strip()
+    default_public_ip = str(runtime_server_info.get("default_public_ip") or "").strip()
+    default_public_ips = runtime_server_info.get("default_public_ips") or []
+    docker_headed_env = runtime_server_info.get("docker_headed_env") or {}
+    default_public_ip_text = ",".join(
+        str(item or "").strip() for item in default_public_ips if str(item or "").strip()
+    ) or default_public_ip
+    public_access_url = f"http://{detected_public_ip}:{config.server_port}" if detected_public_ip else ""
+
+    if runtime_server_info.get("matched_server"):
+        print(
+            f"[启动] 检测到公网IP={detected_public_ip}，命中默认服务器IP={default_public_ip_text}，"
+            f"已切换为服务器模式，绑定地址={config.server_host}"
+        )
+        if public_access_url:
+            print(f"[启动] 公网访问地址={public_access_url}")
+    elif detected_public_ip:
+        print(
+            f"[启动] 当前公网IP={detected_public_ip}，未命中默认服务器IP={default_public_ip_text or '<未配置>'}，"
+            f"沿用配置监听地址={config.server_host}"
+        )
+    else:
+        print(f"[启动] 未检测到公网IP，沿用配置监听地址={config.server_host}")
+
+    if docker_headed_env.get("applied"):
+        print(
+            f"[启动] 检测到 Linux 服务器公网IP={detected_public_ip}，已自动设置 ALLOW_DOCKER_HEADED_CAPTCHA=true"
+        )
+    elif docker_headed_env.get("enabled") and docker_headed_env.get("reason") == "preconfigured":
+        print("[启动] 已检测到预设 ALLOW_DOCKER_HEADED_CAPTCHA=true")
+
+    if docker_headed_env.get("matched_linux_server") and not sys.platform.startswith("win"):
+        print("[启动] 当前 Linux 服务器节点已强制仅使用 remote_browser 打码，不再回退到 browser/personal/API")
+
+    headed_runtime = prepare_local_headed_runtime()
+    if headed_runtime.get("display_applied"):
+        print(f"[启动] Docker 有头浏览器已自动设置 DISPLAY={headed_runtime.get('display')}")
+    if headed_runtime.get("xvfb_started"):
+        print(f"[启动] Docker 有头浏览器已自动启动 Xvfb ({headed_runtime.get('display')})")
+    elif headed_runtime.get("xvfb_already_running"):
+        print(f"[启动] 检测到已有 Xvfb/显示服务可用 ({headed_runtime.get('display')})")
+    elif headed_runtime.get("allow_headed") and headed_runtime.get("reason") not in {"", "not_docker", "headed_not_allowed", "windows"}:
+        print(f"[启动] Docker 有头浏览器运行时未完全就绪: reason={headed_runtime.get('reason')}")
+
     # Get config from setting.toml
     config_dict = config.get_raw_config()
 
@@ -139,6 +185,7 @@ async def lifespan(app: FastAPI):
     # Load generation configuration from database
     generation_config = await db.get_generation_config()
     config.set_image_timeout(generation_config.image_timeout)
+    config.set_image_total_timeout(generation_config.image_total_timeout)
     config.set_video_timeout(generation_config.video_timeout)
 
     # Load debug configuration from database
@@ -241,6 +288,9 @@ async def lifespan(app: FastAPI):
     print("[启动] 文件缓存清理任务已启动")
     if config.cluster_enabled:
         print(f"[启动] 集群模式已启用: role={config.cluster_role}, node={config.cluster_node_name}")
+        print(f"[启动] 集群对外地址: {config.cluster_effective_node_public_base_url or '<未解析到>'}")
+        if config.cluster_role == "worker" and not config.cluster_effective_node_public_base_url:
+            print("[启动] 警告: 当前为子节点，但未解析到可对外访问地址；容器/NAT 场景建议显式配置 cluster.node_public_base_url")
     print("[启动] 429 自动解禁任务已启动（每小时执行一次）")
     print("[启动] AT 自动刷新任务已启动（每分钟执行一次）")
     print(f"[启动] 服务绑定地址: http://{config.server_host}:{config.server_port}")
@@ -252,6 +302,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Flow2API 正在关闭...")
+    stop_managed_xvfb()
     # Stop file cache cleanup task
     await generation_handler.file_cache.stop_cleanup_task()
     await cluster_manager.stop()
@@ -284,6 +335,7 @@ token_manager = TokenManager(db, flow_client)
 concurrency_manager = ConcurrencyManager()
 load_balancer = LoadBalancer(token_manager, concurrency_manager)
 cluster_manager = ClusterManager(load_balancer)
+load_balancer.set_cluster_manager(cluster_manager)
 generation_handler = GenerationHandler(
     flow_client,
     token_manager,

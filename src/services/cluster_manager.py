@@ -4,6 +4,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -13,6 +14,42 @@ from ..core.logger import debug_logger
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_unreachable_cluster_base_url(base_url: str) -> bool:
+    try:
+        parsed = urlparse(str(base_url or "").strip())
+    except Exception:
+        return False
+    hostname = str(parsed.hostname or "").strip().lower()
+    return hostname in {"0.0.0.0", "::", "[::]"}
+
+
+def _normalize_worker_token_usage_rows(rows: Any) -> List[Dict[str, Any]]:
+    normalized_rows: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        email = str(row.get("email") or "").strip().lower()
+        if not email:
+            continue
+        token_id_raw = row.get("token_id")
+        token_id: Optional[int] = None
+        if token_id_raw is not None:
+            try:
+                token_id = int(token_id_raw)
+            except Exception:
+                token_id = None
+        normalized_rows.append(
+            {
+                "token_id": token_id,
+                "email": email,
+                "current_project_id": str(row.get("current_project_id") or "").strip() or None,
+                "current_project_name": str(row.get("current_project_name") or "").strip() or None,
+                "remark": str(row.get("remark") or "").strip() or None,
+            }
+        )
+    return normalized_rows
 
 
 class ClusterManager:
@@ -222,6 +259,31 @@ class ClusterManager:
 
         return dict(status.get("summary") or {})
 
+    async def _build_local_worker_token_usage(self) -> List[Dict[str, Any]]:
+        if not self.is_worker() or not self.load_balancer or not getattr(self.load_balancer, "token_manager", None):
+            return []
+        try:
+            active_tokens = await self.load_balancer.token_manager.get_active_tokens()
+        except Exception as exc:
+            debug_logger.log_warning(f"[CLUSTER] 获取子节点活跃 Token 失败: {exc}")
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for token in active_tokens:
+            email = str(getattr(token, "email", "") or "").strip().lower()
+            if not email:
+                continue
+            rows.append(
+                {
+                    "token_id": getattr(token, "id", None),
+                    "email": email,
+                    "current_project_id": getattr(token, "current_project_id", None),
+                    "current_project_name": getattr(token, "current_project_name", None),
+                    "remark": getattr(token, "remark", None),
+                }
+            )
+        return rows
+
     async def build_local_node_snapshot(self) -> Dict[str, Any]:
         active_requests = await self.get_local_active_requests()
         node_max = max(0, int(config.cluster_node_max_concurrency))
@@ -231,6 +293,8 @@ class ClusterManager:
             "node_id": config.cluster_node_id,
             "node_name": config.cluster_node_name,
             "base_url": config.cluster_effective_node_public_base_url,
+            "server_port": int(config.server_port),
+            "worker_tokens": await self._build_local_worker_token_usage(),
             "role": self.role,
             "enabled": True,
             "healthy": True,
@@ -257,7 +321,10 @@ class ClusterManager:
             "node_id": node_id,
             "node_name": str(payload.get("node_name") or node_id).strip(),
             "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
+            "server_port": max(1, int(payload.get("server_port") or 0)) if payload.get("server_port") is not None else None,
+            "worker_tokens": _normalize_worker_token_usage_rows(payload.get("worker_tokens") or []),
             "role": str(payload.get("role") or "worker").strip().lower(),
+            "reported_enabled": bool(payload.get("enabled", True)),
             "enabled": bool(payload.get("enabled", True)),
             "active_requests": max(0, int(payload.get("active_requests") or 0)),
             "node_max_concurrency": max(0, int(payload.get("node_max_concurrency") or 0)),
@@ -277,10 +344,52 @@ class ClusterManager:
 
         async with self._nodes_lock:
             existing = dict(self._nodes.get(node_id) or {})
+            manual_override = existing.get("manual_enabled_override")
             existing.update(sanitized)
+            if manual_override is not None:
+                existing["manual_enabled_override"] = bool(manual_override)
+                existing["enabled"] = bool(manual_override)
             self._nodes[node_id] = existing
 
         return {"success": True, "received_at": _utc_now_iso(), "node_id": node_id}
+
+    async def get_worker_token_usage_map(self) -> Dict[str, List[Dict[str, Any]]]:
+        now_ts = time.time()
+        async with self._nodes_lock:
+            remote_nodes = [dict(item) for item in self._nodes.values()]
+
+        usage_map: Dict[str, List[Dict[str, Any]]] = {}
+        for raw_node in remote_nodes:
+            node = self._decorate_node(raw_node, now_ts)
+            if str(node.get("role") or "").strip().lower() != "worker":
+                continue
+            if not bool(node.get("healthy")) or not bool(node.get("enabled", True)):
+                continue
+
+            for usage in _normalize_worker_token_usage_rows(node.get("worker_tokens") or []):
+                email = str(usage.get("email") or "").strip().lower()
+                if not email:
+                    continue
+                usage_item = dict(usage)
+                usage_item["node_id"] = str(node.get("node_id") or "").strip()
+                usage_item["node_name"] = str(node.get("node_name") or usage_item["node_id"]).strip()
+                usage_item["reported_at"] = node.get("reported_at") or node.get("last_seen_at")
+                usage_map.setdefault(email, []).append(usage_item)
+
+        for email, rows in usage_map.items():
+            rows.sort(key=lambda item: str(item.get("reported_at") or ""), reverse=True)
+        return usage_map
+
+    async def get_worker_used_token_emails(self) -> set[str]:
+        usage_map = await self.get_worker_token_usage_map()
+        return {email for email, rows in usage_map.items() if rows}
+
+    async def is_token_email_used_by_worker(self, email: Optional[str]) -> bool:
+        normalized = str(email or "").strip().lower()
+        if not normalized:
+            return False
+        usage_map = await self.get_worker_token_usage_map()
+        return bool(usage_map.get(normalized))
 
     async def remove_node(self, node_id: str) -> bool:
         """Remove a remote node record from the master's in-memory registry."""
@@ -295,6 +404,24 @@ class ClusterManager:
             if existed:
                 self._nodes.pop(target, None)
         return existed
+
+    async def set_node_enabled(self, node_id: str, enabled: bool) -> bool:
+        """Manually enable or disable a remote node."""
+        target = str(node_id or "").strip()
+        if not target:
+            raise ValueError("node_id 不能为空")
+        if target == config.cluster_node_id:
+            raise ValueError("不能禁用当前节点")
+
+        async with self._nodes_lock:
+            current = dict(self._nodes.get(target) or {})
+            if not current:
+                return False
+            current["manual_enabled_override"] = bool(enabled)
+            current["enabled"] = bool(enabled)
+            current["last_manual_override_at"] = _utc_now_iso()
+            self._nodes[target] = current
+        return True
 
     async def _master_cleanup_loop(self):
         while True:
@@ -377,8 +504,11 @@ class ClusterManager:
         last_seen_ts = float(item.get("last_seen_ts") or now_ts)
         heartbeat_age = max(0, int(now_ts - last_seen_ts))
         timeout_seconds = max(5, int(config.cluster_heartbeat_timeout_seconds))
-        healthy = bool(item.get("enabled", True)) and heartbeat_age <= timeout_seconds
+        effective_enabled = bool(item.get("enabled", True))
+        healthy = effective_enabled and heartbeat_age <= timeout_seconds
 
+        item["enabled"] = effective_enabled
+        item["reported_enabled"] = bool(item.get("reported_enabled", effective_enabled))
         item["healthy"] = healthy
         item["heartbeat_age_seconds"] = heartbeat_age
         item["available_slots"] = (
@@ -387,8 +517,8 @@ class ClusterManager:
             else item.get("available_slots")
         )
         if not item.get("status_reason"):
-            if not item.get("enabled", True):
-                item["status_reason"] = "disabled"
+            if not effective_enabled:
+                item["status_reason"] = "manual_disabled"
             elif healthy:
                 item["status_reason"] = "healthy"
             else:
@@ -430,6 +560,7 @@ class ClusterManager:
             return {"dispatch_to": "local", "reason": "no_healthy_nodes"}
 
         candidates: List[Dict[str, Any]] = []
+        local_candidate: Optional[Dict[str, Any]] = None
         for node in healthy_nodes:
             node_max = max(0, int(node.get("node_max_concurrency") or 0))
             active = max(0, int(node.get("active_requests") or 0))
@@ -450,9 +581,14 @@ class ClusterManager:
             candidate["dispatch_generation_type"] = generation_type
             candidate["dispatch_model"] = resolved_model
             candidates.append(candidate)
+            if str(candidate.get("node_id") or "") == config.cluster_node_id:
+                local_candidate = candidate
 
         if not candidates:
             return {"dispatch_to": "local", "reason": "all_nodes_full"}
+
+        if bool(config.cluster_prefer_local) and local_candidate is not None:
+            return {"dispatch_to": "local", "reason": "prefer_local_available", "node": local_candidate}
 
         selected = max(
             candidates,
@@ -467,8 +603,11 @@ class ClusterManager:
         if str(selected.get("node_id") or "") == config.cluster_node_id:
             return {"dispatch_to": "local", "reason": "selected_local", "node": selected}
 
-        if not str(selected.get("base_url") or "").strip():
+        selected_base_url = str(selected.get("base_url") or "").strip()
+        if not selected_base_url:
             return {"dispatch_to": "local", "reason": "selected_remote_missing_base_url"}
+        if _is_unreachable_cluster_base_url(selected_base_url):
+            return {"dispatch_to": "local", "reason": "selected_remote_unreachable_base_url", "node": selected}
 
         return {"dispatch_to": "remote", "reason": "selected_remote", "node": selected}
 
