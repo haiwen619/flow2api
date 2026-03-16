@@ -9,6 +9,7 @@
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
   <style>
     @keyframes slide-up {
       from {
@@ -1173,18 +1174,18 @@
                 <option value="remote_browser">远程有头打码</option>
               </select>
               <p class="text-xs text-muted-foreground mt-1">
-                这里只控制当前展示哪一种配置项。实际执行顺序以下方“打码优先级”列表为准。
+                这里只控制当前展示哪一种配置项。实际执行只会使用下方“已启用打码顺序”里的方式。
               </p>
             </div>
 
             <div>
               <div class="flex items-center justify-between mb-2">
-                <label class="text-sm font-medium block">打码优先级</label>
-                <span class="text-xs text-muted-foreground">越靠上优先级越高，失败后立即切到下一项</span>
+                <label class="text-sm font-medium block">已启用打码顺序</label>
+                <span class="text-xs text-muted-foreground">禁用项不会执行；启用多种时才会按顺序回退</span>
               </div>
               <div id="captchaPriorityList" class="space-y-2"></div>
               <p class="text-xs text-muted-foreground mt-2">
-                默认优先级第 1 位为远程有头打码。
+                默认仅启用远程有头打码，其他方式需手动开启。
               </p>
             </div>
 
@@ -1933,6 +1934,101 @@
             <textarea id="iltRecentErrors" class="w-full min-h-[140px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
           </div>
         </div>
+
+        <div class="rounded-lg border border-border bg-background p-4 mt-4">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="text-sm font-semibold">🧭 自测诊断分析</h3>
+              <p class="text-xs text-muted-foreground mt-1">自动汇总并分析 [LOADTEST_IMAGE_DIAG] 与 [LOADTEST_IMAGE_ATTEMPT]，直接展示图片并发自测中的 CPU 热点阶段与主要耗时来源。</p>
+            </div>
+            <div id="iltDiagSummary" class="text-xs text-muted-foreground"></div>
+          </div>
+
+          <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mt-4">
+            <div class="rounded-lg border border-border bg-background p-3">
+              <div class="text-xs text-muted-foreground">诊断事件</div>
+              <div id="iltDiagCount" class="text-lg font-semibold">0</div>
+            </div>
+            <div class="rounded-lg border border-border bg-background p-3">
+              <div class="text-xs text-muted-foreground">进程 CPU 峰值</div>
+              <div id="iltDiagProcCpuPeak" class="text-lg font-semibold">0%</div>
+            </div>
+            <div class="rounded-lg border border-border bg-background p-3">
+              <div class="text-xs text-muted-foreground">整机 CPU 峰值</div>
+              <div id="iltDiagSysCpuPeak" class="text-lg font-semibold">0%</div>
+            </div>
+            <div class="rounded-lg border border-border bg-background p-3">
+              <div class="text-xs text-muted-foreground">任务峰值</div>
+              <div id="iltDiagTaskPeak" class="text-lg font-semibold">0</div>
+            </div>
+            <div class="rounded-lg border border-border bg-background p-3">
+              <div class="text-xs text-muted-foreground">reCAPTCHA 平均</div>
+              <div id="iltDiagRecaptchaAvg" class="text-lg font-semibold">0 ms</div>
+            </div>
+            <div class="rounded-lg border border-border bg-background p-3">
+              <div class="text-xs text-muted-foreground">提交上游平均</div>
+              <div id="iltDiagSubmitAvg" class="text-lg font-semibold">0 ms</div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+            <div>
+              <div class="text-xs font-medium mb-2">CPU 热点阶段</div>
+              <textarea id="iltDiagHotspots" class="w-full min-h-[120px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
+            </div>
+            <div>
+              <div class="text-xs font-medium mb-2">诊断结论</div>
+              <textarea id="iltDiagInsights" class="w-full min-h-[120px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            <div class="text-xs font-medium mb-2">最近诊断事件</div>
+            <textarea id="iltDiagRecentEvents" class="w-full min-h-[160px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-border bg-background p-4 mb-4">
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 class="text-sm font-semibold">🖥️ 系统实时预览</h3>
+            <p class="text-xs text-muted-foreground mt-1">用于观察整台服务器在并发测试中的 CPU 与内存占用，手动开启后每 5 秒采样一次。</p>
+          </div>
+          <div id="cpuPreviewLastUpdate" class="text-xs text-muted-foreground">尚未采样</div>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">当前 CPU</div>
+            <div id="cpuPreviewPercent" class="text-2xl font-bold">-</div>
+            <div class="text-xs text-muted-foreground">整机总使用率</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">系统内存</div>
+            <div id="cpuPreviewMemory" class="text-lg font-semibold">-</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">逻辑 CPU</div>
+            <div id="cpuPreviewThreads" class="text-lg font-semibold">-</div>
+          </div>
+          <div class="rounded-lg border border-border bg-background p-3">
+            <div class="text-xs text-muted-foreground">预览状态</div>
+            <div id="cpuPreviewStatus" class="text-lg font-semibold">未启动</div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 mt-4">
+          <button id="cpuPreviewStartBtn" onclick="startCpuPreview()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground h-9 px-4 text-sm hover:opacity-90">开始获取</button>
+          <button id="cpuPreviewStopBtn" onclick="stopCpuPreview()" class="inline-flex items-center justify-center rounded-md border border-border h-9 px-4 text-sm hover:bg-accent">停止获取</button>
+          <button onclick="loadRealtimeCpuPreview()" class="inline-flex items-center justify-center rounded-md border border-border h-9 px-4 text-sm hover:bg-accent">立即采样</button>
+          <span id="cpuPreviewBadge" class="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs">已停止</span>
+        </div>
+
+        <div class="mt-4">
+          <div class="text-xs font-medium mb-2">最近采样</div>
+          <textarea id="cpuPreviewSamples" class="w-full min-h-[120px] rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground" readonly></textarea>
+        </div>
       </div>
 
       <!-- 核心指标卡片 -->
@@ -2649,6 +2745,17 @@
             我确认导入文件中的 Token 是最新可用数据，并同意按邮箱替换本地已有 Token
           </span>
         </label>
+        <div id="importProgressPanel" class="hidden rounded-md border border-border bg-muted/30 p-3 space-y-2">
+          <div class="flex items-center justify-between text-xs text-muted-foreground">
+            <span id="importProgressText">准备导入…</span>
+            <span id="importProgressPercent">0%</span>
+          </div>
+          <div class="h-2 w-full rounded-full bg-muted overflow-hidden">
+            <div id="importProgressBar" class="h-full w-0 rounded-full bg-primary transition-all duration-300"></div>
+          </div>
+          <div id="importProgressMeta" class="text-xs text-muted-foreground">等待开始</div>
+          <div id="importProgressErrors" class="hidden text-xs text-amber-600 dark:text-amber-300"></div>
+        </div>
       </div>
       <div class="flex items-center justify-end gap-3 p-5 border-t border-border">
         <button onclick="closeImportModal()"
@@ -2735,6 +2842,10 @@
         <div class="rounded-md border border-blue-200 bg-blue-50/70 p-3 text-sm text-blue-900">
           <div id="tokenExportSummary">加载中...</div>
           <div id="tokenExportHint" class="mt-1 text-xs text-blue-800/90"></div>
+        </div>
+        <div class="rounded-md border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-900">
+          <div id="tokenExportOccupiedSummary">正在检查子节点占用情况...</div>
+          <div id="tokenExportOccupiedExamples" class="mt-1 text-xs text-amber-800/90 break-words"></div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <label class="space-y-2 text-sm">
@@ -4560,6 +4671,84 @@
           ? `已选择: ${batchImportSelectedFile.name}`
           : "未选择文件";
       },
+      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      resetImportProgressUI = () => {
+        const panel = $("importProgressPanel");
+        const text = $("importProgressText");
+        const percent = $("importProgressPercent");
+        const bar = $("importProgressBar");
+        const meta = $("importProgressMeta");
+        const errors = $("importProgressErrors");
+        if (panel) panel.classList.add("hidden");
+        if (text) text.textContent = "准备导入…";
+        if (percent) percent.textContent = "0%";
+        if (bar) bar.style.width = "0%";
+        if (meta) meta.textContent = "等待开始";
+        if (errors) {
+          errors.classList.add("hidden");
+          errors.textContent = "";
+        }
+      },
+      renderImportProgressUI = (job) => {
+        const panel = $("importProgressPanel");
+        const text = $("importProgressText");
+        const percent = $("importProgressPercent");
+        const bar = $("importProgressBar");
+        const meta = $("importProgressMeta");
+        const errors = $("importProgressErrors");
+        if (!panel || !job) return;
+        panel.classList.remove("hidden");
+        const progress = Math.max(0, Math.min(100, Number(job.progress_percent || 0)));
+        const validated = Number(job.validated_count || 0);
+        const processed = Number(job.processed_count || 0);
+        const total = Number(job.total_tokens || 0);
+        if (text) text.textContent = job.current_message || "导入进行中";
+        if (percent) percent.textContent = `${Math.round(progress)}%`;
+        if (bar) bar.style.width = `${progress}%`;
+        if (meta) {
+          meta.textContent = `验证 ${validated}/${total} · 写入 ${processed}/${total} · 新增 ${job.added || 0} · 更新 ${job.updated || 0} · 跳过 ${job.skipped || 0} · 失败 ${job.error_count || 0}`;
+        }
+        const recentErrors = Array.isArray(job.recent_errors) ? job.recent_errors.filter(Boolean).slice(0, 2) : [];
+        if (errors) {
+          if (recentErrors.length) {
+            errors.classList.remove("hidden");
+            errors.textContent = `最近异常：${recentErrors.join("；")}`;
+          } else {
+            errors.classList.add("hidden");
+            errors.textContent = "";
+          }
+        }
+      },
+      waitForTokenImportJob = async (jobId, onProgress) => {
+        while (jobId) {
+          const resp = await apiRequest(`/api/tokens/import/status/${encodeURIComponent(jobId)}`);
+          if (!resp) return null;
+          const data = await resp.json();
+          const job = data && data.job ? data.job : null;
+          if (job && typeof onProgress === "function") onProgress(job);
+          if (!job) return null;
+          if (job.status === "completed" || job.status === "failed") return job;
+          await sleep(800);
+        }
+        return null;
+      },
+      startTokenImportJob = async ({ tokens, confirmReplace, onProgress }) => {
+        const resp = await apiRequest("/api/tokens/import/start", {
+          method: "POST",
+          body: JSON.stringify({
+            tokens,
+            confirm_replace_by_email: !!confirmReplace,
+          }),
+        });
+        if (!resp) return null;
+        const data = await resp.json();
+        const job = data && data.job ? data.job : null;
+        if (!job || !job.job_id) {
+          throw new Error(data?.detail || data?.message || "导入任务启动失败");
+        }
+        if (typeof onProgress === "function") onProgress(job);
+        return await waitForTokenImportJob(job.job_id, onProgress);
+      },
       openBatchImportModal = () => {
         $("batchImportModal").classList.remove("hidden");
         setBatchImportSelectedFile(null);
@@ -4623,20 +4812,21 @@
             return;
           }
 
-          const r = await apiRequest("/api/tokens/import", {
-            method: "POST",
-            body: JSON.stringify({
-              tokens: parsed.tokens,
-              confirm_replace_by_email: true,
-            }),
+          const job = await startTokenImportJob({
+            tokens: parsed.tokens,
+            confirmReplace: true,
+            onProgress: (progressJob) => {
+              const percent = Math.round(Number(progressJob?.progress_percent || 0));
+              btnText.textContent = progressJob?.status === "completed" ? "导入完成" : `导入中 ${percent}%`;
+            },
           });
-          if (!r) return;
-          const d = await r.json();
+          if (!job) return;
+          const d = job.result || {};
           if (d.success) {
             closeBatchImportModal();
             await refreshTokens();
-              const failedCount = Array.isArray(d.errors) ? d.errors.length : 0;
-              const detailErrors = Array.isArray(d.errors) ? d.errors : [];
+            const failedCount = Array.isArray(d.errors) ? d.errors.length : 0;
+            const detailErrors = Array.isArray(d.errors) ? d.errors : [];
             showToast(
               `导入完成: JSON文件${parsed.jsonFileCount}个, 解析${parsed.rawCount}条, 去重后${parsed.tokens.length}条, 新增${d.added || 0}, 更新${d.updated || 0}, 跳过${d.skipped || 0}${failedCount ? `, 失败${failedCount}（消息中心可查看详情）` : ""}`,
               failedCount ? "warning" : "success",
@@ -4644,7 +4834,7 @@
             );
           } else {
             showToast(
-              "导入失败: " + (d.detail || d.message || "未知错误"),
+              "导入失败: " + (d.detail || d.message || job.current_message || "未知错误"),
               "error",
             );
           }
@@ -4660,11 +4850,13 @@
         $("importModal").classList.remove("hidden");
         $("importFile").value = "";
         $("importConfirmReplace").checked = false;
+        resetImportProgressUI();
       },
       closeImportModal = () => {
         $("importModal").classList.add("hidden");
         $("importFile").value = "";
         $("importConfirmReplace").checked = false;
+        resetImportProgressUI();
       },
       renderTokenExportNodeOptions = () => {
         const select = $("tokenExportNodeSelect");
@@ -4681,7 +4873,8 @@
             const nodeName = String(node.display_name || node.node_name || nodeId || "未命名节点");
             const healthyText = node.healthy ? "健康" : "异常";
             const boundCount = Number(node.bound_token_count || 0);
-            return `<option value="${escapeHtml(nodeId)}">${escapeHtml(nodeName)} · ${healthyText} · 已绑 ${boundCount}</option>`;
+            const occupiedCount = Number(node.occupied_token_count || 0);
+            return `<option value="${escapeHtml(nodeId)}">${escapeHtml(nodeName)} · ${healthyText} · 已绑 ${boundCount} · 占用 ${occupiedCount}</option>`;
           }),
         ];
         select.innerHTML = optionHtml.join("");
@@ -4750,39 +4943,78 @@
           return normalizedKeywords.some((keyword) => email.includes(keyword));
         });
       },
+      getClusterWorkerUsageItems = (t) =>
+        Array.isArray(t?.cluster_worker_usages)
+          ? t.cluster_worker_usages.filter((item) => item && typeof item === "object")
+          : [],
+      getClusterWorkerNodeIds = (t) =>
+        Array.from(
+          new Set(
+            getClusterWorkerUsageItems(t)
+              .map((item) => String(item.node_id || "").trim())
+              .filter(Boolean),
+          ),
+        ),
+      isTokenExportEligibleForNode = (t, selectedNodeId = "") => {
+        if (!t?.is_active) return false;
+        if (!isClusterWorkerOccupiedToken(t)) return true;
+        const nodeIds = getClusterWorkerNodeIds(t);
+        if (!selectedNodeId) return false;
+        return nodeIds.length > 0 && nodeIds.every((nodeId) => nodeId === selectedNodeId);
+      },
       updateTokenExportSummary = () => {
         const summary = $("tokenExportSummary");
         const hint = $("tokenExportHint");
         const emailSummary = $("tokenExportEmailFilterSummary");
+        const occupiedSummary = $("tokenExportOccupiedSummary");
+        const occupiedExamples = $("tokenExportOccupiedExamples");
         if (!summary || !hint) return;
         const activeCount = Number(tokenExportOptions.active_token_count || 0);
         const unboundCount = Number(tokenExportOptions.unbound_token_count || 0);
         const boundCount = Number(tokenExportOptions.bound_token_count || 0);
+        const occupiedCount = Number(tokenExportOptions.occupied_token_count || 0);
         const selectedCount = Math.max(1, Number($("tokenExportCountInput")?.value || tokenExportOptions.default_count || 5));
         tokenExportEmailKeywords = parseTokenExportEmailKeywords($("tokenExportEmailFilterInput")?.value || "");
         const matchedRows = getMatchedTokenExportRows(tokenExportEmailKeywords);
         const selectedNodeId = String($("tokenExportNodeSelect")?.value || "").trim();
         const workerNodes = Array.isArray(tokenExportOptions.worker_nodes) ? tokenExportOptions.worker_nodes : [];
         const selectedNode = workerNodes.find((item) => String(item.node_id || "") === selectedNodeId) || null;
+        const sourceRows = Array.isArray(allTokens) ? allTokens.filter((item) => item?.is_active) : [];
+        const eligibleRows = sourceRows.filter((item) => isTokenExportEligibleForNode(item, selectedNodeId));
+        const conflictRows = sourceRows.filter((item) => item?.is_active && !isTokenExportEligibleForNode(item, selectedNodeId));
+        const matchedConflictRows = matchedRows.filter((item) => !isTokenExportEligibleForNode(item, selectedNodeId));
+        const occupiedItems = Array.isArray(tokenExportOptions.occupied_token_examples)
+          ? tokenExportOptions.occupied_token_examples
+          : [];
         if (tokenExportEmailKeywords.length) {
-          summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；邮箱筛选命中 ${matchedRows.length} 个活跃 Token，本次将优先导出这些命中项。`;
+          summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；邮箱筛选命中 ${matchedRows.length} 个活跃 Token，其中 ${matchedConflictRows.length} 个正被其他子节点占用，本次可导出 ${Math.max(0, matchedRows.length - matchedConflictRows.length)} 个。`;
           if (emailSummary) {
             emailSummary.textContent = `已输入 ${tokenExportEmailKeywords.length} 个邮箱关键词，匹配到 ${matchedRows.length} 个活跃 Token；提交导出时会以这些匹配结果为准。`;
           }
         } else {
-          summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；本次计划导出 ${selectedCount} 个账号。`;
+          summary.textContent = `当前活跃 ${activeCount} 个，未绑定 ${unboundCount} 个，已绑定 ${boundCount} 个；其中 ${occupiedCount} 个正被子节点占用，当前可导出 ${eligibleRows.length} 个，本次计划导出 ${selectedCount} 个账号。`;
           if (emailSummary) {
             emailSummary.textContent = "未启用邮箱筛选，默认按数量导出";
           }
         }
+        if (occupiedSummary) {
+          occupiedSummary.textContent = selectedNode
+            ? `当前有 ${occupiedCount} 个活跃 Token 正被子节点占用；若占用节点就是“${selectedNode.node_name || selectedNode.node_id}”，导出时允许继续复用，否则会自动排除。当前冲突 ${conflictRows.length} 个。`
+            : `当前有 ${occupiedCount} 个活跃 Token 正被子节点占用；未选择子节点时，这些 Token 会在导出时自动排除，避免重复使用。`;
+        }
+        if (occupiedExamples) {
+          occupiedExamples.textContent = occupiedItems.length
+            ? `示例：${occupiedItems.map((item) => `${item.email}（${Array.isArray(item.node_names) ? item.node_names.join("、") : "子节点占用"}）`).join("；")}`
+            : "当前暂无子节点占用中的 Token。";
+        }
         if (selectedNode) {
           hint.textContent = tokenExportEmailKeywords.length
-            ? `当前绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，命中的 Token 会优先复用该节点已绑定账号，再补充该筛选结果中的未绑定账号。`
-            : `默认绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，会优先复用该节点已绑定账号，再补充未绑定账号，避免不同子节点重复使用。`;
+            ? `当前绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，命中的 Token 会优先复用该节点已绑定账号，再补充该筛选结果中的未绑定账号；其他子节点正在占用的 Token 会自动排除。`
+            : `默认绑定到子节点“${selectedNode.node_name || selectedNode.node_id}”，会优先复用该节点已绑定账号，再补充未绑定账号；其他子节点正在占用的 Token 会自动排除。`;
         } else if (workerNodes.length) {
           hint.textContent = tokenExportEmailKeywords.length
-            ? "当前未选择子节点，本次会按邮箱筛选结果导出，但不会写入子节点绑定记录。"
-            : "当前未选择子节点，本次导出不会写入绑定记录；如用于集群部署，建议选择一个子节点。";
+            ? "当前未选择子节点，本次会按邮箱筛选结果导出，但不会写入子节点绑定记录；已被子节点占用的 Token 会自动排除。"
+            : "当前未选择子节点，本次导出不会写入绑定记录；已被子节点占用的 Token 会自动排除。如用于集群部署，建议选择一个子节点。";
         } else {
           hint.textContent = "当前没有可选子节点，本地环境可直接导出；上线后有子节点时再绑定即可。";
         }
@@ -4804,6 +5036,8 @@
         $("tokenExportModal").classList.remove("hidden");
         $("tokenExportSummary").textContent = "正在加载导出配置...";
         $("tokenExportHint").textContent = "";
+        $("tokenExportOccupiedSummary").textContent = "正在检查子节点占用情况...";
+        $("tokenExportOccupiedExamples").textContent = "";
         $("tokenExportEmailFilterInput").value = "";
         $("tokenExportEmailFilterSummary").textContent = "未启用邮箱筛选，默认按数量导出";
         $("tokenExportHistoryList").innerHTML = "";
@@ -5419,21 +5653,24 @@
           btn.disabled = true;
           btnText.textContent = "导入中...";
           btnSpinner.classList.remove("hidden");
+          resetImportProgressUI();
           try {
-            const r = await apiRequest("/api/tokens/import", {
-              method: "POST",
-              body: JSON.stringify({
-                tokens: normalizedItems,
-                confirm_replace_by_email: confirmReplace,
-              }),
+            const job = await startTokenImportJob({
+              tokens: normalizedItems,
+              confirmReplace,
+              onProgress: (progressJob) => {
+                renderImportProgressUI(progressJob);
+                const percent = Math.round(Number(progressJob?.progress_percent || 0));
+                btnText.textContent = progressJob?.status === "completed" ? "导入完成" : `导入中 ${percent}%`;
+              },
             });
-            if (!r) {
+            if (!job) {
               btn.disabled = false;
               btnText.textContent = "导入";
               btnSpinner.classList.add("hidden");
               return;
             }
-            const d = await r.json();
+            const d = job.result || {};
             if (d.success) {
               closeImportModal();
               await refreshTokens();
@@ -5443,7 +5680,7 @@
               showToast(msg, failedCount ? "warning" : "success", detailErrors);
             } else {
               showToast(
-                "导入失败: " + (d.detail || d.message || "未知错误"),
+                "导入失败: " + (d.detail || d.message || job.current_message || "未知错误"),
                 "error",
               );
             }
@@ -6201,10 +6438,36 @@
             }
           });
         }
-        CAPTCHA_METHOD_META.forEach((item) => {
-          if (!normalized.includes(item.value)) normalized.push(item.value);
-        });
-        return normalized;
+        return normalized.length ? normalized : ["remote_browser"];
+      },
+      getCaptchaMethodRenderOrder = () => {
+        const enabled = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
+        const disabled = CAPTCHA_METHOD_META
+          .map((item) => item.value)
+          .filter((value) => !enabled.includes(value));
+        return [...enabled, ...disabled];
+      },
+      setCaptchaPanelMethodSafely = (preferred) => {
+        const method = String(preferred || "").trim();
+        if (CAPTCHA_METHOD_META.some((meta) => meta.value === method)) {
+          $("cfgCaptchaMethod").value = method;
+          return;
+        }
+        $("cfgCaptchaMethod").value = normalizeCaptchaPriorityOrder(captchaPriorityOrder)[0] || "remote_browser";
+      },
+      toggleCaptchaMethodEnabled = (method) => {
+        const current = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
+        if (current.includes(method)) {
+          if (current.length === 1) {
+            showToast("至少保留一种打码方式", "error");
+            return;
+          }
+          captchaPriorityOrder = current.filter((item) => item !== method);
+        } else {
+          captchaPriorityOrder = [...current, method];
+        }
+        renderCaptchaPriorityList();
+        toggleCaptchaOptions();
       },
       moveCaptchaPriority = (method, offset) => {
         const current = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
@@ -6218,26 +6481,37 @@
       renderCaptchaPriorityList = () => {
         const root = $("captchaPriorityList");
         if (!root) return;
-        const order = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
-        captchaPriorityOrder = order;
-        root.innerHTML = order
+        const enabledOrder = normalizeCaptchaPriorityOrder(captchaPriorityOrder);
+        const renderOrder = getCaptchaMethodRenderOrder();
+        captchaPriorityOrder = enabledOrder;
+        root.innerHTML = renderOrder
           .map((method, index) => {
             const meta =
               CAPTCHA_METHOD_META.find((item) => item.value === method) ||
               { value: method, label: method };
+            const enabled = enabledOrder.includes(method);
+            const enabledIndex = enabled ? enabledOrder.indexOf(method) : -1;
             return `
-              <div class="flex items-center gap-3 rounded-md border border-input bg-muted/20 px-3 py-2">
-                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold">
-                  ${index + 1}
+              <div class="flex items-center gap-3 rounded-md border border-input ${enabled ? "bg-muted/20" : "bg-slate-50/60 opacity-75"} px-3 py-2">
+                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${enabled ? "bg-primary/10" : "bg-slate-200 text-slate-500"} text-xs font-semibold">
+                  ${enabled ? enabledIndex + 1 : "关"}
                 </div>
-                <div class="flex-1 text-sm">${meta.label}</div>
+                <div class="flex-1 text-sm flex items-center gap-2">
+                  <span>${meta.label}</span>
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${enabled ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-600"}">
+                    ${enabled ? "已启用" : "已禁用"}
+                  </span>
+                </div>
                 <div class="flex items-center gap-2">
                   <button type="button"
-                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent ${index === 0 ? "opacity-40 cursor-not-allowed" : ""}"
-                    onclick="moveCaptchaPriority('${method}', -1)" ${index === 0 ? "disabled" : ""}>上移</button>
+                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent"
+                    onclick="toggleCaptchaMethodEnabled('${method}')">${enabled ? "禁用" : "启用"}</button>
                   <button type="button"
-                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent ${index === order.length - 1 ? "opacity-40 cursor-not-allowed" : ""}"
-                    onclick="moveCaptchaPriority('${method}', 1)" ${index === order.length - 1 ? "disabled" : ""}>下移</button>
+                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent ${!enabled || enabledIndex === 0 ? "opacity-40 cursor-not-allowed" : ""}"
+                    onclick="moveCaptchaPriority('${method}', -1)" ${!enabled || enabledIndex === 0 ? "disabled" : ""}>上移</button>
+                  <button type="button"
+                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent ${!enabled || enabledIndex === enabledOrder.length - 1 ? "opacity-40 cursor-not-allowed" : ""}"
+                    onclick="moveCaptchaPriority('${method}', 1)" ${!enabled || enabledIndex === enabledOrder.length - 1 ? "disabled" : ""}>下移</button>
                 </div>
               </div>
             `;
@@ -6286,7 +6560,7 @@
           captchaPriorityOrder = normalizeCaptchaPriorityOrder(
             d.captcha_priority_order || [d.captcha_method || "remote_browser"],
           );
-          $("cfgCaptchaMethod").value = captchaPriorityOrder[0] || "remote_browser";
+          setCaptchaPanelMethodSafely(captchaPriorityOrder[0] || "remote_browser");
           $("cfgYescaptchaApiKey").value = d.yescaptcha_api_key || "";
           $("cfgYescaptchaBaseUrl").value =
             d.yescaptcha_base_url || "https://api.yescaptcha.com";
@@ -7249,7 +7523,10 @@
           );
         });
         if (t !== "cluster") stopClusterAutoRefresh();
-        if (t !== "loadAnalysis") stopDiagAutoRefresh();
+        if (t !== "loadAnalysis") {
+          stopDiagAutoRefresh();
+          stopCpuPreview();
+        }
         if (t === "settings") {
           loadAdminConfig();
           loadServerConfig();
@@ -7267,9 +7544,13 @@
           startClusterAutoRefresh();
         } else if (t === "loadAnalysis") {
           loadDiagnostics();
+          loadCpuPreviewHistory();
           loadImageLoadTestStatus();
           startDiagAutoRefresh();
           loadHistoryDiag(); // 同时加载历史分析
+          requestAnimationFrame(() => {
+            Object.values(_diagCharts).forEach((c) => c && c.resize());
+          });
         }
       };
 
@@ -7884,6 +8165,8 @@
 
     // ========== 负载分析面板 ==========
     let _diagAutoRefreshTimer = null;
+    let _cpuPreviewTimer = null;
+    let _cpuPreviewSamples = [];
     let _diagCharts = {};
 
     function startDiagAutoRefresh() {
@@ -7905,6 +8188,210 @@
       }
     }
 
+    function renderCpuPreviewState({ running = false } = {}) {
+      const badge = $("cpuPreviewBadge");
+      const status = $("cpuPreviewStatus");
+      const startBtn = $("cpuPreviewStartBtn");
+      const stopBtn = $("cpuPreviewStopBtn");
+      if (badge) {
+        badge.textContent = running ? "采样中" : "已停止";
+        badge.className = `inline-flex items-center rounded-full px-2.5 py-1 text-xs ${running ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-700"}`;
+      }
+      if (status) status.textContent = running ? "采样中" : "未启动";
+      if (startBtn) {
+        startBtn.disabled = running;
+        startBtn.classList.toggle("opacity-60", running);
+      }
+      if (stopBtn) {
+        stopBtn.disabled = !running;
+        stopBtn.classList.toggle("opacity-60", !running);
+      }
+    }
+
+    function updateCpuPreviewSamplesView() {
+      const textarea = $("cpuPreviewSamples");
+      if (!textarea) return;
+      textarea.value = _cpuPreviewSamples.length
+        ? _cpuPreviewSamples.join("\n")
+        : "暂无采样记录";
+    }
+
+    function formatCpuPreviewMemoryText(data = {}) {
+      const memPercent = Number(data.memory_percent ?? -1);
+      const memUsedMb = Number(data.memory_used_mb ?? -1);
+      const memTotalMb = Number(data.memory_total_mb ?? -1);
+      if (memUsedMb >= 0 && memTotalMb > 0) {
+        let text = `${(memUsedMb / 1024).toFixed(1)} / ${(memTotalMb / 1024).toFixed(1)} GB`;
+        if (memPercent >= 0) text += ` (${memPercent.toFixed(1)}%)`;
+        return text;
+      }
+      if (memPercent >= 0) return `${memPercent.toFixed(1)}%`;
+      return "N/A";
+    }
+
+    function formatCpuPreviewSampleLine(data = {}) {
+      const cpuPercent = Number(data.cpu_percent ?? -1);
+      const cpuText = cpuPercent >= 0 ? `${cpuPercent.toFixed(1)}%` : "N/A";
+      const memText = formatCpuPreviewMemoryText(data);
+      const logicalCpuValue = Number(data.logical_cpu_count ?? -1);
+      const logicalCpuText = logicalCpuValue >= 0 ? String(logicalCpuValue) : "N/A";
+      const sampledAtValue = data.sampled_at || data.created_at;
+      const sampledAt = sampledAtValue ? new Date(typeof sampledAtValue === "string" ? sampledAtValue : Number(sampledAtValue) * 1000) : new Date();
+      const sampledText = Number.isNaN(sampledAt.getTime()) ? new Date().toLocaleTimeString() : sampledAt.toLocaleTimeString();
+      const sourceLabel = getCpuPreviewSourceLabel(data, {});
+      const sourceText = sourceLabel ? `（${sourceLabel}）` : "";
+      return `${sampledText}${sourceText} · CPU ${cpuText} · 内存 ${memText} · 逻辑CPU ${logicalCpuText}`;
+    }
+
+    function getCpuPreviewSourceLabel(data = {}, options = {}) {
+      const source = String(data.source || "").trim().toLowerCase();
+      if (source === "system") return "系统采样";
+      if (source === "psutil") return "系统采样";
+      if (source === "native-system") return "系统原生采样";
+      if (source === "native") return "原生采样";
+      if (source === "diagnostics") return "诊断回退";
+      if (options?.fallback) return "诊断回退";
+      return "";
+    }
+
+    function applyCpuPreviewSnapshot(data = {}, options = {}) {
+      const isLegacyFallback = String(data.source || "").trim().toLowerCase() === "diagnostics";
+      const cpuPercent = Number(data.cpu_percent ?? -1);
+      const cpuText = cpuPercent >= 0 ? `${cpuPercent.toFixed(1)}%` : "N/A";
+      const memText = formatCpuPreviewMemoryText(data);
+      const logicalCpuValue = Number(data.logical_cpu_count ?? -1);
+      const threadsText = logicalCpuValue >= 0 ? String(logicalCpuValue) : "N/A";
+      $("cpuPreviewPercent").textContent = cpuText;
+      $("cpuPreviewMemory").textContent = memText;
+      $("cpuPreviewThreads").textContent = threadsText;
+
+      const sampledAt = data.sampled_at ? new Date(Number(data.sampled_at) * 1000) : new Date();
+      const sampledText = Number.isNaN(sampledAt.getTime()) ? new Date().toLocaleTimeString() : sampledAt.toLocaleTimeString();
+      const sourceLabel = getCpuPreviewSourceLabel(data, options);
+      const sourceText = sourceLabel ? `（${sourceLabel}）` : "";
+      $("cpuPreviewLastUpdate").textContent = `最近采样：${sampledText}${sourceText}`;
+      if (isLegacyFallback) {
+        $("cpuPreviewStatus").textContent = "服务未重启，仍是旧诊断回退";
+      } else {
+        $("cpuPreviewStatus").textContent = _cpuPreviewTimer
+          ? (sourceLabel ? `采样中 · ${sourceLabel}` : "采样中")
+          : (options?.statusText || (sourceLabel ? `已手动采样 · ${sourceLabel}` : "已手动采样"));
+      }
+
+      if (!options?.skipHistoryAppend) {
+        const line = `${sampledText}${sourceText} · CPU ${cpuText} · 内存 ${memText} · 逻辑CPU ${threadsText}`;
+        _cpuPreviewSamples.unshift(line);
+        _cpuPreviewSamples = _cpuPreviewSamples.slice(0, 100);
+        updateCpuPreviewSamplesView();
+      }
+    }
+
+    async function fetchCpuPreviewFallback() {
+      const resp = await apiRequest("/api/diagnostics");
+      if (!resp) return null;
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+      }
+      const system = data?.system && typeof data.system === "object" ? data.system : {};
+      return {
+        success: true,
+        sampled_at: Date.now() / 1000,
+        cpu_percent: Number(system.cpu_percent ?? -1),
+        memory_percent: -1,
+        memory_used_mb: Number(system.memory_rss_mb ?? -1),
+        memory_total_mb: -1,
+        logical_cpu_count: Number(system.threads ?? -1),
+        pid: Number(system.pid ?? 0),
+        source: "diagnostics",
+      };
+    }
+
+    async function loadCpuPreviewHistory() {
+      try {
+        const resp = await apiRequest("/api/diagnostics/cpu-history?limit=100");
+        if (!resp) return;
+        const data = await resp.json();
+        if (!resp.ok || data.success === false) {
+          throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+        }
+        const items = Array.isArray(data.items) ? data.items : [];
+        _cpuPreviewSamples = items.map((item) => formatCpuPreviewSampleLine(item));
+        updateCpuPreviewSamplesView();
+        if (items.length > 0) {
+          const latest = items[0];
+          applyCpuPreviewSnapshot(
+            {
+              ...latest,
+              sampled_at: latest.created_at || latest.sampled_at,
+            },
+            {
+              skipHistoryAppend: true,
+              statusText: "已加载历史采样",
+            },
+          );
+        } else {
+          renderCpuPreviewState({ running: false });
+        }
+      } catch (error) {
+        console.error("cpu preview history load failed", error);
+      }
+    }
+
+    async function loadRealtimeCpuPreview() {
+      let primaryError = null;
+      try {
+        const resp = await apiRequest("/api/diagnostics/cpu-realtime");
+        if (!resp) return;
+        const data = await resp.json();
+        if (!resp.ok || data.success === false) {
+          throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+        }
+        applyCpuPreviewSnapshot(data);
+        return;
+      } catch (error) {
+        primaryError = error;
+      }
+
+      try {
+        const fallbackData = await fetchCpuPreviewFallback();
+        if (!fallbackData) return;
+        applyCpuPreviewSnapshot(fallbackData, { fallback: true });
+      } catch (fallbackError) {
+        const error = fallbackError || primaryError || new Error("cpu preview unavailable");
+        console.error("cpu realtime fetch failed", error);
+        $("cpuPreviewStatus").textContent = "采样失败";
+        $("cpuPreviewLastUpdate").textContent = `采样失败：${error.message || "未知错误"}`;
+      }
+    }
+
+    function startCpuPreview() {
+      stopCpuPreview({ silent: true });
+      renderCpuPreviewState({ running: true });
+      loadRealtimeCpuPreview();
+      _cpuPreviewTimer = setInterval(() => {
+        if (!$("panelLoadAnalysis") || $("panelLoadAnalysis").classList.contains("hidden")) {
+          stopCpuPreview({ silent: true });
+          return;
+        }
+        loadRealtimeCpuPreview();
+      }, 5000);
+    }
+
+    function stopCpuPreview(options = {}) {
+      if (_cpuPreviewTimer) {
+        clearInterval(_cpuPreviewTimer);
+        _cpuPreviewTimer = null;
+      }
+      renderCpuPreviewState({ running: false });
+      if (!options?.silent) {
+        const lastUpdate = $("cpuPreviewLastUpdate");
+        if (lastUpdate && !String(lastUpdate.textContent || "").trim()) {
+          lastUpdate.textContent = "尚未采样";
+        }
+      }
+    }
+
     async function loadDiagnostics() {
       try {
         const resp = await fetch("/api/diagnostics", {
@@ -7913,6 +8400,9 @@
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const d = await resp.json();
         renderDiagnostics(d);
+        requestAnimationFrame(() => {
+          Object.values(_diagCharts).forEach((c) => c && c.resize());
+        });
         $("diagLastUpdate").textContent = "更新于 " + new Date().toLocaleTimeString();
       } catch (e) {
         console.error("diagnostics fetch failed", e);
@@ -7995,8 +8485,20 @@
         if (!resp) return;
         const data = await resp.json();
         renderImageLoadTestStatus(data);
+        await loadImageLoadTestDiagnostics();
       } catch (error) {
         console.error("image loadtest fetch failed", error);
+      }
+    }
+
+    async function loadImageLoadTestDiagnostics() {
+      try {
+        const resp = await apiRequest("/api/loadtest/image/diagnostics?limit=160");
+        if (!resp) return;
+        const data = await resp.json();
+        renderImageLoadTestDiagnostics(data);
+      } catch (error) {
+        console.error("image loadtest diagnostics fetch failed", error);
       }
     }
 
@@ -8064,6 +8566,70 @@
       if (job.last_error) summaryParts.push(`最近错误：${job.last_error}`);
       if (job.summary) summaryParts.unshift(job.summary);
       $("imageLoadTestSummary").textContent = summaryParts.join(" · ");
+    }
+
+    function renderImageLoadTestDiagnostics(data) {
+      const count = Number(data?.count || 0);
+      $("iltDiagCount").textContent = String(count);
+      $("iltDiagProcCpuPeak").textContent = `${Number(data?.peaks?.process_cpu_percent || 0).toFixed(1)}%`;
+      $("iltDiagSysCpuPeak").textContent = `${Number(data?.peaks?.system_cpu_percent || 0).toFixed(1)}%`;
+      $("iltDiagTaskPeak").textContent = String(Number(data?.peaks?.asyncio_tasks || 0));
+      $("iltDiagRecaptchaAvg").textContent = fmtLoadTestDuration(data?.timings?.recaptcha_ms_avg || 0);
+      $("iltDiagSubmitAvg").textContent = fmtLoadTestDuration(data?.timings?.submit_api_ms_avg || 0);
+
+      const summaryParts = [];
+      if (count > 0) {
+        summaryParts.push(`诊断样本 ${count} 条`);
+        summaryParts.push(`阶段事件 ${Number(data?.diag_count || 0)} 条`);
+        summaryParts.push(`尝试事件 ${Number(data?.attempt_count || 0)} 条`);
+        summaryParts.push(`HTTP 尝试均值 ${fmtLoadTestDuration(data?.timings?.http_attempt_ms_avg || 0)}`);
+      }
+      $("iltDiagSummary").textContent = summaryParts.join(" · ");
+
+      const processHotspots = Array.isArray(data?.stage_hotspots?.process_cpu) ? data.stage_hotspots.process_cpu : [];
+      const systemHotspots = Array.isArray(data?.stage_hotspots?.system_cpu) ? data.stage_hotspots.system_cpu : [];
+      const hotspotLines = [];
+      if (processHotspots.length) {
+        hotspotLines.push("进程 CPU 热点：");
+        processHotspots.forEach((item) => {
+          hotspotLines.push(`- ${item.stage}：平均 ${Number(item.avg || 0).toFixed(1)}%，峰值 ${Number(item.max || 0).toFixed(1)}%，样本 ${item.count || 0}`);
+        });
+      }
+      if (systemHotspots.length) {
+        hotspotLines.push("");
+        hotspotLines.push("整机 CPU 热点：");
+        systemHotspots.forEach((item) => {
+          hotspotLines.push(`- ${item.stage}：平均 ${Number(item.avg || 0).toFixed(1)}%，峰值 ${Number(item.max || 0).toFixed(1)}%，样本 ${item.count || 0}`);
+        });
+      }
+      $("iltDiagHotspots").value = hotspotLines.length ? hotspotLines.join("\n") : "暂无诊断热点数据";
+
+      const insights = Array.isArray(data?.insights) ? data.insights : [];
+      $("iltDiagInsights").value = insights.length ? insights.join("\n\n") : "暂无诊断结论";
+
+      const recentEvents = Array.isArray(data?.recent_events) ? data.recent_events : [];
+      const eventLines = recentEvents.map((item) => {
+        const ts = item?.recorded_at ? new Date(Number(item.recorded_at) * 1000).toLocaleTimeString() : "--:--:--";
+        const cpu = `进程CPU ${Number(item?.process_cpu_percent || 0).toFixed(1)}% / 整机CPU ${Number(item?.system_cpu_percent || 0).toFixed(1)}%`;
+        const stage = `${item?.source || "?"}:${item?.stage || "unknown"}`;
+        const tasks = `Tasks ${Number(item?.asyncio_tasks || 0)}`;
+        const extraParts = [];
+        if (Number(item?.recaptcha_ms || 0) > 0) extraParts.push(`reCAPTCHA ${fmtLoadTestDuration(item.recaptcha_ms)}`);
+        if (Number(item?.generate_api_ms || 0) > 0) extraParts.push(`提交 ${fmtLoadTestDuration(item.generate_api_ms)}`);
+        if (Number(item?.upsample_ms || 0) > 0) extraParts.push(`放大 ${fmtLoadTestDuration(item.upsample_ms)}`);
+        if (item?.error) extraParts.push(`错误 ${item.error}`);
+        const topProcesses = Array.isArray(item?.top_processes) ? item.top_processes.filter((proc) => proc && typeof proc === "object") : [];
+        if (topProcesses.length) {
+          const procText = topProcesses.slice(0, 3).map((proc) => {
+            const cpuPercent = Number(proc?.cpu_percent || 0).toFixed(1);
+            const pid = proc?.pid != null ? `#${proc.pid}` : "#-";
+            return `${proc?.name || "unknown"} ${pid} ${cpuPercent}%`;
+          }).join(", ");
+          extraParts.push(`Top ${procText}`);
+        }
+        return `${ts} · ${stage} · ${cpu} · ${tasks}${extraParts.length ? " · " + extraParts.join(" · ") : ""}`;
+      });
+      $("iltDiagRecentEvents").value = eventLines.length ? eventLines.join("\n") : "暂无最近诊断事件";
     }
 
     function fmtMs(ms) {
@@ -8243,23 +8809,34 @@
     }
 
     function renderDiagCharts(d) {
-      // Ensure echarts is available
-      if (typeof echarts === "undefined") return;
+      if (typeof echarts === "undefined") {
+        ["chartTimeline", "chartBreakdown", "chartLoopLag", "chartTokenDist", "chartNetwork"].forEach((domId) => {
+          const dom = $(domId);
+          if (dom) {
+            dom.innerHTML = '<div data-chart-message="1" class="h-full flex items-center justify-center text-sm text-muted-foreground">图表库未加载</div>';
+          }
+        });
+        return;
+      }
+
+      const diag = isPlainObject(d) ? d : {};
+      const eventLoop = isPlainObject(diag.event_loop) ? diag.event_loop : {};
+      const network = isPlainObject(diag.network) ? diag.network : {};
 
       // 1. Timeline chart (throughput + avg duration)
-      renderTimelineChart(d.timeline);
+      renderTimelineChart(asArray(diag.timeline));
 
       // 2. Breakdown chart (phase averages)
-      renderBreakdownChart(d.breakdown);
+      renderBreakdownChart(asPlainObject(diag.breakdown));
 
       // 3. Event loop lag chart
-      renderLoopLagChart(d.event_loop.lag_samples);
+      renderLoopLagChart(asArray(eventLoop.lag_samples));
 
       // 4. Token distribution chart
-      renderTokenDistChart(d.token_distribution);
+      renderTokenDistChart(asPlainObject(diag.token_distribution));
 
       // 5. Network throughput chart
-      renderNetworkChart(d.network?.samples || []);
+      renderNetworkChart(asArray(network.samples));
     }
 
     function getOrCreateChart(domId) {
@@ -8268,15 +8845,62 @@
       if (_diagCharts[domId]) {
         return _diagCharts[domId];
       }
+      if (dom.querySelector('[data-chart-message="1"]')) {
+        dom.innerHTML = "";
+      }
       const chart = echarts.init(dom, null, { renderer: "canvas" });
       _diagCharts[domId] = chart;
       return chart;
     }
 
+    function isPlainObject(value) {
+      return !!value && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function asArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function asPlainObject(value) {
+      return isPlainObject(value) ? value : {};
+    }
+
+    function toFiniteNumber(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function setChartPlaceholder(chart, text = "暂无数据") {
+      if (!chart) return;
+      chart.clear();
+      chart.setOption({
+        animation: false,
+        xAxis: { show: false },
+        yAxis: { show: false },
+        series: [],
+        graphic: {
+          type: "text",
+          left: "center",
+          top: "middle",
+          silent: true,
+          style: {
+            text,
+            fill: "#999",
+            fontSize: 13,
+          },
+        },
+      }, true);
+    }
+
     function renderTimelineChart(timeline) {
       const chart = getOrCreateChart("chartTimeline");
       if (!chart) return;
-      const labels = timeline.map(t => t.label);
+      const items = asArray(timeline).filter((item) => isPlainObject(item));
+      if (items.length === 0) {
+        setChartPlaceholder(chart, "最近5分钟暂无请求数据");
+        return;
+      }
+      const labels = items.map((t, index) => t.label || `第${index + 1}段`);
       chart.setOption({
         tooltip: { trigger: "axis" },
         legend: { data: ["成功", "失败", "平均耗时(s)"], top: 0, textStyle: { fontSize: 11 } },
@@ -8287,9 +8911,9 @@
           { type: "value", name: "秒", min: 0, axisLabel: { fontSize: 10 } },
         ],
         series: [
-          { name: "成功", type: "bar", stack: "req", data: timeline.map(t => t.success), itemStyle: { color: "#22c55e" }, barMaxWidth: 30 },
-          { name: "失败", type: "bar", stack: "req", data: timeline.map(t => t.failed), itemStyle: { color: "#ef4444" }, barMaxWidth: 30 },
-          { name: "平均耗时(s)", type: "line", yAxisIndex: 1, data: timeline.map(t => +(t.avg_duration_ms / 1000).toFixed(1)), smooth: true, itemStyle: { color: "#3b82f6" }, lineStyle: { width: 2 } },
+          { name: "成功", type: "bar", stack: "req", data: items.map((t) => toFiniteNumber(t.success)), itemStyle: { color: "#22c55e" }, barMaxWidth: 30 },
+          { name: "失败", type: "bar", stack: "req", data: items.map((t) => toFiniteNumber(t.failed)), itemStyle: { color: "#ef4444" }, barMaxWidth: 30 },
+          { name: "平均耗时(s)", type: "line", yAxisIndex: 1, data: items.map((t) => +(toFiniteNumber(t.avg_duration_ms) / 1000).toFixed(1)), smooth: true, itemStyle: { color: "#3b82f6" }, lineStyle: { width: 2 } },
         ],
       }, true);
     }
@@ -8297,6 +8921,7 @@
     function renderBreakdownChart(breakdown) {
       const chart = getOrCreateChart("chartBreakdown");
       if (!chart) return;
+      const stats = asPlainObject(breakdown);
       const phases = [
         { key: "token_select_ms", label: "Token选择" },
         { key: "ensure_at_ms", label: "AT验证" },
@@ -8305,8 +8930,12 @@
         { key: "generation_pipeline_ms", label: "生成流水线" },
       ];
       const categories = phases.map(p => p.label);
-      const avgData = phases.map(p => breakdown[p.key]?.avg || 0);
-      const p95Data = phases.map(p => breakdown[p.key]?.p95 || 0);
+      const avgData = phases.map((p) => toFiniteNumber(stats[p.key]?.avg));
+      const p95Data = phases.map((p) => toFiniteNumber(stats[p.key]?.p95));
+      if (avgData.every((v) => v === 0) && p95Data.every((v) => v === 0)) {
+        setChartPlaceholder(chart, "暂无阶段耗时统计");
+        return;
+      }
       chart.setOption({
         tooltip: { trigger: "axis", formatter: (params) => {
           let s = params[0].axisValueLabel + "<br/>";
@@ -8327,15 +8956,20 @@
     function renderLoopLagChart(samples) {
       const chart = getOrCreateChart("chartLoopLag");
       if (!chart) return;
-      const labels = samples.map((_, i) => `-${samples.length - i}s`);
+      const points = asArray(samples).map((value) => toFiniteNumber(value));
+      if (points.length === 0) {
+        setChartPlaceholder(chart, "暂无 Event Loop 采样");
+        return;
+      }
+      const labels = points.map((_, i) => `-${points.length - i}s`);
       chart.setOption({
         tooltip: { trigger: "axis", formatter: p => p[0]?.value + " ms" },
         grid: { top: 10, left: 45, right: 15, bottom: 25 },
-        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(samples.length / 6) - 1) } },
+        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(points.length / 6) - 1) } },
         yAxis: { type: "value", min: 0, axisLabel: { fontSize: 10 } },
         series: [{
           type: "line",
-          data: samples,
+          data: points,
           smooth: true,
           areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(234,179,8,0.3)" }, { offset: 1, color: "rgba(234,179,8,0.02)" }] } },
           lineStyle: { color: "#eab308", width: 1.5 },
@@ -8349,9 +8983,11 @@
     function renderTokenDistChart(tokenDist) {
       const chart = getOrCreateChart("chartTokenDist");
       if (!chart) return;
-      const entries = Object.entries(tokenDist || {}).sort((a, b) => b[1] - a[1]);
+      const entries = Object.entries(asPlainObject(tokenDist))
+        .map(([tid, cnt]) => [tid, toFiniteNumber(cnt)]).filter(([, cnt]) => cnt > 0)
+        .sort((a, b) => b[1] - a[1]);
       if (entries.length === 0) {
-        chart.setOption({ title: { text: "暂无数据", left: "center", top: "center", textStyle: { fontSize: 13, color: "#999" } }, series: [] }, true);
+        setChartPlaceholder(chart, "最近5分钟暂无 Token 负载");
         return;
       }
       chart.setOption({
@@ -8370,19 +9006,24 @@
     function renderNetworkChart(samples) {
       const chart = getOrCreateChart("chartNetwork");
       if (!chart) return;
-      const labels = samples.map((_, index) => `-${samples.length - index}s`);
+      const points = asArray(samples).filter((item) => isPlainObject(item));
+      if (points.length === 0) {
+        setChartPlaceholder(chart, "暂无网络吞吐采样");
+        return;
+      }
+      const labels = points.map((_, index) => `-${points.length - index}s`);
       chart.setOption({
         tooltip: { trigger: "axis" },
         legend: { data: ["发送", "接收"], top: 0, textStyle: { fontSize: 11 } },
         grid: { top: 30, left: 50, right: 20, bottom: 25 },
-        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(samples.length / 6) - 1) } },
+        xAxis: { type: "category", data: labels, axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(points.length / 6) - 1) } },
         yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v) => v >= 1024 ? (v / 1024).toFixed(1) + "MB/s" : v + "KB/s" } },
         series: [
           {
             name: "发送",
             type: "line",
             smooth: true,
-            data: samples.map((s) => Number(s.send_kbps || 0)),
+            data: points.map((s) => toFiniteNumber(s.send_kbps)),
             itemStyle: { color: "#3b82f6" },
             lineStyle: { width: 2 },
             showSymbol: false,
@@ -8391,7 +9032,7 @@
             name: "接收",
             type: "line",
             smooth: true,
-            data: samples.map((s) => Number(s.recv_kbps || 0)),
+            data: points.map((s) => toFiniteNumber(s.recv_kbps)),
             itemStyle: { color: "#10b981" },
             lineStyle: { width: 2 },
             showSymbol: false,
@@ -8714,6 +9355,9 @@
       loadProjectVersion();
       loadATAutoRefreshConfig();
       toggleClusterRoleFields();
+      renderCpuPreviewState({ running: false });
+      updateCpuPreviewSamplesView();
+      loadCpuPreviewHistory();
       // 每 3 秒自动刷新并发负载状态（适配高并发场景）
       setInterval(async () => {
         try {
@@ -8727,6 +9371,10 @@
       if (document.hidden) return;
       if (!hasPendingAutoLoginRefresh()) return;
       pollTokenAutoRefresh();
+    });
+
+    window.addEventListener("beforeunload", () => {
+      stopCpuPreview({ silent: true });
     });
   </script>
 </body>

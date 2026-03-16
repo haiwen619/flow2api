@@ -762,6 +762,48 @@ class GenerationHandler:
             with suppress(Exception):
                 await generator.aclose()
 
+    @staticmethod
+    def _is_load_test_prompt(prompt: Optional[str]) -> bool:
+        text = str(prompt or "")
+        return "并发自测样本" in text or "图片并发自测" in text
+
+    def _log_load_test_runtime(
+        self,
+        *,
+        stage: str,
+        request_id: str,
+        model: Optional[str] = None,
+        token_id: Optional[int] = None,
+        prompt: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self._is_load_test_prompt(prompt):
+            return
+        try:
+            runtime = perf_monitor.get_runtime_snapshot(include_top_processes=True, top_process_limit=5)
+            process_info = runtime.get("process") or {}
+            system_info = runtime.get("system") or {}
+            payload: Dict[str, Any] = {
+                "request_id": request_id,
+                "stage": stage,
+                "model": model,
+                "token_id": token_id,
+                "process_cpu_percent": process_info.get("cpu_percent", -1),
+                "process_memory_rss_mb": process_info.get("memory_rss_mb", -1),
+                "process_threads": process_info.get("threads", -1),
+                "asyncio_tasks": process_info.get("asyncio_tasks", -1),
+                "system_cpu_percent": system_info.get("cpu_percent", -1),
+                "system_memory_percent": system_info.get("memory_percent", -1),
+                "logical_cpu_count": system_info.get("logical_cpu_count", -1),
+                "top_processes": runtime.get("top_processes") or [],
+            }
+            if extra:
+                payload.update(extra)
+            perf_monitor.record_loadtest_event("diag", payload)
+            debug_logger.log_info(f"[LOADTEST_IMAGE_DIAG] {json.dumps(payload, ensure_ascii=False, default=str)}")
+        except Exception as exc:
+            debug_logger.log_warning(f"[LOADTEST_IMAGE_DIAG] 日志采样失败: {exc}")
+
     async def check_token_availability(self, is_image: bool, is_video: bool) -> bool:
         """检查Token可用性
 
@@ -802,9 +844,10 @@ class GenerationHandler:
             "request_id": request_id,
             "model": model,
             "status": "processing",
+            "is_load_test": self._is_load_test_prompt(prompt),
         }
         generation_result = self._create_generation_result()
-        request_log_state: Dict[str, Any] = {"id": None, "progress": 0}
+        request_log_state: Dict[str, Any] = {"id": None, "progress": 0, "status_text": "started", "finalized": False}
         self._last_generated_url = None
         self._last_generation_assets = None
 
@@ -832,6 +875,15 @@ class GenerationHandler:
             "has_images": images is not None and len(images) > 0,
         }
         debug_logger.log_info(f"[GENERATION] 开始生成 - 模型: {model}, 类型: {generation_type}, Prompt: {prompt[:50]}...")
+        self._log_load_test_runtime(
+            stage="request_started",
+            request_id=request_id,
+            model=model,
+            prompt=prompt,
+            extra={
+                "generation_type": generation_type,
+            },
+        )
 
         # 非流式模式：与流式模式共用真实生成链路，仅不输出中间进度。
 
@@ -878,14 +930,14 @@ class GenerationHandler:
         if not token:
             error_msg = self._get_no_token_error_message(generation_type)
             debug_logger.log_error(f"[GENERATION] {error_msg}")
-            await self._log_request(
+            await self._finalize_request_log(
+                request_log_state,
                 token_id=None,
                 operation=request_operation,
                 request_data=request_payload,
                 response_data={"error": error_msg, "performance": perf_trace},
                 status_code=503,
                 duration=time.time() - start_time,
-                log_id=request_log_state.get("id"),
                 status_text="failed",
                 progress=request_log_state.get("progress", 0),
             )
@@ -931,6 +983,21 @@ class GenerationHandler:
             if not token:
                 error_msg = "Token AT无效或刷新失败"
                 debug_logger.log_error(f"[GENERATION] {error_msg}")
+                duration = time.time() - start_time
+                perf_trace["status"] = "failed"
+                perf_trace["total_ms"] = int(duration * 1000)
+                perf_trace["error"] = error_msg
+                await self._finalize_request_log(
+                    request_log_state,
+                    token_id=None,
+                    operation=request_operation,
+                    request_data=request_payload,
+                    response_data={"error": error_msg, "performance": perf_trace},
+                    status_code=500,
+                    duration=duration,
+                    status_text="failed",
+                    progress=request_log_state.get("progress", 0),
+                )
                 if stream:
                     yield self._create_stream_chunk(f"❌ {error_msg}\n")
                 yield self._create_error_response(error_msg)
@@ -943,6 +1010,21 @@ class GenerationHandler:
                 required_tier = get_required_paygate_tier_for_model(model)
                 error_msg = "当前模型需要 " + get_paygate_tier_label(required_tier) + " 账号: " + model
                 debug_logger.log_error(f"[GENERATION] {error_msg}")
+                duration = time.time() - start_time
+                perf_trace["status"] = "failed"
+                perf_trace["total_ms"] = int(duration * 1000)
+                perf_trace["error"] = error_msg
+                await self._finalize_request_log(
+                    request_log_state,
+                    token_id=token.id if token else None,
+                    operation=request_operation,
+                    request_data=request_payload,
+                    response_data={"error": error_msg, "performance": perf_trace},
+                    status_code=500,
+                    duration=duration,
+                    status_text="failed",
+                    progress=request_log_state.get("progress", 0),
+                )
                 if stream:
                     yield self._create_stream_chunk(f"❌ {error_msg}\n")
                 yield self._create_error_response(error_msg)
@@ -989,16 +1071,22 @@ class GenerationHandler:
                     perf_trace["status"] = "timeout"
                     perf_trace["error"] = error_msg
                     perf_trace["image_total_timeout_seconds"] = image_total_timeout
+                    duration = time.time() - start_time
+                    perf_trace["total_ms"] = int(duration * 1000)
                     image_perf = perf_trace.setdefault("image_generation", {}) if isinstance(perf_trace, dict) else None
                     if isinstance(image_perf, dict):
                         image_perf["timed_out"] = True
                         image_perf["overall_timeout_seconds"] = image_total_timeout
-                    await self._update_request_log_progress(
+                    await self._finalize_request_log(
                         request_log_state,
-                        token_id=token.id,
-                        status_text="image_total_timeout",
+                        token_id=token.id if token else None,
+                        operation=request_operation,
+                        request_data=request_payload,
+                        response_data={"error": error_msg, "performance": perf_trace},
+                        status_code=504,
+                        duration=duration,
+                        status_text="timeout",
                         progress=request_log_state.get("progress", 0),
-                        response_extra={"error": error_msg},
                     )
                     self._mark_generation_failed(generation_result, error_msg)
                     if stream:
@@ -1028,14 +1116,14 @@ class GenerationHandler:
                 perf_trace["total_ms"] = int(duration * 1000)
                 perf_trace["error"] = error_msg
                 prompt_for_log = prompt if len(prompt) <= 2000 else f"{prompt[:2000]}...(truncated)"
-                await self._log_request(
-                    token.id if token else None,
-                    request_operation,
-                    request_payload,
-                    {"error": error_msg, "performance": perf_trace},
-                    500,
-                    duration,
-                    log_id=request_log_state.get("id"),
+                await self._finalize_request_log(
+                    request_log_state,
+                    token_id=token.id if token else None,
+                    operation=request_operation,
+                    request_data=request_payload,
+                    response_data={"error": error_msg, "performance": perf_trace},
+                    status_code=500,
+                    duration=duration,
                     status_text="failed",
                     progress=request_log_state.get("progress", 0),
                 )
@@ -1054,6 +1142,19 @@ class GenerationHandler:
             await self.token_manager.record_success(token.id)
 
             debug_logger.log_info(f"[GENERATION] ✅ 生成成功完成")
+            self._log_load_test_runtime(
+                stage="request_completed",
+                request_id=request_id,
+                model=model,
+                token_id=token.id if token else None,
+                prompt=prompt,
+                extra={
+                    "status": "success",
+                    "total_ms": perf_trace.get("total_ms", 0),
+                    "pipeline_ms": perf_trace.get("generation_pipeline_ms", 0),
+                    "image_perf": perf_trace.get("image_generation", {}),
+                },
+            )
 
             # 7. 记录成功日志
             duration = time.time() - start_time
@@ -1098,21 +1199,53 @@ class GenerationHandler:
             _final_perf["slot_wait_ms"] = image_perf.get("slot_wait_ms", 0) or video_perf.get("slot_wait_ms", 0)
             await perf_monitor.on_request_end(request_id, success=True, token_id=token.id if token else None, perf_trace=_final_perf)
 
-            await self._log_request(
-                token.id,
-                request_operation,
-                request_payload,
-                response_data,
-                200,
-                duration,
-                log_id=request_log_state.get("id"),
+            await self._finalize_request_log(
+                request_log_state,
+                token_id=token.id,
+                operation=request_operation,
+                request_data=request_payload,
+                response_data=response_data,
+                status_code=200,
+                duration=duration,
                 status_text="completed",
                 progress=100,
             )
 
+        except asyncio.CancelledError:
+            error_msg = "请求已取消，生成未完成"
+            debug_logger.log_warning(f"[GENERATION] ⚠️ {error_msg}")
+            duration = time.time() - start_time
+            perf_trace["status"] = "cancelled"
+            perf_trace["total_ms"] = int(duration * 1000)
+            perf_trace["error"] = error_msg
+            await self._finalize_request_log(
+                request_log_state,
+                token_id=token.id if token else None,
+                operation=request_operation if generation_type else "generate_unknown",
+                request_data=request_payload if 'request_payload' in locals() else {"model": model},
+                response_data={"error": error_msg, "performance": perf_trace},
+                status_code=499,
+                duration=duration,
+                status_text="cancelled",
+                progress=request_log_state.get("progress", 0),
+            )
+            raise
+
         except Exception as e:
             error_msg = f"生成失败: {str(e)}"
             debug_logger.log_error(f"[GENERATION] ❌ {error_msg}")
+            self._log_load_test_runtime(
+                stage="request_failed",
+                request_id=request_id,
+                model=model,
+                token_id=token.id if token else None,
+                prompt=prompt,
+                extra={
+                    "status": "failed",
+                    "error": error_msg,
+                    "perf": perf_trace,
+                },
+            )
             if stream:
                 yield self._create_stream_chunk(f"❌ {error_msg}\n")
             if token:
@@ -1138,18 +1271,38 @@ class GenerationHandler:
             perf_trace["total_ms"] = int(duration * 1000)
             perf_trace["error"] = error_msg
             prompt_for_log = prompt if len(prompt) <= 2000 else f"{prompt[:2000]}...(truncated)"
-            await self._log_request(
-                token.id if token else None,
-                request_operation if generation_type else "generate_unknown",
-                request_payload if 'request_payload' in locals() else {"model": model},
-                {"error": error_msg, "performance": perf_trace},
-                500,
-                duration,
-                log_id=request_log_state.get("id"),
+            await self._finalize_request_log(
+                request_log_state,
+                token_id=token.id if token else None,
+                operation=request_operation if generation_type else "generate_unknown",
+                request_data=request_payload if 'request_payload' in locals() else {"model": model},
+                response_data={"error": error_msg, "performance": perf_trace},
+                status_code=500,
+                duration=duration,
                 status_text="failed",
                 progress=request_log_state.get("progress", 0),
             )
         finally:
+            if request_log_state.get("id") and not request_log_state.get("finalized"):
+                duration = time.time() - start_time
+                fallback_error = generation_result.get("error_message") or perf_trace.get("error") or "请求未正常完成"
+                fallback_status = str(perf_trace.get("status") or "failed").lower()
+                fallback_code = 504 if fallback_status == "timeout" else 499 if fallback_status == "cancelled" else 500
+                fallback_status_text = "timeout" if fallback_status == "timeout" else "cancelled" if fallback_status == "cancelled" else "failed"
+                perf_trace["status"] = fallback_status
+                perf_trace["total_ms"] = int(duration * 1000)
+                perf_trace.setdefault("error", fallback_error)
+                await self._finalize_request_log(
+                    request_log_state,
+                    token_id=token.id if token else None,
+                    operation=request_operation if generation_type else "generate_unknown",
+                    request_data=request_payload if 'request_payload' in locals() else {"model": model},
+                    response_data={"error": fallback_error, "performance": perf_trace},
+                    status_code=fallback_code,
+                    duration=duration,
+                    status_text=fallback_status_text,
+                    progress=request_log_state.get("progress", 0),
+                )
             # 性能监控 - 确保请求结束时总是记录（处理 except 路径和未被上面 success 路径覆盖的情况）
             if request_id in perf_monitor._inflight:
                 await perf_monitor.on_request_end(
@@ -1195,6 +1348,7 @@ class GenerationHandler:
         if isinstance(perf_trace, dict):
             image_trace = perf_trace.setdefault("image_generation", {})
             image_trace["input_image_count"] = len(images) if images else 0
+            image_trace["diagnostic_mode"] = bool(perf_trace.get("is_load_test"))
 
         normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
 
@@ -1203,6 +1357,16 @@ class GenerationHandler:
 
         if self.concurrency_manager and getattr(token, "id", None) is not None:
             slot_wait_timeout = float(config.flow_image_slot_wait_timeout)
+            self._log_load_test_runtime(
+                stage="image_slot_wait_begin",
+                request_id=request_id,
+                model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
+                token_id=token.id,
+                prompt=prompt,
+                extra={
+                    "slot_wait_timeout_seconds": int(slot_wait_timeout),
+                },
+            )
             await self._update_request_log_progress(
                 request_log_state,
                 token_id=token.id,
@@ -1256,6 +1420,16 @@ class GenerationHandler:
                 progress=26,
                 response_extra={"slot_wait_ms": waited_ms},
             )
+            self._log_load_test_runtime(
+                stage="image_slot_acquired",
+                request_id=request_id,
+                model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
+                token_id=token.id,
+                prompt=prompt,
+                extra={
+                    "slot_wait_ms": waited_ms,
+                },
+            )
             if request_id:
                 await perf_monitor.on_request_progress(
                     request_id,
@@ -1303,6 +1477,18 @@ class GenerationHandler:
             if image_trace is not None:
                 image_trace["upload_images_ms"] = int((time.time() - upload_started_at) * 1000)
 
+            self._log_load_test_runtime(
+                stage="image_submit_begin",
+                request_id=request_id,
+                model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
+                token_id=token.id,
+                prompt=prompt,
+                extra={
+                    "upload_images_ms": image_trace.get("upload_images_ms", 0) if image_trace else 0,
+                    "input_image_count": len(image_inputs),
+                },
+            )
+
             # 调用生成API
             if stream:
                 yield self._create_stream_chunk("正在生成图片...\n")
@@ -1327,6 +1513,20 @@ class GenerationHandler:
                     image_trace["launch_queue_wait_ms"] = int(first_attempt.get("launch_queue_ms") or 0)
                     image_trace["launch_stagger_wait_ms"] = int(first_attempt.get("launch_stagger_ms") or 0)
 
+            self._log_load_test_runtime(
+                stage="image_submit_done",
+                request_id=request_id,
+                model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
+                token_id=token.id,
+                prompt=prompt,
+                extra={
+                    "generate_api_ms": image_trace.get("generate_api_ms", 0) if image_trace else 0,
+                    "launch_queue_wait_ms": image_trace.get("launch_queue_wait_ms", 0) if image_trace else 0,
+                    "launch_stagger_wait_ms": image_trace.get("launch_stagger_wait_ms", 0) if image_trace else 0,
+                    "upstream_attempts": (upstream_trace or {}).get("generation_attempts", [])[:3] if isinstance(upstream_trace, dict) else [],
+                },
+            )
+
             # 提取URL和mediaId
             media = result.get("media", [])
             if not media:
@@ -1346,6 +1546,16 @@ class GenerationHandler:
             if upsample_resolution and media_id:
                 upsample_started_at = time.time()
                 resolution_name = "4K" if "4K" in upsample_resolution else "2K"
+                self._log_load_test_runtime(
+                    stage="image_upsample_begin",
+                    request_id=request_id,
+                    model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
+                    token_id=token.id,
+                    prompt=prompt,
+                    extra={
+                        "target_resolution": resolution_name,
+                    },
+                )
                 await self._update_request_log_progress(request_log_state, token_id=token.id, status_text=f"upsampling_{resolution_name.lower()}", progress=82)
                 if stream:
                     yield self._create_stream_chunk(f"正在放大图片到 {resolution_name}...\n")
@@ -1367,6 +1577,20 @@ class GenerationHandler:
 
                         if encoded_image:
                             debug_logger.log_info(f"[UPSAMPLE] 图片已放大到 {resolution_name}")
+                            if image_trace is not None:
+                                image_trace["upsample_ms"] = int((time.time() - upsample_started_at) * 1000)
+                            self._log_load_test_runtime(
+                                stage="image_upsample_done",
+                                request_id=request_id,
+                                model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
+                                token_id=token.id,
+                                prompt=prompt,
+                                extra={
+                                    "target_resolution": resolution_name,
+                                    "upsample_ms": image_trace.get("upsample_ms", 0) if image_trace else 0,
+                                    "retry_attempt": retry_attempt + 1,
+                                },
+                            )
 
                             if stream:
                                 yield self._create_stream_chunk(f"✅ 图片已放大到 {resolution_name}\n")
@@ -2064,6 +2288,7 @@ class GenerationHandler:
 
         safe_progress = max(0, min(100, int(progress)))
         request_log_state["progress"] = safe_progress
+        request_log_state["status_text"] = status_text
         payload = {
             "status": "processing",
             "status_text": status_text,
@@ -2084,6 +2309,48 @@ class GenerationHandler:
             )
         except Exception as e:
             debug_logger.log_error(f"Failed to update request log progress: {e}")
+
+    async def _finalize_request_log(
+        self,
+        request_log_state: Optional[Dict[str, Any]],
+        *,
+        token_id: Optional[int],
+        operation: str,
+        request_data: Dict[str, Any],
+        response_data: Dict[str, Any],
+        status_code: int,
+        duration: float,
+        status_text: str,
+        progress: int,
+    ):
+        """统一写入请求日志终态，避免中间进度状态悬挂。"""
+        safe_response_data = dict(response_data) if isinstance(response_data, dict) else {"result": response_data}
+        if isinstance(request_log_state, dict):
+            last_status_text = str(request_log_state.get("status_text") or "").strip()
+            last_progress = max(0, min(100, int(request_log_state.get("progress", progress))))
+            if last_status_text and last_status_text != status_text:
+                safe_response_data.setdefault("last_progress_status_text", last_status_text)
+                safe_response_data.setdefault("last_progress", last_progress)
+
+        log_id = await self._log_request(
+            token_id,
+            operation,
+            request_data,
+            safe_response_data,
+            status_code,
+            duration,
+            log_id=request_log_state.get("id") if isinstance(request_log_state, dict) else None,
+            status_text=status_text,
+            progress=progress,
+        )
+
+        if isinstance(request_log_state, dict):
+            if log_id and not request_log_state.get("id"):
+                request_log_state["id"] = log_id
+            request_log_state["progress"] = max(0, min(100, int(progress)))
+            request_log_state["status_text"] = status_text
+            request_log_state["finalized"] = True
+        return log_id
 
     async def _log_request(
         self,

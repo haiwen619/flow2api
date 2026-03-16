@@ -7,7 +7,7 @@ admin_password = "admin"
 backend = "sqlite"
 sqlite_path = "data/flow.db"
 accountpool_sqlite_path = "data/accountpool.db"
-database_url = "mysql+asyncmy://root:123456@127.0.0.1:3306/flow?charset=utf8mb4"
+database_url = "mysql+asyncmy://katu:Esc_j6qIXg_12gaduYL0WLIhKNYfzpYXTsMJq@23.159.248.139:3306/flow?charset=utf8mb4"
 
 [flow]
 labs_base_url = "https://labs.google/fx/api"
@@ -27,6 +27,8 @@ video_slot_wait_timeout = 480
 video_launch_soft_limit = 20
 video_launch_wait_timeout = 480
 video_launch_stagger_ms = 250
+image_upsample_concurrency = 0      # 图片放大最大并发数（0 表示不限制）
+image_upsample_stagger_ms = 300     # 图片放大请求错峰间隔(毫秒)，分散同批打码压力
 poll_interval = 3.0
 max_poll_attempts = 200
 
@@ -87,7 +89,7 @@ node_name = "standalone-node"
 master_base_url = ""
 node_public_base_url = "http://127.0.0.1:8000"
 node_weight = 100
-node_max_concurrency = 5
+node_max_concurrency = 100
 heartbeat_interval_seconds = 10
 heartbeat_timeout_seconds = 30
 dispatch_timeout_seconds = 1800

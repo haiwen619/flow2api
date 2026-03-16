@@ -61,6 +61,8 @@ if __name__ == "__main__":
     elif headed_runtime.get("allow_headed") and headed_runtime.get("reason") not in {"", "not_docker", "headed_not_allowed", "windows"}:
         print(f"[startup] Docker 有头浏览器运行时未完全就绪: reason={headed_runtime.get('reason')}")
 
+    print(f"[startup] 当前数据库后端: {config.db_backend}  # sqlite / mysql")
+
     uvicorn.run(
         app,
         host=config.server_host,

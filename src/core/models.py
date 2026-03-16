@@ -17,7 +17,7 @@ SUPPORTED_CAPTCHA_METHODS_ORDER = [
 
 
 def normalize_captcha_priority_order(value: Any) -> List[str]:
-    """规范化验证码打码优先级顺序。"""
+    """规范化验证码打码优先级顺序，仅保留显式启用的方法。"""
     parsed: List[str] = []
 
     if isinstance(value, str):
@@ -40,11 +40,7 @@ def normalize_captcha_priority_order(value: Any) -> List[str]:
             if method in SUPPORTED_CAPTCHA_METHODS_ORDER and method not in parsed:
                 parsed.append(method)
 
-    for method in SUPPORTED_CAPTCHA_METHODS_ORDER:
-        if method not in parsed:
-            parsed.append(method)
-
-    return parsed
+    return parsed or ["remote_browser"]
 
 
 class Token(BaseModel):
@@ -257,10 +253,17 @@ class CaptchaConfig(BaseModel):
             return data
 
         normalized = dict(data)
-        order = normalize_captcha_priority_order(normalized.get("captcha_priority_order"))
         method = str(normalized.get("captcha_method") or "").strip().lower()
-        if method in SUPPORTED_CAPTCHA_METHODS_ORDER:
+        order = normalize_captcha_priority_order(normalized.get("captcha_priority_order"))
+
+        # 兼容旧版本：历史上“优先级列表”会默认包含全部方法，实际只想表达首选方式。
+        if order == SUPPORTED_CAPTCHA_METHODS_ORDER:
+            order = [method] if method in SUPPORTED_CAPTCHA_METHODS_ORDER else ["remote_browser"]
+        elif method in SUPPORTED_CAPTCHA_METHODS_ORDER and method in order:
             order = [method] + [item for item in order if item != method]
+        elif method in SUPPORTED_CAPTCHA_METHODS_ORDER and not order:
+            order = [method]
+
         normalized["captcha_priority_order"] = order
         normalized["captcha_method"] = order[0]
         return normalized

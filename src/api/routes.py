@@ -1,11 +1,12 @@
 """API routes - OpenAI compatible endpoints"""
+import asyncio
+import base64
+import json
+import re
+import time
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import Response, StreamingResponse, JSONResponse
 from typing import List, Optional, Dict, Any, Tuple, Set
-import base64
-import re
-import json
-import time
 from urllib.parse import urlparse
 import httpx
 from curl_cffi.requests import AsyncSession
@@ -20,6 +21,20 @@ router = APIRouter()
 # Dependency injection will be set up in main.py
 generation_handler: GenerationHandler = None
 cluster_manager = None
+
+
+def _describe_unexpected_chat_exception(exc: BaseException) -> str:
+    detail = str(exc or "").strip()
+    if detail:
+        return detail
+
+    image_total_timeout = max(30, int(config.image_total_timeout or 120))
+    exc_name = exc.__class__.__name__
+    if isinstance(exc, asyncio.TimeoutError) or exc_name == "TimeoutError":
+        return f"图片生成超时了（总耗时超过 {image_total_timeout} 秒）"
+    if isinstance(exc, asyncio.CancelledError) or exc_name == "CancelledError":
+        return f"请求被取消（可能由图片生成总超时 {image_total_timeout} 秒触发）"
+    return f"{exc_name}（异常消息为空）"
 
 
 def set_generation_handler(handler: GenerationHandler):
@@ -1180,7 +1195,7 @@ async def _handle_chat_completion_request(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=_describe_unexpected_chat_exception(exc)) from exc
 
 
 @router.post(

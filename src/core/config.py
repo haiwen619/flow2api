@@ -9,7 +9,7 @@ from urllib import request as urllib_request
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from .models import normalize_captcha_priority_order
+from .models import normalize_captcha_priority_order, SUPPORTED_CAPTCHA_METHODS_ORDER
 
 class Config:
     """Application configuration"""
@@ -221,6 +221,24 @@ class Config:
             return max(0, min(5000, int(value)))
         except Exception:
             return 0
+
+    @property
+    def flow_image_upsample_concurrency(self) -> int:
+        """图片放大最大并发数（0 表示不限制）。"""
+        value = self._config.get("flow", {}).get("image_upsample_concurrency", 8)
+        try:
+            return max(0, min(100, int(value)))
+        except Exception:
+            return 8
+
+    @property
+    def flow_image_upsample_stagger_ms(self) -> int:
+        """图片放大请求错峰间隔(毫秒)，分散同批打码压力。"""
+        value = self._config.get("flow", {}).get("image_upsample_stagger_ms", 300)
+        try:
+            return max(0, min(5000, int(value)))
+        except Exception:
+            return 300
 
     @property
     def enable_reauth_refresh(self) -> bool:
@@ -769,7 +787,11 @@ class Config:
     def captcha_priority_order(self) -> list[str]:
         """验证码打码优先级，前面的优先级更高。"""
         raw = self._config.get("captcha", {}).get("captcha_priority_order", [])
-        return normalize_captcha_priority_order(raw)
+        normalized = normalize_captcha_priority_order(raw)
+        method = str(self._config.get("captcha", {}).get("captcha_method", "") or "").strip().lower()
+        if normalized == SUPPORTED_CAPTCHA_METHODS_ORDER and method in SUPPORTED_CAPTCHA_METHODS_ORDER:
+            return [method]
+        return normalized
 
     def set_captcha_priority_order(self, order: Any):
         """设置验证码打码优先级。"""

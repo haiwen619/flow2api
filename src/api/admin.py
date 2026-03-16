@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +44,8 @@ cluster_manager = None
 
 # Store active admin session tokens (in production, use Redis or database)
 active_admin_tokens = set()
+token_import_jobs: Dict[str, Dict[str, Any]] = {}
+active_token_import_job_id: Optional[str] = None
 SUPPORTED_API_CAPTCHA_METHODS = {"yescaptcha", "capmonster", "ezcaptcha", "capsolver"}
 admin_bearer = HTTPBearer(
     scheme_name="AdminSessionBearer",
@@ -91,9 +93,9 @@ def _format_disable_reason_label(reason_code: str) -> str:
         "token_expired": "Token已过期",
         "refresh_failed": "刷新失败后自动禁用",
         "consecutive_error_limit": "连续错误阈值停用(历史记录)",
-        "unknown_inactive": "已禁用(原因未记录)",
+        "unknown_inactive": "已禁用，原因未记录",
     }
-    return reason_map.get(code, code or "未禁用")
+    return reason_map.get(code, code or "未知禁用")
 
 
 def _build_disable_reason_meta(row: Dict[str, Any], error_ban_threshold: int) -> Dict[str, Any]:
@@ -229,13 +231,9 @@ def _guess_client_hints_from_user_agent(user_agent: str) -> Dict[str, str]:
     if major_match:
         major = major_match.group(1)
         if "Edg/" in ua:
-            headers["sec-ch-ua"] = (
-                f'"Not:A-Brand";v="99", "Microsoft Edge";v="{major}", "Chromium";v="{major}"'
-            )
+            headers["sec-ch-ua"] = f'"Not:A-Brand";v="99", "Microsoft Edge";v="{major}", "Chromium";v="{major}"'
         else:
-            headers["sec-ch-ua"] = (
-                f'"Not:A-Brand";v="99", "Google Chrome";v="{major}", "Chromium";v="{major}"'
-            )
+            headers["sec-ch-ua"] = f'"Not:A-Brand";v="99", "Google Chrome";v="{major}", "Chromium";v="{major}"'
 
     return headers
 
@@ -276,7 +274,6 @@ def _normalize_http_base_url(base_url: str) -> str:
         raise RuntimeError("远程打码服务地址格式错误，必须是 http(s)://host[:port]")
 
     return normalized
-
 
 def _get_remote_browser_client_config() -> tuple[str, str, int]:
     base_url = _normalize_http_base_url(config.remote_browser_base_url)
@@ -694,6 +691,393 @@ class ImportTokensRequest(BaseModel):
     confirm_replace_by_email: bool = False
 
 
+def _cleanup_token_import_jobs() -> None:
+    now = time.time()
+    expired_job_ids = []
+    for job_id, job in list(token_import_jobs.items()):
+        finished_at = float(job.get("finished_at_ts") or 0)
+        status = str(job.get("status") or "")
+        if status in {"completed", "failed"} and finished_at and now - finished_at > 3600:
+            expired_job_ids.append(job_id)
+    for job_id in expired_job_ids:
+        token_import_jobs.pop(job_id, None)
+
+
+def _build_token_import_job_snapshot(job: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not job:
+        return {}
+    total = max(1, int(job.get("total_tokens") or 0))
+    validated_count = int(job.get("validated_count") or 0)
+    processed_count = int(job.get("processed_count") or 0)
+    progress_percent = round(((validated_count + processed_count) / max(total * 2, 1)) * 100, 1)
+    return {
+        "job_id": job.get("job_id"),
+        "status": job.get("status"),
+        "phase": job.get("phase"),
+        "total_tokens": total,
+        "validated_count": validated_count,
+        "processed_count": processed_count,
+        "added": int(job.get("added") or 0),
+        "updated": int(job.get("updated") or 0),
+        "skipped": int(job.get("skipped") or 0),
+        "error_count": int(job.get("error_count") or 0),
+        "progress_percent": max(0.0, min(100.0, progress_percent)),
+        "current_message": str(job.get("current_message") or "").strip(),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "result": job.get("result"),
+        "recent_errors": list(job.get("recent_errors") or []),
+    }
+
+
+def _create_token_import_job(*, total_tokens: int, confirm_replace_by_email: bool) -> Dict[str, Any]:
+    global active_token_import_job_id
+    _cleanup_token_import_jobs()
+    if active_token_import_job_id:
+        active_job = token_import_jobs.get(active_token_import_job_id)
+        if active_job and str(active_job.get("status") or "") in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="当前已有 Token 导入任务在执行，请等待完成后重试")
+        active_token_import_job_id = None
+
+    job_id = f"import-{secrets.token_urlsafe(8)}"
+    started_at = datetime.now().isoformat(timespec="seconds")
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "phase": "queued",
+        "total_tokens": max(0, int(total_tokens or 0)),
+        "validated_count": 0,
+        "processed_count": 0,
+        "added": 0,
+        "updated": 0,
+        "skipped": 0,
+        "error_count": 0,
+        "confirm_replace_by_email": bool(confirm_replace_by_email),
+        "current_message": "任务已创建，等待开始",
+        "started_at": started_at,
+        "finished_at": None,
+        "finished_at_ts": None,
+        "result": None,
+        "recent_errors": [],
+    }
+    token_import_jobs[job_id] = job
+    active_token_import_job_id = job_id
+    return job
+
+
+def _push_token_import_error(job: Optional[Dict[str, Any]], message: str) -> None:
+    if not job:
+        return
+    errors = job.setdefault("recent_errors", [])
+    errors.insert(0, str(message or "未知错误"))
+    del errors[8:]
+
+
+async def _perform_import_tokens(request: ImportTokensRequest, *, job_id: Optional[str] = None) -> Dict[str, Any]:
+    global active_token_import_job_id
+
+    job = token_import_jobs.get(job_id) if job_id else None
+    if job:
+        job["status"] = "running"
+        job["phase"] = "validating"
+        job["current_message"] = "开始验证 Session Token 并解析账号信息"
+
+    added = 0
+    updated = 0
+    skipped = 0
+    errors: List[str] = []
+
+    def _normalize_email(value: Optional[str]) -> str:
+        return str(value or "").strip().lower()
+
+    def _parse_expires(value: Optional[str], fallback_token: Optional[str] = None) -> Optional[datetime]:
+        if isinstance(value, str) and value.strip():
+            try:
+                return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except Exception:
+                pass
+        if fallback_token:
+            try:
+                return token_manager._parse_jwt_exp(fallback_token)
+            except Exception:
+                return None
+        return None
+
+    def _build_import_refresh_fields(
+        *,
+        validated_live: bool,
+        at_expires: Optional[datetime],
+        event_at: datetime,
+    ) -> Dict[str, Any]:
+        if not validated_live:
+            return {
+                "last_refresh_at": None,
+                "last_refresh_method": None,
+                "last_refresh_status": None,
+                "last_refresh_detail": None,
+            }
+        expiry_text = "未知"
+        if at_expires is not None:
+            try:
+                exp_aware = at_expires if at_expires.tzinfo else at_expires.replace(tzinfo=timezone.utc)
+                expiry_text = exp_aware.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                expiry_text = "未知"
+        return {
+            "last_refresh_at": event_at,
+            "last_refresh_method": "IMPORT_VALIDATE",
+            "last_refresh_status": "SUCCESS",
+            "last_refresh_detail": f"导入时已实时验证 ST 成功，AT过期时间={expiry_text}",
+        }
+
+    def _cache_existing_token(email_value: Optional[str], token_obj: Any):
+        raw_email = str(email_value or "").strip()
+        if raw_email and raw_email not in existing_by_email:
+            existing_by_email[raw_email] = token_obj
+        email_key = _normalize_email(email_value)
+        if email_key:
+            existing_by_email[email_key] = token_obj
+
+    existing_by_email: Dict[str, Any] = {}
+    existing_tokens = await token_manager.get_all_tokens()
+    for existing_token in existing_tokens:
+        _cache_existing_token(existing_token.email, existing_token)
+
+    semaphore = asyncio.Semaphore(6)
+
+    async def _resolve_import_item(idx: int, item: ImportTokenItem) -> Dict[str, Any]:
+        st = str(item.session_token or "").strip()
+        if not st:
+            return {"idx": idx, "error": f"第{idx+1}项: 缺少 session_token"}
+
+        email_hint_raw = str(item.email or "").strip()
+        name_hint = str(item.name or "").strip()
+        access_token_hint = str(item.access_token or "").strip()
+        at_expires = _parse_expires(item.at_expires, fallback_token=access_token_hint)
+        now = datetime.now(timezone.utc)
+
+        fallback_payload = {
+            "idx": idx,
+            "item": item,
+            "st": st,
+            "email": _normalize_email(email_hint_raw),
+            "name": name_hint,
+            "at": access_token_hint or None,
+            "at_expires": at_expires,
+            "is_expired": bool(at_expires and at_expires <= now),
+            "used_fallback": True,
+            "validated_live": False,
+        }
+
+        try:
+            async with semaphore:
+                result = await token_manager.flow_client.st_to_at(st)
+            access_token_hint = str(result.get("access_token") or access_token_hint or "").strip()
+            email_hint_raw = str(result.get("user", {}).get("email") or email_hint_raw or "").strip()
+            email_hint = _normalize_email(email_hint_raw)
+            name_hint = str(result.get("user", {}).get("name") or name_hint or "").strip()
+            at_expires = _parse_expires(result.get("expires"), fallback_token=access_token_hint)
+
+            if not email_hint:
+                if fallback_payload["email"]:
+                    return fallback_payload
+                return {"idx": idx, "error": f"第{idx+1}项: 无法获取邮箱信息"}
+
+            return {
+                "idx": idx,
+                "item": item,
+                "st": st,
+                "email": email_hint,
+                "name": name_hint,
+                "at": access_token_hint or None,
+                "at_expires": at_expires,
+                "is_expired": bool(at_expires and at_expires <= now),
+                "used_fallback": False,
+                "validated_live": True,
+            }
+        except Exception as e:
+            if fallback_payload["email"]:
+                return fallback_payload
+            return {"idx": idx, "error": f"第{idx+1}项: {str(e)}"}
+
+    try:
+        resolve_tasks = [
+            asyncio.create_task(_resolve_import_item(idx, item))
+            for idx, item in enumerate(request.tokens)
+        ]
+        resolved_items: List[Dict[str, Any]] = []
+        for future in asyncio.as_completed(resolve_tasks):
+            resolved = await future
+            resolved_items.append(resolved)
+            if job:
+                job["validated_count"] = int(job.get("validated_count") or 0) + 1
+                idx = int(resolved.get("idx", 0)) + 1
+                total = int(job.get("total_tokens") or 0)
+                job["current_message"] = f"正在验证第 {idx}/{total} 条 Token"
+                if resolved.get("error"):
+                    job["error_count"] = int(job.get("error_count") or 0) + 1
+                    _push_token_import_error(job, str(resolved.get("error") or ""))
+
+        resolved_items.sort(key=lambda item: int(item.get("idx") or 0))
+        if job:
+            job["phase"] = "applying"
+            job["current_message"] = "验证完成，开始写入本地 Token 数据库"
+
+        for resolved in resolved_items:
+            if resolved.get("error"):
+                errors.append(resolved["error"])
+                continue
+
+            try:
+                item = resolved["item"]
+                st = resolved["st"]
+                email = resolved["email"]
+                at = resolved.get("at")
+                at_expires = resolved.get("at_expires")
+                is_expired = bool(resolved.get("is_expired"))
+                validated_live = bool(resolved.get("validated_live"))
+                refresh_fields = _build_import_refresh_fields(
+                    validated_live=validated_live,
+                    at_expires=at_expires,
+                    event_at=datetime.now(timezone.utc),
+                )
+
+                existing = existing_by_email.get(email)
+                if existing:
+                    if not request.confirm_replace_by_email:
+                        skipped += 1
+                    else:
+                        await token_manager.update_token(
+                            token_id=existing.id,
+                            st=st,
+                            cookie=item.cookie,
+                            cookie_file=item.cookie_file,
+                            at=at,
+                            at_expires=at_expires,
+                            project_id=item.project_id,
+                            project_name=item.project_name,
+                            remark=item.remark,
+                            captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
+                            image_enabled=item.image_enabled,
+                            video_enabled=item.video_enabled,
+                            image_concurrency=item.image_concurrency,
+                            video_concurrency=item.video_concurrency,
+                        )
+                        await token_manager.db.update_token(existing.id, at=at, at_expires=at_expires, **refresh_fields)
+                        if item.is_active:
+                            await token_manager.db.update_token(existing.id, is_active=True, ban_reason=None, banned_at=None)
+                        else:
+                            await token_manager.disable_token(existing.id, reason="import_disabled")
+                        if is_expired:
+                            await token_manager.disable_token(existing.id, reason="token_expired")
+                            existing.is_active = False
+                        existing.st = st
+                        existing.at = at
+                        existing.at_expires = at_expires
+                        existing.cookie = item.cookie
+                        existing.cookie_file = item.cookie_file
+                        existing.current_project_id = item.project_id or existing.current_project_id
+                        existing.current_project_name = item.project_name or existing.current_project_name
+                        existing.remark = item.remark
+                        existing.captcha_proxy_url = item.captcha_proxy_url
+                        existing.image_enabled = item.image_enabled
+                        existing.video_enabled = item.video_enabled
+                        existing.image_concurrency = item.image_concurrency
+                        existing.video_concurrency = item.video_concurrency
+                        existing.last_refresh_at = refresh_fields.get("last_refresh_at")
+                        existing.last_refresh_method = refresh_fields.get("last_refresh_method")
+                        existing.last_refresh_status = refresh_fields.get("last_refresh_status")
+                        existing.last_refresh_detail = refresh_fields.get("last_refresh_detail")
+                        _cache_existing_token(email, existing)
+                        updated += 1
+                else:
+                    new_token = await token_manager.add_token(
+                        st=st,
+                        captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
+                        cookie=item.cookie,
+                        cookie_file=item.cookie_file,
+                        project_id=item.project_id,
+                        project_name=item.project_name,
+                        remark=item.remark,
+                        image_enabled=item.image_enabled,
+                        video_enabled=item.video_enabled,
+                        image_concurrency=item.image_concurrency,
+                        video_concurrency=item.video_concurrency,
+                        resolved_at=at,
+                        resolved_at_expires=at_expires,
+                        resolved_email=email,
+                        resolved_name=resolved.get("name"),
+                    )
+                    await token_manager.db.update_token(new_token.id, **refresh_fields)
+                    if not item.is_active:
+                        await token_manager.disable_token(new_token.id, reason="import_disabled")
+                    if is_expired:
+                        await token_manager.disable_token(new_token.id, reason="token_expired")
+                        new_token.is_active = False
+                    new_token.last_refresh_at = refresh_fields.get("last_refresh_at")
+                    new_token.last_refresh_method = refresh_fields.get("last_refresh_method")
+                    new_token.last_refresh_status = refresh_fields.get("last_refresh_status")
+                    new_token.last_refresh_detail = refresh_fields.get("last_refresh_detail")
+                    _cache_existing_token(email, new_token)
+                    added += 1
+            except Exception as e:
+                idx = int(resolved.get("idx", 0))
+                errors.append(f"第{idx+1}项: {str(e)}")
+
+            if job:
+                job["processed_count"] = int(job.get("processed_count") or 0) + 1
+                job["added"] = added
+                job["updated"] = updated
+                job["skipped"] = skipped
+                job["error_count"] = len(errors)
+                idx = int(resolved.get("idx", 0)) + 1
+                total = int(job.get("total_tokens") or 0)
+                job["current_message"] = f"正在写入第 {idx}/{total} 条 Token"
+                if errors:
+                    _push_token_import_error(job, errors[-1])
+
+        result = {
+            "success": True,
+            "added": added,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors if errors else None,
+            "message": (
+                f"导入完成: 新增 {added} 个, 更新 {updated} 个, 跳过 {skipped} 个"
+                + (f", {len(errors)} 个失败" if errors else "")
+            ),
+        }
+        if job:
+            job["status"] = "completed"
+            job["phase"] = "completed"
+            job["current_message"] = result["message"]
+            job["result"] = result
+            job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            job["finished_at_ts"] = time.time()
+        return result
+    except Exception as exc:
+        if job:
+            message = f"导入任务失败: {str(exc)}"
+            job["status"] = "failed"
+            job["phase"] = "failed"
+            job["current_message"] = message
+            job["result"] = {"success": False, "detail": str(exc), "message": message}
+            job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            job["finished_at_ts"] = time.time()
+            _push_token_import_error(job, message)
+        raise
+    finally:
+        if job_id and active_token_import_job_id == job_id:
+            active_token_import_job_id = None
+
+
+async def _run_token_import_job(job_id: str, request: ImportTokensRequest) -> None:
+    try:
+        await _perform_import_tokens(request, job_id=job_id)
+    except Exception:
+        pass
+
+
 class InternalTokenExportRequest(BaseModel):
     """内部Token导出请求"""
     files: List[str]
@@ -795,10 +1179,12 @@ async def _post_cluster_auto_login_result_to_worker(
         if isinstance(body, dict):
             detail = str(body.get("detail") or body.get("message") or "").strip()
         if not detail:
-            detail = str(response.text or "").strip()
-        raise RuntimeError(detail or f"HTTP {response.status_code}")
+            detail = response.text.strip()
+        raise RuntimeError(detail or f"worker returned {response.status_code}")
 
-    return body if isinstance(body, dict) else {"success": True}
+    if isinstance(body, dict):
+        return body
+    return {"success": True}
 
 
 async def _watch_cluster_auto_login_delegate(
@@ -849,6 +1235,7 @@ async def _watch_cluster_auto_login_delegate(
         try:
             job = accountpool_service.get_job_internal(job_id=master_job_id)
         except KeyError:
+            detail = "主节点账号池任务不存在，可能已被清理"
             await cluster_manager.record_delegated_auto_login_job(
                 delegation_id=delegation_id,
                 master_job_id=master_job_id,
@@ -859,9 +1246,9 @@ async def _watch_cluster_auto_login_delegate(
                 email=email,
                 account_key=account_key,
                 status="failed",
-                detail="主节点账号池任务不存在，可能已被清理",
+                detail=detail,
             )
-            final_payload["detail"] = "主节点账号池任务不存在，可能已被清理"
+            final_payload["detail"] = detail
             break
 
         job_status = str(job.get("status") or "").strip().lower() or "running"
@@ -966,80 +1353,47 @@ async def _watch_cluster_auto_login_delegate(
         )
 
 
-# ========== Auth Endpoints ==========
-
-@router.post(
-    "/api/admin/login",
-    tags=["Admin Auth"],
-    summary="管理员登录",
-    description="验证后台账号密码并返回后台 session token。该 token 仅用于管理接口，不等于主 API Key。",
-)
+@router.post("/api/admin/login")
 async def admin_login(request: LoginRequest):
     """Admin login - returns session token (NOT API key)"""
     admin_config = await db.get_admin_config()
-
     if not AuthManager.verify_admin(request.username, request.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Generate independent session token
     session_token = f"admin-{secrets.token_urlsafe(32)}"
-
-    # Store in active tokens
     active_admin_tokens.add(session_token)
-
     return {
         "success": True,
-        "token": session_token,  # Session token (NOT API key)
-        "username": admin_config.username
+        "token": session_token,
+        "username": admin_config.username,
     }
 
 
-@router.post(
-    "/api/admin/logout",
-    tags=["Admin Auth"],
-    summary="管理员登出",
-    description="使当前后台 session token 失效。",
-)
+@router.post("/api/admin/logout")
 async def admin_logout(token: str = Depends(verify_admin_token)):
     """Admin logout - invalidate session token"""
     active_admin_tokens.discard(token)
     return {"success": True, "message": "退出登录成功"}
 
 
-@router.post(
-    "/api/admin/change-password",
-    tags=["Admin Auth"],
-    summary="修改管理员密码",
-    description="修改后台密码，可选同时修改后台用户名。成功后会清空全部后台 session token，需重新登录。",
-)
+@router.post("/api/admin/change-password")
 async def change_password(
     request: ChangePasswordRequest,
-    token: str = Depends(verify_admin_token)
+    token: str = Depends(verify_admin_token),
 ):
     """Change admin password"""
+    _ = token
     admin_config = await db.get_admin_config()
-
-    # Verify old password
     if not AuthManager.verify_admin(admin_config.username, request.old_password):
         raise HTTPException(status_code=400, detail="旧密码错误")
 
-    # Update password and username in database
     update_params = {"password": request.new_password}
     if request.username:
-        update_params["username"] = request.username
-
+        update_params["username"] = request.username.strip()
     await db.update_admin_config(**update_params)
-
-    # 🔥 Hot reload: sync database config to memory
-    await db.reload_config_to_memory()
-
-    # 🔑 Invalidate all admin session tokens (force re-login for security)
     active_admin_tokens.clear()
+    return {"success": True, "message": "密码修改成功，请重新登录"}
 
-    return {"success": True, "message": "密码修改成功,请重新登录"}
-
-
-# ========== Token Management ==========
 
 @router.get("/api/tokens")
 async def get_tokens(token: str = Depends(verify_admin_token)):
@@ -1129,16 +1483,16 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
 
         result.append({
             "id": row.get("id"),
-            "st": row.get("st"),  # Session Token for editing
-            "cookie": row.get("cookie"),  # 完整 Cookie Header（用于 reAuth）
-            "cookieFile": row.get("cookie_file"),  # Google 域名 Cookie Header（用于 reAuth step4）
-            "at": row.get("at"),  # Access Token for editing (从ST转换而来)
+            "st": row.get("st"),
+            "cookie": row.get("cookie"),
+            "cookieFile": row.get("cookie_file"),
+            "at": row.get("at"),
             "at_expires": to_iso(row.get("at_expires")) if row.get("at_expires") else None,
             "last_refresh_at": to_iso(row.get("last_refresh_at")) if row.get("last_refresh_at") else None,
             "last_refresh_method": row.get("last_refresh_method"),
             "last_refresh_status": row.get("last_refresh_status"),
             "last_refresh_detail": row.get("last_refresh_detail"),
-            "token": row.get("at"),  # 兼容前端 token.token 的访问方式
+            "token": row.get("at"),
             "email": row.get("email"),
             "name": row.get("name"),
             "remark": row.get("remark"),
@@ -1171,7 +1525,7 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             **disable_reason_meta,
         })
 
-    return result  # 直接返回数组,兼容前端
+    return result
 
 
 @router.get("/api/tokens/{token_id}/refresh-history")
@@ -1313,6 +1667,11 @@ async def get_token_export_options(token: str = Depends(verify_admin_token)):
     _ = token
     token_rows = await db.get_all_tokens_with_stats()
     active_rows = [row for row in token_rows if bool(row.get("is_active"))]
+    worker_usage_map = (
+        await cluster_manager.get_worker_token_usage_map()
+        if cluster_manager and cluster_manager.is_master()
+        else {}
+    )
     existing_token_map = {
         int(row.get("id") or 0): row
         for row in token_rows
@@ -1322,6 +1681,8 @@ async def get_token_export_options(token: str = Depends(verify_admin_token)):
     active_token_ids = {int(row.get("id") or 0) for row in active_rows if int(row.get("id") or 0) > 0}
 
     binding_counts: Dict[str, int] = {}
+    occupied_counts: Dict[str, int] = {}
+    occupied_examples: List[Dict[str, Any]] = []
     active_bound_count = 0
     for token_id, binding in bindings.items():
         if int(token_id or 0) not in active_token_ids:
@@ -1332,9 +1693,35 @@ async def get_token_export_options(token: str = Depends(verify_admin_token)):
         active_bound_count += 1
         binding_counts[bound_node_id] = binding_counts.get(bound_node_id, 0) + 1
 
+    occupied_active_count = 0
+    for row in active_rows:
+        email = str(row.get("email") or "").strip().lower()
+        usages = list(worker_usage_map.get(email) or [])
+        if not usages:
+            continue
+        occupied_active_count += 1
+        seen_node_ids = set()
+        node_names: List[str] = []
+        for usage in usages:
+            node_id = str(usage.get("node_id") or "").strip()
+            if node_id and node_id not in seen_node_ids:
+                occupied_counts[node_id] = occupied_counts.get(node_id, 0) + 1
+                seen_node_ids.add(node_id)
+            node_name = str(usage.get("node_name") or node_id).strip()
+            if node_name and node_name not in node_names:
+                node_names.append(node_name)
+        occupied_examples.append(
+            {
+                "email": str(row.get("email") or "").strip(),
+                "node_names": node_names,
+                "usage_count": len(usages),
+            }
+        )
+
     worker_nodes = await _list_export_worker_nodes()
     for index, node in enumerate(worker_nodes):
         node["bound_token_count"] = int(binding_counts.get(str(node.get("node_id") or "").strip(), 0))
+        node["occupied_token_count"] = int(occupied_counts.get(str(node.get("node_id") or "").strip(), 0))
         node["default_selected"] = index == 0
         node["display_name"] = _build_export_node_display_name(
             node.get("node_id"),
@@ -1371,6 +1758,9 @@ async def get_token_export_options(token: str = Depends(verify_admin_token)):
         "active_token_count": len(active_rows),
         "bound_token_count": active_bound_count,
         "unbound_token_count": max(0, len(active_rows) - active_bound_count),
+        "occupied_token_count": occupied_active_count,
+        "exportable_token_count": max(0, len(active_rows) - occupied_active_count),
+        "occupied_token_examples": occupied_examples[:12],
         "worker_nodes": worker_nodes,
         "history": history,
     }
@@ -1478,8 +1868,26 @@ async def export_tokens_selected(
 
     token_rows = await db.get_all_tokens_with_stats()
     active_rows = [row for row in token_rows if bool(row.get("is_active"))]
+    worker_usage_map = (
+        await cluster_manager.get_worker_token_usage_map()
+        if cluster_manager and cluster_manager.is_master()
+        else {}
+    )
     if not active_rows:
         raise HTTPException(status_code=404, detail="当前没有可导出的活跃 Token")
+
+    def _get_worker_usages(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+        email = str(row.get("email") or "").strip().lower()
+        return list(worker_usage_map.get(email) or [])
+
+    def _is_occupied_by_other_worker(row: Dict[str, Any], selected_node_id: Optional[str]) -> bool:
+        usages = _get_worker_usages(row)
+        if not usages:
+            return False
+        normalized_selected = str(selected_node_id or "").strip()
+        if not normalized_selected:
+            return True
+        return any(str(item.get("node_id") or "").strip() != normalized_selected for item in usages)
 
     if email_keywords:
         active_rows = [
@@ -1493,6 +1901,14 @@ async def export_tokens_selected(
         if not active_rows:
             raise HTTPException(status_code=404, detail="未匹配到可导出的活跃 Token")
         requested_count = len(active_rows)
+
+    occupied_conflict_rows = [row for row in active_rows if _is_occupied_by_other_worker(row, node_id)]
+    active_rows = [row for row in active_rows if not _is_occupied_by_other_worker(row, node_id)]
+
+    if not active_rows and occupied_conflict_rows:
+        if node_id:
+            raise HTTPException(status_code=409, detail="候选 Token 当前正被其他子节点占用，已自动排除；请稍后重试或选择其他账号")
+        raise HTTPException(status_code=409, detail="候选 Token 当前正被子节点占用，已自动排除；如需本地临时导出，请先确认子节点已释放")
 
     bindings = await db.get_token_export_binding_map()
     selected_rows: List[Dict[str, Any]] = []
@@ -2022,207 +2438,37 @@ async def import_tokens(
     token: str = Depends(verify_admin_token)
 ):
     """批量导入Token"""
-    from datetime import datetime, timezone
+    _ = token
+    return await _perform_import_tokens(request)
 
-    added = 0
-    updated = 0
-    skipped = 0
-    errors = []
-    def _normalize_email(value: Optional[str]) -> str:
-        return str(value or "").strip().lower()
 
-    def _parse_expires(value: Optional[str], fallback_token: Optional[str] = None) -> Optional[datetime]:
-        if isinstance(value, str) and value.strip():
-            try:
-                return datetime.fromisoformat(value.replace('Z', '+00:00'))
-            except Exception:
-                pass
-        if fallback_token:
-            try:
-                return token_manager._parse_jwt_exp(fallback_token)
-            except Exception:
-                return None
-        return None
-
-    def _cache_existing_token(email_value: Optional[str], token_obj: Any):
-        raw_email = str(email_value or "").strip()
-        if raw_email and raw_email not in existing_by_email:
-            existing_by_email[raw_email] = token_obj
-        email_key = _normalize_email(email_value)
-        if email_key:
-            existing_by_email[email_key] = token_obj
-
-    # 保持与历史逻辑一致：按 created_at DESC 的结果中，优先命中同邮箱“最新一条”
-    existing_by_email: Dict[str, Any] = {}
-    existing_tokens = await token_manager.get_all_tokens()
-    for existing_token in existing_tokens:
-        _cache_existing_token(existing_token.email, existing_token)
-
-    semaphore = asyncio.Semaphore(6)
-
-    async def _resolve_import_item(idx: int, item: ImportTokenItem) -> Dict[str, Any]:
-        st = str(item.session_token or "").strip()
-        if not st:
-            return {"error": f"第{idx+1}项: 缺少 session_token"}
-
-        email_hint_raw = str(item.email or "").strip()
-        name_hint = str(item.name or "").strip()
-        access_token_hint = str(item.access_token or "").strip()
-        at_expires = _parse_expires(item.at_expires, fallback_token=access_token_hint)
-        now = datetime.now(timezone.utc)
-
-        fallback_payload = {
-            "idx": idx,
-            "item": item,
-            "st": st,
-            "email": _normalize_email(email_hint_raw),
-            "name": name_hint,
-            "at": access_token_hint or None,
-            "at_expires": at_expires,
-            "is_expired": bool(at_expires and at_expires <= now),
-            "used_fallback": True,
-        }
-
-        try:
-            async with semaphore:
-                result = await token_manager.flow_client.st_to_at(st)
-            access_token_hint = str(result.get("access_token") or access_token_hint or "").strip()
-            email_hint_raw = str(result.get("user", {}).get("email") or email_hint_raw or "").strip()
-            email_hint = _normalize_email(email_hint_raw)
-            name_hint = str(result.get("user", {}).get("name") or name_hint or "").strip()
-            at_expires = _parse_expires(result.get("expires"), fallback_token=access_token_hint)
-
-            if not email_hint:
-                if fallback_payload["email"]:
-                    return fallback_payload
-                return {"error": f"第{idx+1}项: 无法获取邮箱信息"}
-
-            return {
-                "idx": idx,
-                "item": item,
-                "st": st,
-                "email": email_hint,
-                "name": name_hint,
-                "at": access_token_hint or None,
-                "at_expires": at_expires,
-                "is_expired": bool(at_expires and at_expires <= now),
-                "used_fallback": False,
-            }
-        except Exception as e:
-            if fallback_payload["email"]:
-                return fallback_payload
-            return {"error": f"第{idx+1}项: {str(e)}"}
-
-    resolved_items = await asyncio.gather(
-        *(_resolve_import_item(idx, item) for idx, item in enumerate(request.tokens))
+@router.post("/api/tokens/import/start")
+async def start_import_tokens(
+    request: ImportTokensRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """启动后台 Token 导入任务并返回任务ID。"""
+    _ = token
+    job = _create_token_import_job(
+        total_tokens=len(request.tokens or []),
+        confirm_replace_by_email=bool(request.confirm_replace_by_email),
     )
+    asyncio.create_task(_run_token_import_job(str(job.get("job_id")), request))
+    return {"success": True, "job": _build_token_import_job_snapshot(job)}
 
-    for resolved in resolved_items:
-        if resolved.get("error"):
-            errors.append(resolved["error"])
-            continue
 
-        try:
-            item = resolved["item"]
-            st = resolved["st"]
-            email = resolved["email"]
-            at = resolved.get("at")
-            at_expires = resolved.get("at_expires")
-            is_expired = bool(resolved.get("is_expired"))
-
-            existing = existing_by_email.get(email)
-            if existing:
-                if not request.confirm_replace_by_email:
-                    skipped += 1
-                    continue
-
-                await token_manager.update_token(
-                    token_id=existing.id,
-                    st=st,
-                    cookie=item.cookie,
-                    cookie_file=item.cookie_file,
-                    at=at,
-                    at_expires=at_expires,
-                    project_id=item.project_id,
-                    project_name=item.project_name,
-                    remark=item.remark,
-                    captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
-                    image_enabled=item.image_enabled,
-                    video_enabled=item.video_enabled,
-                    image_concurrency=item.image_concurrency,
-                    video_concurrency=item.video_concurrency
-                )
-                if item.is_active:
-                    await token_manager.db.update_token(
-                        existing.id,
-                        is_active=True,
-                        ban_reason=None,
-                        banned_at=None
-                    )
-                else:
-                    await token_manager.disable_token(existing.id, reason="import_disabled")
-
-                if is_expired:
-                    await token_manager.disable_token(existing.id, reason="token_expired")
-                    existing.is_active = False
-
-                existing.st = st
-                if at is not None:
-                    existing.at = at
-                existing.at_expires = at_expires
-                existing.cookie = item.cookie
-                existing.cookie_file = item.cookie_file
-                existing.current_project_id = item.project_id or existing.current_project_id
-                existing.current_project_name = item.project_name or existing.current_project_name
-                existing.remark = item.remark
-                existing.captcha_proxy_url = item.captcha_proxy_url
-                existing.image_enabled = item.image_enabled
-                existing.video_enabled = item.video_enabled
-                existing.image_concurrency = item.image_concurrency
-                existing.video_concurrency = item.video_concurrency
-                _cache_existing_token(email, existing)
-                updated += 1
-            else:
-                new_token = await token_manager.add_token(
-                    st=st,
-                    captcha_proxy_url=item.captcha_proxy_url.strip() if item.captcha_proxy_url is not None else None,
-                    cookie=item.cookie,
-                    cookie_file=item.cookie_file,
-                    project_id=item.project_id,
-                    project_name=item.project_name,
-                    remark=item.remark,
-                    image_enabled=item.image_enabled,
-                    video_enabled=item.video_enabled,
-                    image_concurrency=item.image_concurrency,
-                    video_concurrency=item.video_concurrency,
-                    resolved_at=at,
-                    resolved_at_expires=at_expires,
-                    resolved_email=email,
-                    resolved_name=resolved.get("name"),
-                )
-                if not item.is_active:
-                    await token_manager.disable_token(new_token.id, reason="import_disabled")
-                if is_expired:
-                    await token_manager.disable_token(new_token.id, reason="token_expired")
-                    new_token.is_active = False
-
-                _cache_existing_token(email, new_token)
-                added += 1
-        except Exception as e:
-            idx = int(resolved.get("idx", 0))
-            errors.append(f"第{idx+1}项: {str(e)}")
-
-    return {
-        "success": True,
-        "added": added,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors if errors else None,
-        "message": (
-            f"导入完成: 新增 {added} 个, 更新 {updated} 个, 跳过 {skipped} 个"
-            + (f", {len(errors)} 个失败" if errors else "")
-        )
-    }
+@router.get("/api/tokens/import/status/{job_id}")
+async def get_import_tokens_status(
+    job_id: str,
+    token: str = Depends(verify_admin_token),
+):
+    """查询后台 Token 导入任务进度。"""
+    _ = token
+    _cleanup_token_import_jobs()
+    job = token_import_jobs.get(str(job_id or "").strip())
+    if not job:
+        raise HTTPException(status_code=404, detail="导入任务不存在或已过期")
+    return {"success": True, "job": _build_token_import_job_snapshot(job)}
 
 
 # ========== Config Management ==========
@@ -2875,10 +3121,57 @@ async def get_diagnostics(token: str = Depends(verify_admin_token)):
     return await perf_monitor.get_diagnostics()
 
 
+@router.get("/api/diagnostics/cpu-realtime")
+async def get_realtime_cpu_diagnostics(token: str = Depends(verify_admin_token)):
+    """获取整机 CPU/内存实时采样快照。"""
+    _ = token
+    snapshot = perf_monitor.get_realtime_cpu_snapshot()
+    if snapshot.get("success"):
+        try:
+            await db.add_cpu_preview_history(
+                cpu_percent=float(snapshot.get("cpu_percent", -1) or -1),
+                memory_percent=float(snapshot.get("memory_percent", -1) or -1),
+                memory_used_mb=float(snapshot.get("memory_used_mb", -1) or -1),
+                memory_total_mb=float(snapshot.get("memory_total_mb", -1) or -1),
+                logical_cpu_count=int(snapshot.get("logical_cpu_count", -1) or -1),
+                physical_cpu_count=int(snapshot.get("physical_cpu_count", -1) or -1),
+                source=str(snapshot.get("source") or "").strip(),
+                detail=str(snapshot.get("detail") or "").strip(),
+            )
+        except Exception as exc:
+            snapshot["persist_warning"] = str(exc)
+    return snapshot
+
+
+@router.get("/api/diagnostics/cpu-history")
+async def get_realtime_cpu_history(
+    limit: int = Query(100, ge=1, le=1000, description="返回最近多少条系统采样记录"),
+    token: str = Depends(verify_admin_token),
+):
+    """获取最近的系统 CPU 采样历史（数据库持久化，默认保留 1 天）。"""
+    _ = token
+    rows = await db.get_cpu_preview_history(limit=limit)
+    return {
+        "success": True,
+        "items": rows,
+        "count": len(rows),
+    }
+
+
 @router.get("/api/loadtest/image/status")
 async def get_image_loadtest_status(token: str = Depends(verify_admin_token)):
     """获取图片并发自测任务状态。"""
     return await image_load_test_service.get_status()
+
+
+@router.get("/api/loadtest/image/diagnostics")
+async def get_image_loadtest_diagnostics(
+    limit: int = Query(120, ge=20, le=400, description="返回最近多少条图片并发自测诊断事件"),
+    token: str = Depends(verify_admin_token),
+):
+    """获取图片并发自测诊断汇总，直接用于服务负载分析页面展示。"""
+    _ = token
+    return perf_monitor.get_loadtest_diagnostics(limit=limit)
 
 
 @router.post("/api/loadtest/image/start")
@@ -3401,12 +3694,23 @@ async def update_captcha_config(
         browser_count=max(1, int(browser_count)) if browser_count else 1
     )
 
-    # 配置包含 browser 时，热重载浏览器数量配置
-    if "browser" in captcha_priority_order:
+    # 本地有头浏览器打码启用时刷新实例数量；禁用时主动回收实例，避免继续占用 CPU/内存
+    try:
+        from ..services.browser_captcha import BrowserCaptchaService
+        browser_service = await BrowserCaptchaService.get_instance(db)
+        if "browser" in captcha_priority_order:
+            await browser_service.reload_browser_count()
+        else:
+            await browser_service.close()
+    except Exception:
+        pass
+
+    # personal 模式未启用时也回收内置浏览器实例，避免残留进程
+    if "personal" not in captcha_priority_order:
         try:
-            from ..services.browser_captcha import BrowserCaptchaService
-            service = await BrowserCaptchaService.get_instance(db)
-            await service.reload_browser_count()
+            from ..services.browser_captcha_personal import BrowserCaptchaService as PersonalBrowserCaptchaService
+            personal_service = await PersonalBrowserCaptchaService.get_instance(db)
+            await personal_service.close()
         except Exception:
             pass
 

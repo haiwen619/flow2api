@@ -150,6 +150,7 @@ async def lifespan(app: FastAPI):
 
     # Get config from setting.toml
     config_dict = config.get_raw_config()
+    print(f"[启动] 当前数据库后端: {config.db_backend}  # sqlite / mysql")
 
     # Check if database exists (determine if first startup)
     is_first_startup = not await db.db_exists()

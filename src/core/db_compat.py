@@ -194,6 +194,30 @@ class _MySQLCursorAdapter:
         return [self._convert_row(row) for row in rows]
 
 
+class _MySQLExecuteContext:
+    def __init__(self, connection: "_MySQLConnectionAdapter", sql: str, params: Optional[Sequence[Any]] = None):
+        self._connection = connection
+        self._sql = sql
+        self._params = params
+        self._cursor: Optional[_MySQLCursorAdapter] = None
+
+    async def _resolve(self) -> _MySQLCursorAdapter:
+        if self._cursor is None:
+            self._cursor = await self._connection._execute_now(self._sql, self._params)
+        return self._cursor
+
+    def __await__(self):
+        return self._resolve().__await__()
+
+    async def __aenter__(self) -> _MySQLCursorAdapter:
+        cursor = await self._resolve()
+        return await cursor.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        cursor = await self._resolve()
+        return await cursor.__aexit__(exc_type, exc, tb)
+
+
 class _MySQLConnectionAdapter:
     def __init__(self, target: str):
         self._target = normalize_mysql_url(target)
@@ -215,7 +239,7 @@ class _MySQLConnectionAdapter:
             await self._conn.close()
             self._conn = None
 
-    async def execute(self, sql: str, params: Optional[Sequence[Any]] = None) -> _MySQLCursorAdapter:
+    async def _execute_now(self, sql: str, params: Optional[Sequence[Any]] = None) -> _MySQLCursorAdapter:
         if self._conn is None:
             raise RuntimeError("database connection is not open")
 
@@ -244,6 +268,9 @@ class _MySQLConnectionAdapter:
 
         result = await self._conn.execute(text(translated), bind_params)
         return _MySQLCursorAdapter(result, self.row_factory)
+
+    def execute(self, sql: str, params: Optional[Sequence[Any]] = None) -> _MySQLExecuteContext:
+        return _MySQLExecuteContext(self, sql, params)
 
     async def commit(self) -> None:
         if self._conn is not None:

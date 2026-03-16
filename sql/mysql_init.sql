@@ -118,6 +118,19 @@ CREATE TABLE IF NOT EXISTS token_export_history (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS cpu_preview_history (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    cpu_percent DOUBLE NOT NULL DEFAULT -1,
+    memory_percent DOUBLE NOT NULL DEFAULT -1,
+    memory_used_mb DOUBLE NOT NULL DEFAULT -1,
+    memory_total_mb DOUBLE NOT NULL DEFAULT -1,
+    logical_cpu_count INT NOT NULL DEFAULT -1,
+    physical_cpu_count INT NOT NULL DEFAULT -1,
+    source VARCHAR(255) NOT NULL DEFAULT '',
+    detail TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS admin_config (
     id INT PRIMARY KEY DEFAULT 1,
     username VARCHAR(255) NOT NULL,
@@ -229,5 +242,6 @@ CREATE INDEX idx_token_refresh_history_created_at ON token_refresh_history(creat
 CREATE INDEX idx_token_export_bindings_node_id ON token_export_bindings(node_id);
 CREATE INDEX idx_token_export_history_node_id_created_at ON token_export_history(node_id, created_at DESC);
 CREATE INDEX idx_token_export_history_created_at ON token_export_history(created_at DESC);
+CREATE INDEX idx_cpu_preview_history_created_at ON cpu_preview_history(created_at DESC);
 CREATE INDEX idx_account_pool_platform ON account_pool_accounts(platform);
 CREATE INDEX idx_account_pool_updated_at ON account_pool_accounts(updated_at);

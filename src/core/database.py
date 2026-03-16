@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db_compat import dbapi as aiosqlite, is_mysql_target
 from .config import config
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, normalize_captcha_priority_order
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, normalize_captcha_priority_order, SUPPORTED_CAPTCHA_METHODS_ORDER
 
 
 class Database:
@@ -359,12 +359,12 @@ class Database:
             if config_dict:
                 captcha_config = config_dict.get("captcha", {})
                 captcha_method = captcha_config.get("captcha_method", "remote_browser")
-                captcha_priority_order = json.dumps(
-                    normalize_captcha_priority_order(
-                        captcha_config.get("captcha_priority_order", captcha_method)
-                    ),
-                    ensure_ascii=False,
+                configured_order = normalize_captcha_priority_order(
+                    captcha_config.get("captcha_priority_order", captcha_method)
                 )
+                if configured_order == SUPPORTED_CAPTCHA_METHODS_ORDER and captcha_method in SUPPORTED_CAPTCHA_METHODS_ORDER:
+                    configured_order = [captcha_method]
+                captcha_priority_order = json.dumps(configured_order, ensure_ascii=False)
                 yescaptcha_api_key = captcha_config.get("yescaptcha_api_key", "")
                 yescaptcha_base_url = captcha_config.get("yescaptcha_base_url", "https://api.yescaptcha.com")
                 remote_browser_base_url = captcha_config.get("remote_browser_base_url", "")
@@ -510,6 +510,28 @@ class Database:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_token_refresh_history_created_at "
                 "ON token_refresh_history(created_at DESC)"
+            )
+
+            # Check and create cpu_preview_history table if missing
+            if not await self._table_exists(db, "cpu_preview_history"):
+                print("  ✓ Creating missing table: cpu_preview_history")
+                await db.execute("""
+                    CREATE TABLE cpu_preview_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        cpu_percent REAL DEFAULT -1,
+                        memory_percent REAL DEFAULT -1,
+                        memory_used_mb REAL DEFAULT -1,
+                        memory_total_mb REAL DEFAULT -1,
+                        logical_cpu_count INTEGER DEFAULT -1,
+                        physical_cpu_count INTEGER DEFAULT -1,
+                        source TEXT DEFAULT '',
+                        detail TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cpu_preview_history_created_at "
+                "ON cpu_preview_history(created_at DESC)"
             )
 
             # ========== Step 2: Add missing columns to existing tables ==========
@@ -893,6 +915,22 @@ class Database:
                 )
             """)
 
+            # CPU preview history table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS cpu_preview_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cpu_percent REAL DEFAULT -1,
+                    memory_percent REAL DEFAULT -1,
+                    memory_used_mb REAL DEFAULT -1,
+                    memory_total_mb REAL DEFAULT -1,
+                    logical_cpu_count INTEGER DEFAULT -1,
+                    physical_cpu_count INTEGER DEFAULT -1,
+                    source TEXT DEFAULT '',
+                    detail TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Create indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_st ON tokens(st)")
@@ -913,6 +951,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_export_bindings_node_id ON token_export_bindings(node_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_export_history_node_id_created_at ON token_export_history(node_id, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_export_history_created_at ON token_export_history(created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_cpu_preview_history_created_at ON cpu_preview_history(created_at DESC)")
 
             await db.commit()
 
@@ -1433,6 +1472,86 @@ class Database:
                 item["token_emails"] = []
             history.append(item)
         return history
+
+    async def add_cpu_preview_history(
+        self,
+        *,
+        cpu_percent: float,
+        memory_percent: float,
+        memory_used_mb: float,
+        memory_total_mb: float,
+        logical_cpu_count: int,
+        physical_cpu_count: int,
+        source: Optional[str] = None,
+        detail: Optional[str] = None,
+        created_at: Optional[datetime] = None,
+        retention_hours: int = 24,
+    ) -> int:
+        """Persist one system CPU preview sample and trim rows older than retention."""
+        safe_retention_hours = max(1, int(retention_hours or 24))
+        created_ts = created_at or datetime.utcnow()
+        cutoff = created_ts - timedelta(hours=safe_retention_hours)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO cpu_preview_history (
+                    cpu_percent,
+                    memory_percent,
+                    memory_used_mb,
+                    memory_total_mb,
+                    logical_cpu_count,
+                    physical_cpu_count,
+                    source,
+                    detail,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    float(cpu_percent if cpu_percent is not None else -1),
+                    float(memory_percent if memory_percent is not None else -1),
+                    float(memory_used_mb if memory_used_mb is not None else -1),
+                    float(memory_total_mb if memory_total_mb is not None else -1),
+                    int(logical_cpu_count if logical_cpu_count is not None else -1),
+                    int(physical_cpu_count if physical_cpu_count is not None else -1),
+                    str(source or "").strip(),
+                    str(detail or "").strip(),
+                    created_ts,
+                ),
+            )
+            await db.execute(
+                "DELETE FROM cpu_preview_history WHERE created_at < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return int(cursor.lastrowid or 0)
+
+    async def get_cpu_preview_history(self, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent persisted CPU preview samples, newest first."""
+        safe_limit = max(1, min(int(limit or 100), 2000))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT
+                    id,
+                    cpu_percent,
+                    memory_percent,
+                    memory_used_mb,
+                    memory_total_mb,
+                    logical_cpu_count,
+                    physical_cpu_count,
+                    source,
+                    detail,
+                    created_at
+                FROM cpu_preview_history
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def get_token_refresh_history(
         self,
@@ -2619,6 +2738,13 @@ class Database:
         browser_count: int = None
     ):
         """Update captcha configuration"""
+        def _normalize_enabled_order(raw_order: Any, method_hint: Optional[str] = None) -> List[str]:
+            normalized = normalize_captcha_priority_order(raw_order)
+            method = str(method_hint or "").strip().lower()
+            if normalized == SUPPORTED_CAPTCHA_METHODS_ORDER and method in SUPPORTED_CAPTCHA_METHODS_ORDER:
+                return [method]
+            return normalized
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM captcha_config WHERE id = 1")
@@ -2626,12 +2752,13 @@ class Database:
 
             if row:
                 current = dict(row)
-                current_order = normalize_captcha_priority_order(current.get("captcha_priority_order"))
+                current_method = str(current.get("captcha_method") or "").strip().lower()
+                current_order = _normalize_enabled_order(current.get("captcha_priority_order"), current_method)
                 if captcha_priority_order is not None:
-                    new_order = normalize_captcha_priority_order(captcha_priority_order)
+                    new_order = _normalize_enabled_order(captcha_priority_order, captcha_method or current_method)
                 elif captcha_method is not None:
                     method_value = str(captcha_method or "").strip().lower()
-                    new_order = normalize_captcha_priority_order(
+                    new_order = _normalize_enabled_order(
                         [method_value] + [item for item in current_order if item != method_value]
                     )
                 else:
@@ -2672,11 +2799,11 @@ class Database:
                       new_remote_proxy_enabled, new_proxy_enabled, new_proxy_url, new_browser_count))
             else:
                 if captcha_priority_order is not None:
-                    new_order = normalize_captcha_priority_order(captcha_priority_order)
+                    new_order = _normalize_enabled_order(captcha_priority_order, captcha_method)
                 elif captcha_method is not None:
-                    new_order = normalize_captcha_priority_order([captcha_method])
+                    new_order = _normalize_enabled_order([captcha_method], captcha_method)
                 else:
-                    new_order = normalize_captcha_priority_order(None)
+                    new_order = _normalize_enabled_order(None, "remote_browser")
                 new_method = new_order[0]
                 new_yes_key = yescaptcha_api_key if yescaptcha_api_key is not None else ""
                 new_yes_url = yescaptcha_base_url if yescaptcha_base_url is not None else "https://api.yescaptcha.com"

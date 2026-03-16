@@ -15,6 +15,7 @@ from curl_cffi.requests import AsyncSession
 from ..core.logger import debug_logger
 from ..core.config import config
 from ..core.models import normalize_captcha_priority_order
+from .perf_monitor import perf_monitor
 
 
 class FlowClient:
@@ -58,8 +59,64 @@ class FlowClient:
             "x-browser-year": "2026",
             "x-client-data": "CJS2yQEIpLbJAQipncoBCNj9ygEIlKHLAQiFoM0BGP6lzwE="
         }
-        # 发车策略改为“请求到就发”：
+        # 发车策略改为”请求到就发”：
         # 不在 flow2api 本地对提交做批次整形或排队，避免把同批请求打成阶梯。
+
+        # upsample 并发控制：上游图片生成结果集中返回时，所有请求同时触发 upsample
+        # 会导致大量打码请求同时涌入，需用信号量+错峰延迟分散压力。
+        # 信号量懒初始化，避免在事件循环启动前创建。
+        self._upsample_semaphore: Optional[asyncio.Semaphore] = None
+        self._upsample_entry_count: int = 0  # 累计进入 gate 的次数，用于计算错峰 slot
+
+    @staticmethod
+    def _is_load_test_prompt(prompt: Optional[str]) -> bool:
+        text = str(prompt or "")
+        return "并发自测样本" in text or "图片并发自测" in text
+
+    def _log_load_test_attempt(
+        self,
+        *,
+        prompt: Optional[str],
+        stage: str,
+        token_id: Optional[int],
+        project_id: str,
+        model_name: str,
+        attempt_trace: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self._is_load_test_prompt(prompt):
+            return
+        try:
+            runtime = perf_monitor.get_runtime_snapshot(include_top_processes=True, top_process_limit=5)
+            process_info = runtime.get("process") or {}
+            system_info = runtime.get("system") or {}
+            payload: Dict[str, Any] = {
+                "stage": stage,
+                "token_id": token_id,
+                "project_id": project_id,
+                "model_name": model_name,
+                "process_cpu_percent": process_info.get("cpu_percent", -1),
+                "process_memory_rss_mb": process_info.get("memory_rss_mb", -1),
+                "asyncio_tasks": process_info.get("asyncio_tasks", -1),
+                "system_cpu_percent": system_info.get("cpu_percent", -1),
+                "top_processes": runtime.get("top_processes") or [],
+            }
+            if attempt_trace:
+                payload["attempt"] = attempt_trace.get("attempt")
+                payload["recaptcha_ms"] = attempt_trace.get("recaptcha_ms", 0)
+                payload["launch_queue_ms"] = attempt_trace.get("launch_queue_ms", 0)
+                payload["launch_stagger_ms"] = attempt_trace.get("launch_stagger_ms", 0)
+                payload["duration_ms"] = attempt_trace.get("duration_ms", 0)
+                payload["success"] = attempt_trace.get("success")
+                payload["http_attempts"] = (attempt_trace.get("http_attempts") or [])[:3]
+                if attempt_trace.get("error"):
+                    payload["error"] = attempt_trace.get("error")
+            if extra:
+                payload.update(extra)
+            perf_monitor.record_loadtest_event("attempt", payload)
+            debug_logger.log_info(f"[LOADTEST_IMAGE_ATTEMPT] {json.dumps(payload, ensure_ascii=False, default=str)}")
+        except Exception as exc:
+            debug_logger.log_warning(f"[LOADTEST_IMAGE_ATTEMPT] 日志采样失败: {exc}")
 
     def _generate_user_agent(self, account_id: str = None) -> str:
         """基于账号ID生成固定的 User-Agent
@@ -130,7 +187,7 @@ class FlowClient:
         
         # 缓存结果
         self._user_agent_cache[account_id] = user_agent
-        
+
         return user_agent
 
     def _set_request_fingerprint(self, fingerprint: Optional[Dict[str, Any]]):
@@ -441,6 +498,37 @@ class FlowClient:
     async def _release_video_launch_gate(self, token_id: Optional[int]):
         """保留接口形状，当前无需释放任何本地发车状态。"""
         return
+
+    async def _acquire_upsample_gate(self) -> float:
+        """获取 upsample 并发槽位，返回应等待的错峰延迟秒数。
+
+        工作原理：
+        - 用 asyncio.Semaphore 限制最大并发放大数（config.flow_image_upsample_concurrency）。
+        - 在获得槽位后，根据当前槽位在本批次中的序号，计算一个错峰延迟，
+          使同批并发的多个 upsample 请求分散打码，避免集中击穿打码服务。
+        - 延迟 = (slot_seq % concurrency) * stagger_interval
+          例如：concurrency=8, stagger=300ms → 第0个立即开始，第1个延迟300ms，…第7个延迟2100ms。
+        """
+        concurrency = config.flow_image_upsample_concurrency
+        stagger_ms = config.flow_image_upsample_stagger_ms
+
+        if concurrency > 0 and self._upsample_semaphore is None:
+            self._upsample_semaphore = asyncio.Semaphore(concurrency)
+
+        if self._upsample_semaphore is not None:
+            await self._upsample_semaphore.acquire()
+
+        # 计算当前请求在本批次中的槽位序号，用于错峰
+        effective_concurrency = max(1, concurrency if concurrency > 0 else 1)
+        slot = self._upsample_entry_count % effective_concurrency
+        self._upsample_entry_count += 1
+
+        return (slot * stagger_ms) / 1000.0
+
+    async def _release_upsample_gate(self) -> None:
+        """释放 upsample 并发槽位。"""
+        if self._upsample_semaphore is not None:
+            self._upsample_semaphore.release()
 
     async def _make_image_generation_request(
         self,
@@ -937,6 +1025,14 @@ class FlowClient:
                 attempt_trace["success"] = True
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
                 perf_trace["generation_attempts"].append(attempt_trace)
+                self._log_load_test_attempt(
+                    prompt=prompt,
+                    stage="generate_image_attempt_done",
+                    token_id=token_id,
+                    project_id=project_id,
+                    model_name=model_name,
+                    attempt_trace=attempt_trace,
+                )
                 perf_trace["final_success_attempt"] = retry_attempt + 1
                 return result, session_id, perf_trace
             except Exception as e:
@@ -945,6 +1041,14 @@ class FlowClient:
                 attempt_trace["error"] = str(e)[:240]
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
                 perf_trace["generation_attempts"].append(attempt_trace)
+                self._log_load_test_attempt(
+                    prompt=prompt,
+                    stage="generate_image_attempt_failed",
+                    token_id=token_id,
+                    project_id=project_id,
+                    model_name=model_name,
+                    attempt_trace=attempt_trace,
+                )
                 should_retry = await self._handle_retryable_generation_error(
                     error=e,
                     retry_attempt=retry_attempt,
@@ -992,72 +1096,83 @@ class FlowClient:
         max_retries = 3
         last_error = None
 
-        for retry_attempt in range(max_retries):
-            # 获取 reCAPTCHA token - 使用 IMAGE_GENERATION action
-            recaptcha_token, browser_id = await self._get_recaptcha_token(
-                project_id,
-                action="IMAGE_GENERATION",
-                token_id=token_id
-            )
-            if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
-                should_retry = await self._handle_missing_recaptcha_token(
-                    retry_attempt=retry_attempt,
-                    max_retries=max_retries,
-                    browser_id=browser_id,
-                    project_id=project_id,
-                    log_prefix="[IMAGE UPSAMPLE] 放大",
+        # 并发控制：限制同时进行放大的请求数，并错峰分散打码压力
+        stagger_delay_s = await self._acquire_upsample_gate()
+        try:
+            if stagger_delay_s > 0:
+                debug_logger.log_info(
+                    f"[IMAGE UPSAMPLE] 错峰等待 {stagger_delay_s:.2f}s，token_id={token_id}"
                 )
-                if should_retry:
-                    continue
-                raise last_error
-            upsample_session_id = session_id or self._generate_session_id()
+                await asyncio.sleep(stagger_delay_s)
 
-            json_data = {
-                "mediaId": media_id,
-                "targetResolution": target_resolution,
-                "clientContext": {
-                    "recaptchaContext": {
-                        "token": recaptcha_token,
-                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
-                    },
-                    "sessionId": upsample_session_id,
-                    "projectId": project_id,
-                    "tool": "PINHOLE",
-                    "userPaygateTier": user_paygate_tier
+            for retry_attempt in range(max_retries):
+                # 获取 reCAPTCHA token - 使用 IMAGE_GENERATION action
+                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                    project_id,
+                    action="IMAGE_GENERATION",
+                    token_id=token_id
+                )
+                if not recaptcha_token:
+                    last_error = Exception("Failed to obtain reCAPTCHA token")
+                    should_retry = await self._handle_missing_recaptcha_token(
+                        retry_attempt=retry_attempt,
+                        max_retries=max_retries,
+                        browser_id=browser_id,
+                        project_id=project_id,
+                        log_prefix="[IMAGE UPSAMPLE] 放大",
+                    )
+                    if should_retry:
+                        continue
+                    raise last_error
+                upsample_session_id = session_id or self._generate_session_id()
+
+                json_data = {
+                    "mediaId": media_id,
+                    "targetResolution": target_resolution,
+                    "clientContext": {
+                        "recaptchaContext": {
+                            "token": recaptcha_token,
+                            "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
+                        },
+                        "sessionId": upsample_session_id,
+                        "projectId": project_id,
+                        "tool": "PINHOLE",
+                        "userPaygateTier": user_paygate_tier
+                    }
                 }
-            }
 
-            # 4K/2K 放大使用专用超时，因为返回的 base64 数据量很大
-            try:
-                result = await self._make_request(
-                    method="POST",
-                    url=url,
-                    json_data=json_data,
-                    use_at=True,
-                    at_token=at,
-                    timeout=config.upsample_timeout
-                )
+                # 4K/2K 放大使用专用超时，因为返回的 base64 数据量很大
+                try:
+                    result = await self._make_request(
+                        method="POST",
+                        url=url,
+                        json_data=json_data,
+                        use_at=True,
+                        at_token=at,
+                        timeout=config.upsample_timeout
+                    )
 
-                # 返回 base64 编码的图片
-                return result.get("encodedImage", "")
-            except Exception as e:
-                last_error = e
-                should_retry = await self._handle_retryable_generation_error(
-                    error=e,
-                    retry_attempt=retry_attempt,
-                    max_retries=max_retries,
-                    browser_id=browser_id,
-                    project_id=project_id,
-                    log_prefix="[IMAGE UPSAMPLE] 放大",
-                )
-                if should_retry:
-                    continue
-                raise
-            finally:
-                await self._notify_browser_captcha_request_finished(browser_id)
+                    # 返回 base64 编码的图片
+                    return result.get("encodedImage", "")
+                except Exception as e:
+                    last_error = e
+                    should_retry = await self._handle_retryable_generation_error(
+                        error=e,
+                        retry_attempt=retry_attempt,
+                        max_retries=max_retries,
+                        browser_id=browser_id,
+                        project_id=project_id,
+                        log_prefix="[IMAGE UPSAMPLE] 放大",
+                    )
+                    if should_retry:
+                        continue
+                    raise
+                finally:
+                    await self._notify_browser_captcha_request_finished(browser_id)
 
-        raise last_error
+            raise last_error
+        finally:
+            await self._release_upsample_gate()
 
     # ========== 视频生成 (使用AT) - 异步返回 ==========
 

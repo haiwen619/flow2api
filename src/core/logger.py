@@ -377,7 +377,7 @@ class DebugLogger:
             result = {}
             for key, value in data.items():
                 if (
-                    key in {"encodedImage", "base64", "imageData", "data"}
+                    key in {"encodedImage", "base64", "imageData", "data", "token"}
                     and isinstance(value, str)
                     and len(value) > max_length
                 ):
