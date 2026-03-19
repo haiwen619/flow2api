@@ -33,7 +33,7 @@ poll_interval = 3.0
 max_poll_attempts = 200
 
 reauth_cookie_invalid_auto_login_enabled = false
-block_gemini_25_flash_image = true
+block_gemini_25_flash_image = false
 [server]
 host = "127.0.0.1"
 port = 8000
@@ -89,7 +89,7 @@ node_name = "standalone-node"
 master_base_url = ""
 node_public_base_url = "http://127.0.0.1:8000"
 node_weight = 100
-node_max_concurrency = 100
+node_max_concurrency = 200
 heartbeat_interval_seconds = 10
 heartbeat_timeout_seconds = 30
 dispatch_timeout_seconds = 1800

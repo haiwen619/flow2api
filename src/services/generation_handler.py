@@ -780,13 +780,14 @@ class GenerationHandler:
                     break
                 except asyncio.TimeoutError:
                     next_task.cancel()
-                    with suppress(Exception):
+                    # Python 3.12 raises CancelledError as BaseException here.
+                    with suppress(BaseException):
                         await next_task
                     raise
 
                 yield chunk
         finally:
-            with suppress(Exception):
+            with suppress(BaseException):
                 await generator.aclose()
 
     @staticmethod
@@ -802,9 +803,11 @@ class GenerationHandler:
         model: Optional[str] = None,
         token_id: Optional[int] = None,
         prompt: Optional[str] = None,
+        is_load_test: Optional[bool] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if not self._is_load_test_prompt(prompt):
+        load_test_mode = self._is_load_test_prompt(prompt) if is_load_test is None else bool(is_load_test)
+        if not load_test_mode:
             return
         try:
             runtime = perf_monitor.get_runtime_snapshot(include_top_processes=True, top_process_limit=5)
@@ -852,7 +855,8 @@ class GenerationHandler:
         model: str,
         prompt: str,
         images: Optional[List[bytes]] = None,
-        stream: bool = False
+        stream: bool = False,
+        is_load_test: bool = False,
     ) -> AsyncGenerator:
         """统一生成入口
 
@@ -871,7 +875,7 @@ class GenerationHandler:
             "request_id": request_id,
             "model": model,
             "status": "processing",
-            "is_load_test": self._is_load_test_prompt(prompt),
+            "is_load_test": bool(is_load_test or self._is_load_test_prompt(prompt)),
         }
         generation_result = self._create_generation_result()
         request_log_state: Dict[str, Any] = {"id": None, "progress": 0, "status_text": "started", "finalized": False}
@@ -907,6 +911,7 @@ class GenerationHandler:
             request_id=request_id,
             model=model,
             prompt=prompt,
+            is_load_test=bool(perf_trace.get("is_load_test")),
             extra={
                 "generation_type": generation_type,
             },
@@ -1175,6 +1180,7 @@ class GenerationHandler:
                 model=model,
                 token_id=token.id if token else None,
                 prompt=prompt,
+                is_load_test=bool(perf_trace.get("is_load_test")),
                 extra={
                     "status": "success",
                     "total_ms": perf_trace.get("total_ms", 0),
@@ -1267,6 +1273,7 @@ class GenerationHandler:
                 model=model,
                 token_id=token.id if token else None,
                 prompt=prompt,
+                is_load_test=bool(perf_trace.get("is_load_test")),
                 extra={
                     "status": "failed",
                     "error": error_msg,
@@ -1380,6 +1387,7 @@ class GenerationHandler:
             image_trace["diagnostic_mode"] = bool(perf_trace.get("is_load_test"))
 
         normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
+        is_load_test = bool(perf_trace.get("is_load_test")) if isinstance(perf_trace, dict) else False
 
         if image_trace is not None:
             image_trace["slot_wait_ms"] = 0
@@ -1392,6 +1400,7 @@ class GenerationHandler:
                 model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
                 token_id=token.id,
                 prompt=prompt,
+                is_load_test=is_load_test,
                 extra={
                     "slot_wait_timeout_seconds": int(slot_wait_timeout),
                 },
@@ -1455,6 +1464,7 @@ class GenerationHandler:
                 model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
                 token_id=token.id,
                 prompt=prompt,
+                is_load_test=is_load_test,
                 extra={
                     "slot_wait_ms": waited_ms,
                 },
@@ -1512,6 +1522,7 @@ class GenerationHandler:
                 model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
                 token_id=token.id,
                 prompt=prompt,
+                is_load_test=is_load_test,
                 extra={
                     "upload_images_ms": image_trace.get("upload_images_ms", 0) if image_trace else 0,
                     "input_image_count": len(image_inputs),
@@ -1544,6 +1555,7 @@ class GenerationHandler:
                 token_id=token.id,
                 token_image_concurrency=token.image_concurrency,
                 progress_callback=_image_progress_callback,
+                is_load_test=is_load_test,
             )
             if image_trace is not None:
                 image_trace["generate_api_ms"] = int((time.time() - generate_started_at) * 1000)
@@ -1566,6 +1578,7 @@ class GenerationHandler:
                 model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
                 token_id=token.id,
                 prompt=prompt,
+                is_load_test=is_load_test,
                 extra={
                     "generate_api_ms": image_trace.get("generate_api_ms", 0) if image_trace else 0,
                     "launch_queue_wait_ms": image_trace.get("launch_queue_wait_ms", 0) if image_trace else 0,
@@ -1599,6 +1612,7 @@ class GenerationHandler:
                     model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
                     token_id=token.id,
                     prompt=prompt,
+                    is_load_test=is_load_test,
                     extra={
                         "target_resolution": resolution_name,
                     },
@@ -1632,6 +1646,7 @@ class GenerationHandler:
                                 model=perf_trace.get("model") if isinstance(perf_trace, dict) else None,
                                 token_id=token.id,
                                 prompt=prompt,
+                                is_load_test=is_load_test,
                                 extra={
                                     "target_resolution": resolution_name,
                                     "upsample_ms": image_trace.get("upsample_ms", 0) if image_trace else 0,

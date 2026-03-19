@@ -9,7 +9,14 @@ from urllib import request as urllib_request
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from .models import normalize_captcha_priority_order, SUPPORTED_CAPTCHA_METHODS_ORDER
+from .models import (
+    normalize_captcha_priority_order,
+    SUPPORTED_CAPTCHA_METHODS_ORDER,
+    DEFAULT_REMOTE_BROWSER_TIMEOUT,
+    normalize_remote_browser_servers,
+    get_primary_remote_browser_server,
+    normalize_remote_browser_timeout,
+)
 
 class Config:
     """Application configuration"""
@@ -32,6 +39,16 @@ class Config:
     def reload_config(self):
         """Reload configuration from file"""
         self._config = self._load_config()
+
+    def _reload_section(self, *sections: str):
+        """Reload only specific section(s) from the TOML file into memory.
+
+        Unlike reload_config(), this does NOT replace the entire _config dict, so
+        in-memory state loaded from the database (e.g. captcha config) is preserved.
+        """
+        fresh = self._load_config()
+        for section in sections:
+            self._config[section] = fresh.get(section, {})
 
     def get_raw_config(self) -> Dict[str, Any]:
         """Get raw configuration dictionary"""
@@ -329,7 +346,7 @@ class Config:
             )
 
         self._config_path.write_text(content, encoding="utf-8")
-        self.reload_config()
+        self._reload_section("flow")
 
     @property
     def poll_interval(self) -> float:
@@ -575,7 +592,7 @@ class Config:
             value_literal=json.dumps(normalized_value, ensure_ascii=False),
         )
         self._config_path.write_text(content, encoding="utf-8")
-        self.reload_config()
+        self._reload_section("global")
 
     @property
     def admin_password(self) -> str:
@@ -683,7 +700,7 @@ class Config:
                 value_literal=value_literal,
             )
         self._config_path.write_text(content, encoding="utf-8")
-        self.reload_config()
+        self._reload_section("cluster")
 
     def rotate_cluster_key(self) -> str:
         new_key = f"fcs_cluster_{secrets.token_urlsafe(24)}"
@@ -919,45 +936,105 @@ class Config:
         self._config["captcha"]["capsolver_base_url"] = base_url
 
     @property
+    def remote_browser_servers(self) -> List[Dict[str, Any]]:
+        captcha_cfg = self._config.get("captcha", {})
+        return normalize_remote_browser_servers(
+            captcha_cfg.get("remote_browser_servers"),
+            legacy_base_url=captcha_cfg.get("remote_browser_base_url", ""),
+            legacy_api_key=captcha_cfg.get("remote_browser_api_key", ""),
+            legacy_timeout=captcha_cfg.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+        )
+
+    def set_remote_browser_servers(self, servers: Any):
+        if "captcha" not in self._config:
+            self._config["captcha"] = {}
+        normalized = normalize_remote_browser_servers(
+            servers,
+            legacy_base_url=self._config["captcha"].get("remote_browser_base_url", ""),
+            legacy_api_key=self._config["captcha"].get("remote_browser_api_key", ""),
+            legacy_timeout=self._config["captcha"].get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+        )
+        self._config["captcha"]["remote_browser_servers"] = list(normalized)
+        primary = get_primary_remote_browser_server(
+            normalized,
+            legacy_timeout=self._config["captcha"].get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+        )
+        self._config["captcha"]["remote_browser_base_url"] = primary.get("base_url", "")
+        self._config["captcha"]["remote_browser_api_key"] = primary.get("api_key", "")
+        self._config["captcha"]["remote_browser_timeout"] = primary.get("timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
+
+    @property
     def remote_browser_base_url(self) -> str:
         """Get remote browser captcha service base URL"""
-        return self._config.get("captcha", {}).get("remote_browser_base_url", "")
+        value = str(self._config.get("captcha", {}).get("remote_browser_base_url", "") or "").strip()
+        if value:
+            return value
+        return str(get_primary_remote_browser_server(self.remote_browser_servers).get("base_url", "") or "").strip()
 
     def set_remote_browser_base_url(self, base_url: str):
         """Set remote browser captcha service base URL"""
         if "captcha" not in self._config:
             self._config["captcha"] = {}
-        self._config["captcha"]["remote_browser_base_url"] = (base_url or "").strip()
+        normalized_base_url = str(base_url or "").strip().rstrip("/")
+        self._config["captcha"]["remote_browser_base_url"] = normalized_base_url
+        servers = self.remote_browser_servers
+        if servers:
+            servers[0]["base_url"] = normalized_base_url
+        elif normalized_base_url:
+            servers = normalize_remote_browser_servers(
+                [],
+                legacy_base_url=normalized_base_url,
+                legacy_api_key=self._config["captcha"].get("remote_browser_api_key", ""),
+                legacy_timeout=self._config["captcha"].get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+            )
+        if servers:
+            self._config["captcha"]["remote_browser_servers"] = servers
 
     @property
     def remote_browser_api_key(self) -> str:
         """Get remote browser captcha service API key"""
-        return self._config.get("captcha", {}).get("remote_browser_api_key", "")
+        value = str(self._config.get("captcha", {}).get("remote_browser_api_key", "") or "").strip()
+        if value:
+            return value
+        return str(get_primary_remote_browser_server(self.remote_browser_servers).get("api_key", "") or "").strip()
 
     def set_remote_browser_api_key(self, api_key: str):
         """Set remote browser captcha service API key"""
         if "captcha" not in self._config:
             self._config["captcha"] = {}
-        self._config["captcha"]["remote_browser_api_key"] = (api_key or "").strip()
+        normalized_api_key = str(api_key or "").strip()
+        self._config["captcha"]["remote_browser_api_key"] = normalized_api_key
+        servers = self.remote_browser_servers
+        if servers:
+            servers[0]["api_key"] = normalized_api_key
+        elif normalized_api_key:
+            servers = normalize_remote_browser_servers(
+                [],
+                legacy_base_url=self._config["captcha"].get("remote_browser_base_url", ""),
+                legacy_api_key=normalized_api_key,
+                legacy_timeout=self._config["captcha"].get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+            )
+        if servers:
+            self._config["captcha"]["remote_browser_servers"] = servers
 
     @property
     def remote_browser_timeout(self) -> int:
         """Get remote browser captcha request timeout (seconds)"""
-        timeout = self._config.get("captcha", {}).get("remote_browser_timeout", 60)
-        try:
-            return max(5, int(timeout))
-        except Exception:
-            return 60
+        timeout = self._config.get("captcha", {}).get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
+        if timeout not in (None, ""):
+            return normalize_remote_browser_timeout(timeout)
+        return int(get_primary_remote_browser_server(self.remote_browser_servers).get("timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT))
 
     def set_remote_browser_timeout(self, timeout: int):
         """Set remote browser captcha request timeout (seconds)"""
         if "captcha" not in self._config:
             self._config["captcha"] = {}
-        try:
-            normalized = max(5, int(timeout))
-        except Exception:
-            normalized = 60
+        normalized = normalize_remote_browser_timeout(timeout)
         self._config["captcha"]["remote_browser_timeout"] = normalized
+        servers = self.remote_browser_servers
+        if servers:
+            servers[0]["timeout"] = normalized
+            self._config["captcha"]["remote_browser_servers"] = servers
 
     @property
     def remote_browser_proxy_enabled(self) -> bool:
@@ -1328,7 +1405,7 @@ class Config:
             value_literal="[" + ", ".join(f'\"{item}\"' for item in linux_headed_ip_values) + "]",
         )
         self._config_path.write_text(content, encoding="utf-8")
-        self.reload_config()
+        self._reload_section("server")
 
     def update_rpa_test_bitbrowser_ids(self, *, local_ids: List[str], server_ids: List[str]):
         """Persist [rpa] test bitbrowser id values into setting.toml."""
@@ -1363,7 +1440,7 @@ class Config:
             value_literal=json.dumps(normalized_server_ids, ensure_ascii=False),
         )
         self._config_path.write_text(content, encoding="utf-8")
-        self.reload_config()
+        self._reload_section("rpa")
 
 
 # Global config instance

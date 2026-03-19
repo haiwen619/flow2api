@@ -1,7 +1,8 @@
 """Data models for Flow2API"""
 import json
+import uuid
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Optional, List, Union, Any, Literal
+from typing import Optional, List, Union, Any, Literal, Dict
 from datetime import datetime
 
 
@@ -14,6 +15,8 @@ SUPPORTED_CAPTCHA_METHODS_ORDER = [
     "browser",
     "personal",
 ]
+
+DEFAULT_REMOTE_BROWSER_TIMEOUT = 60
 
 
 def normalize_captcha_priority_order(value: Any) -> List[str]:
@@ -41,6 +44,162 @@ def normalize_captcha_priority_order(value: Any) -> List[str]:
                 parsed.append(method)
 
     return parsed or ["remote_browser"]
+
+
+def normalize_remote_browser_timeout(value: Any, default: int = DEFAULT_REMOTE_BROWSER_TIMEOUT) -> int:
+    try:
+        return max(5, int(value))
+    except Exception:
+        return max(5, int(default or DEFAULT_REMOTE_BROWSER_TIMEOUT))
+
+
+def _build_remote_browser_server_id() -> str:
+    return f"rbs_{uuid.uuid4().hex[:12]}"
+
+
+def normalize_remote_browser_servers(
+    value: Any,
+    legacy_base_url: Any = "",
+    legacy_api_key: Any = "",
+    legacy_timeout: Any = DEFAULT_REMOTE_BROWSER_TIMEOUT,
+) -> List[Dict[str, Any]]:
+    raw_items: List[Any] = []
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            try:
+                decoded = json.loads(text)
+                if isinstance(decoded, list):
+                    raw_items = decoded
+                elif isinstance(decoded, dict):
+                    raw_items = [decoded]
+            except Exception:
+                raw_items = []
+    elif isinstance(value, dict):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = value
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for index, item in enumerate(raw_items):
+        if isinstance(item, str):
+            item = {"base_url": item}
+        if not isinstance(item, dict):
+            continue
+
+        server_id = str(item.get("id") or item.get("server_id") or "").strip()
+        if not server_id or server_id in seen_ids:
+            server_id = _build_remote_browser_server_id()
+        seen_ids.add(server_id)
+
+        base_url = str(item.get("base_url") or item.get("url") or "").strip().rstrip("/")
+        api_key = str(item.get("api_key") or item.get("token") or "").strip()
+        name = str(item.get("name") or item.get("label") or "").strip()
+        if not name:
+            name = base_url or f"远程打码服务 {index + 1}"
+
+        try:
+            success_count = max(0, int(item.get("success_count", item.get("successes", 0)) or 0))
+        except Exception:
+            success_count = 0
+        try:
+            failure_count = max(0, int(item.get("failure_count", item.get("failures", 0)) or 0))
+        except Exception:
+            failure_count = 0
+
+        normalized.append(
+            {
+                "id": server_id,
+                "name": name,
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout": normalize_remote_browser_timeout(
+                    item.get("timeout", item.get("request_timeout", legacy_timeout)),
+                    default=legacy_timeout,
+                ),
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "last_success_at": str(item.get("last_success_at") or "").strip(),
+                "last_error_at": str(item.get("last_error_at") or "").strip(),
+                "last_error": str(item.get("last_error") or item.get("error_message") or "").strip(),
+            }
+        )
+
+    if normalized:
+        return normalized
+
+    legacy_url = str(legacy_base_url or "").strip().rstrip("/")
+    legacy_key = str(legacy_api_key or "").strip()
+    if not legacy_url and not legacy_key:
+        return []
+
+    return [
+        {
+            "id": _build_remote_browser_server_id(),
+            "name": legacy_url or "远程打码服务 1",
+            "base_url": legacy_url,
+            "api_key": legacy_key,
+            "timeout": normalize_remote_browser_timeout(legacy_timeout),
+            "success_count": 0,
+            "failure_count": 0,
+            "last_success_at": "",
+            "last_error_at": "",
+            "last_error": "",
+        }
+    ]
+
+
+def get_primary_remote_browser_server(
+    servers: Any,
+    legacy_base_url: Any = "",
+    legacy_api_key: Any = "",
+    legacy_timeout: Any = DEFAULT_REMOTE_BROWSER_TIMEOUT,
+) -> Dict[str, Any]:
+    normalized = normalize_remote_browser_servers(
+        servers,
+        legacy_base_url=legacy_base_url,
+        legacy_api_key=legacy_api_key,
+        legacy_timeout=legacy_timeout,
+    )
+    if normalized:
+        return dict(normalized[0])
+    return {
+        "id": "",
+        "name": "",
+        "base_url": "",
+        "api_key": "",
+        "timeout": normalize_remote_browser_timeout(legacy_timeout),
+        "success_count": 0,
+        "failure_count": 0,
+        "last_success_at": "",
+        "last_error_at": "",
+        "last_error": "",
+    }
+
+
+def sort_remote_browser_servers_by_success(
+    servers: Any,
+    legacy_base_url: Any = "",
+    legacy_api_key: Any = "",
+    legacy_timeout: Any = DEFAULT_REMOTE_BROWSER_TIMEOUT,
+) -> List[Dict[str, Any]]:
+    normalized = normalize_remote_browser_servers(
+        servers,
+        legacy_base_url=legacy_base_url,
+        legacy_api_key=legacy_api_key,
+        legacy_timeout=legacy_timeout,
+    )
+    indexed_servers = list(enumerate(normalized))
+    indexed_servers.sort(
+        key=lambda item: (
+            -int(item[1].get("success_count", 0) or 0),
+            int(item[1].get("failure_count", 0) or 0),
+            item[0],
+        )
+    )
+    return [dict(server) for _, server in indexed_servers]
 
 
 class Token(BaseModel):
@@ -245,9 +404,10 @@ class CaptchaConfig(BaseModel):
     ezcaptcha_base_url: str = "https://api.ez-captcha.com"
     capsolver_api_key: str = ""
     capsolver_base_url: str = "https://api.capsolver.com"
+    remote_browser_servers: List[Dict[str, Any]] = Field(default_factory=list)
     remote_browser_base_url: str = ""
     remote_browser_api_key: str = ""
-    remote_browser_timeout: int = 60
+    remote_browser_timeout: int = DEFAULT_REMOTE_BROWSER_TIMEOUT
     remote_browser_proxy_enabled: bool = False  # 远程有头打码是否允许使用系统代理/代理池
     website_key: str = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
     page_action: str = "IMAGE_GENERATION"
@@ -275,8 +435,23 @@ class CaptchaConfig(BaseModel):
         elif method in SUPPORTED_CAPTCHA_METHODS_ORDER and not order:
             order = [method]
 
+        servers = normalize_remote_browser_servers(
+            normalized.get("remote_browser_servers"),
+            legacy_base_url=normalized.get("remote_browser_base_url", ""),
+            legacy_api_key=normalized.get("remote_browser_api_key", ""),
+            legacy_timeout=normalized.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+        )
+        primary_remote = get_primary_remote_browser_server(
+            servers,
+            legacy_timeout=normalized.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+        )
+
         normalized["captcha_priority_order"] = order
         normalized["captcha_method"] = order[0]
+        normalized["remote_browser_servers"] = servers
+        normalized["remote_browser_base_url"] = primary_remote.get("base_url", "")
+        normalized["remote_browser_api_key"] = primary_remote.get("api_key", "")
+        normalized["remote_browser_timeout"] = primary_remote.get("timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
         return normalized
 
 

@@ -20,13 +20,14 @@ class FakeGenerationHandler:
         self.non_stream_chunks = []
         self.stream_chunks = []
 
-    async def handle_generation(self, model, prompt, images=None, stream=False):
+    async def handle_generation(self, model, prompt, images=None, stream=False, is_load_test=False):
         self.calls.append(
             {
                 "model": model,
                 "prompt": prompt,
                 "images": images,
                 "stream": stream,
+                "is_load_test": is_load_test,
             }
         )
         chunks = self.stream_chunks if stream else self.non_stream_chunks

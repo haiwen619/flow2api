@@ -698,7 +698,7 @@
 
     <!-- 系统配置面板 -->
     <div id="panelSettings" class="hidden">
-      <div class="grid gap-6 lg:grid-cols-2">
+      <div class="grid items-start gap-6 lg:grid-cols-2">
         <!-- 安全配置 -->
         <div class="rounded-lg border border-border bg-background p-6 flex flex-col">
           <h3 class="text-lg font-semibold mb-4">安全配置</h3>
@@ -760,53 +760,69 @@
         <!-- 代理配置 -->
         <div class="rounded-lg border border-border bg-background p-6 flex flex-col">
           <h3 class="text-lg font-semibold mb-4">代理配置</h3>
-          <div class="space-y-4 flex-1">
-            <div>
-              <label class="inline-flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" id="cfgProxyEnabled" class="h-4 w-4 rounded border-input" />
-                <span class="text-sm font-medium">启用请求代理</span>
-              </label>
+          <p class="text-sm text-muted-foreground mb-4">
+            支持分别配置请求代理与媒体传输代理，避免图片上传、缓存下载与主请求链路互相影响。
+          </p>
+          <div class="space-y-4">
+            <div class="rounded-lg border border-border bg-muted/20 p-4 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="text-sm font-medium">请求代理</div>
+                  <p class="text-xs text-muted-foreground mt-1">
+                    用于常规 API 请求、页面调用等主链路网络访问
+                  </p>
+                </div>
+                <label class="inline-flex items-center gap-2 cursor-pointer shrink-0">
+                  <input type="checkbox" id="cfgProxyEnabled" class="h-4 w-4 rounded border-input" />
+                  <span class="text-sm font-medium">启用</span>
+                </label>
+              </div>
+              <div>
+                <label class="text-sm font-medium mb-2 block">请求代理地址</label>
+                <input id="cfgProxyUrl"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
+                <p class="text-xs text-muted-foreground mt-1">
+                  支持 HTTP 和 SOCKS5 代理
+                </p>
+              </div>
             </div>
-            <div>
-              <label class="text-sm font-medium mb-2 block">请求代理地址</label>
-              <input id="cfgProxyUrl"
-                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
-              <p class="text-xs text-muted-foreground mt-1">
-                支持 HTTP 和 SOCKS5 代理
-              </p>
-            </div>
-            <div class="pt-3 border-t border-border">
-              <label class="inline-flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" id="cfgMediaProxyEnabled" class="h-4 w-4 rounded border-input"
-                  onchange="toggleMediaProxyInput()" />
-                <span class="text-sm font-medium">媒体上传下载代理</span>
-              </label>
-              <p class="text-xs text-muted-foreground mt-1">
-                启用后，图片上传与图片/视频缓存下载可单独走该代理
-              </p>
-            </div>
-            <div id="mediaProxyUrlInput" class="hidden">
-              <label class="text-sm font-medium mb-2 block">媒体上传下载代理地址</label>
-              <input id="cfgMediaProxyUrl"
-                class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                placeholder="http://127.0.0.1:7897 或 socks5://127.0.0.1:1080" />
-              <p class="text-xs text-muted-foreground mt-1">
-                支持 HTTP 和 SOCKS5 代理
-              </p>
+            <div class="rounded-lg border border-border bg-muted/20 p-4 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="text-sm font-medium">媒体代理</div>
+                  <p class="text-xs text-muted-foreground mt-1">
+                    图片上传与图片/视频缓存下载可单独走该代理
+                  </p>
+                </div>
+                <label class="inline-flex items-center gap-2 cursor-pointer shrink-0">
+                  <input type="checkbox" id="cfgMediaProxyEnabled" class="h-4 w-4 rounded border-input"
+                    onchange="toggleMediaProxyInput()" />
+                  <span class="text-sm font-medium">启用</span>
+                </label>
+              </div>
+              <div id="mediaProxyUrlInput" class="hidden">
+                <label class="text-sm font-medium mb-2 block">媒体上传下载代理地址</label>
+                <input id="cfgMediaProxyUrl"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="http://127.0.0.1:7897 或 socks5://127.0.0.1:1080" />
+                <p class="text-xs text-muted-foreground mt-1">
+                  支持 HTTP 和 SOCKS5 代理
+                </p>
+              </div>
             </div>
           </div>
-          <div class="grid grid-cols-2 gap-2 mt-4">
+          <div class="flex flex-col gap-2 border-t border-border mt-4 pt-4 sm:flex-row sm:justify-end">
             <button id="btnTestProxy" onclick="testProxyConfig()"
-              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-4">
+              class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-4 sm:min-w-[120px]">
               测试代理
             </button>
             <button onclick="saveProxyConfig()"
-              class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4">
+              class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 sm:min-w-[120px]">
               保存配置
             </button>
           </div>
-          <p id="proxyTestResult" class="text-xs text-muted-foreground mt-2">
+          <p id="proxyTestResult" class="text-xs text-muted-foreground mt-3">
             测试目标：<code class="bg-muted px-1 py-0.5 rounded">https://labs.google/</code>
           </p>
         </div>
@@ -1335,27 +1351,24 @@
                 <p class="text-xs text-blue-800 dark:text-blue-200">
                   ℹ️ <strong>远程有头打码：</strong>通过 HTTP 调用独立打码服务获取 token，并在请求结束后回调 finish/error
                 </p>
-              </div>
-              <div>
-                <label class="text-sm font-medium mb-2 block">远程服务 Base URL</label>
-                <input id="cfgRemoteBrowserBaseUrl" type="text"
-                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="http://127.0.0.1:8060" />
-                <p class="text-xs text-muted-foreground mt-1">
-                  示例：<code class="bg-muted px-1 py-0.5 rounded">http://127.0.0.1:8060</code>
+                <p class="text-xs text-blue-700 dark:text-blue-300 mt-2">
+                  实际调用优先级：按成功次数从高到低排序；成功次数相同则按下方列表顺序选择。
                 </p>
               </div>
-              <div>
-                <label class="text-sm font-medium mb-2 block">远程服务 API Key</label>
-                <input id="cfgRemoteBrowserApiKey" type="text"
-                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="fcs_xxx" />
-              </div>
-              <div>
-                <label class="text-sm font-medium mb-2 block">远程请求超时（秒）</label>
-                <input id="cfgRemoteBrowserTimeout" type="number" min="5" max="300"
-                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="60" value="60" />
+              <div class="space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <label class="text-sm font-medium block">远程打码服务列表</label>
+                    <p class="text-xs text-muted-foreground mt-1">
+                      可同时配置多个远程节点，系统会自动优先使用成功次数更高的节点。
+                    </p>
+                  </div>
+                  <button type="button" onclick="addRemoteBrowserServerRow()"
+                    class="inline-flex h-8 items-center justify-center rounded-md border border-input bg-background px-3 text-xs hover:bg-accent">
+                    新增远程服务
+                  </button>
+                </div>
+                <div id="remoteBrowserServersList" class="space-y-3"></div>
               </div>
               <div>
                 <label class="inline-flex items-center gap-2 cursor-pointer">
@@ -1853,7 +1866,7 @@
               后台按固定节奏持续发起图片生成请求。默认目标：1 分钟内发起 200 次；模型和提示词都可以随机生成。
             </p>
           </div>
-          <div id="imageLoadTestSummary" class="text-xs text-muted-foreground"></div>
+          <div id="imageLoadTestSummary" class="text-xs text-muted-foreground break-all max-w-full lg:max-w-lg xl:max-w-2xl"></div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 mt-4">
@@ -3040,6 +3053,7 @@
     let readmeDocCache = null;
     let projectVersionCache = null;
     let captchaPriorityOrder = [];
+    let remoteBrowserServers = [];
     let currentLogsPage = 1;
     let uiMessageHistory = [];
     let uiMessageUnreadCount = 0;
@@ -6554,6 +6568,157 @@
         const enabled = $("cfgBrowserProxyEnabled").checked;
         $("browserProxyUrlInput").classList.toggle("hidden", !enabled);
       },
+      normalizeRemoteBrowserServers = (servers, fallback = {}) => {
+        const normalized = [];
+        if (Array.isArray(servers)) {
+          servers.forEach((item, index) => {
+            if (!item || typeof item !== "object") return;
+            normalized.push({
+              id: String(item.id || item.server_id || `rbs_${Date.now()}_${index}`).trim(),
+              name: String(item.name || item.label || "").trim() || `远程打码服务 ${index + 1}`,
+              base_url: String(item.base_url || item.url || "").trim(),
+              api_key: String(item.api_key || "").trim(),
+              timeout: Math.max(5, parseInt(item.timeout, 10) || parseInt(fallback.timeout, 10) || 60),
+              success_count: Math.max(0, parseInt(item.success_count, 10) || 0),
+              failure_count: Math.max(0, parseInt(item.failure_count, 10) || 0),
+              last_success_at: String(item.last_success_at || "").trim(),
+              last_error_at: String(item.last_error_at || "").trim(),
+              last_error: String(item.last_error || "").trim(),
+            });
+          });
+        }
+        if (normalized.length) return normalized;
+        const fallbackBaseUrl = String(fallback.base_url || "").trim();
+        const fallbackApiKey = String(fallback.api_key || "").trim();
+        if (!fallbackBaseUrl && !fallbackApiKey) return [];
+        return [
+          {
+            id: `rbs_${Date.now()}_0`,
+            name: "远程打码服务 1",
+            base_url: fallbackBaseUrl,
+            api_key: fallbackApiKey,
+            timeout: Math.max(5, parseInt(fallback.timeout, 10) || 60),
+            success_count: 0,
+            failure_count: 0,
+            last_success_at: "",
+            last_error_at: "",
+            last_error: "",
+          },
+        ];
+      },
+      addRemoteBrowserServerRow = () => {
+        remoteBrowserServers = [
+          ...normalizeRemoteBrowserServers(remoteBrowserServers),
+          {
+            id: `rbs_${Date.now()}_${remoteBrowserServers.length}`,
+            name: `远程打码服务 ${remoteBrowserServers.length + 1}`,
+            base_url: "",
+            api_key: "",
+            timeout: 60,
+            success_count: 0,
+            failure_count: 0,
+            last_success_at: "",
+            last_error_at: "",
+            last_error: "",
+          },
+        ];
+        renderRemoteBrowserServers();
+      },
+      updateRemoteBrowserServerField = (index, field, value) => {
+        const current = normalizeRemoteBrowserServers(remoteBrowserServers);
+        if (!current[index]) return;
+        current[index] = {
+          ...current[index],
+          [field]: field === "timeout" ? Math.max(5, parseInt(value, 10) || 60) : value,
+        };
+        remoteBrowserServers = current;
+      },
+      removeRemoteBrowserServerRow = (index) => {
+        const current = normalizeRemoteBrowserServers(remoteBrowserServers);
+        current.splice(index, 1);
+        remoteBrowserServers = current;
+        renderRemoteBrowserServers();
+      },
+      renderRemoteBrowserServers = () => {
+        const root = $("remoteBrowserServersList");
+        if (!root) return;
+        const servers = normalizeRemoteBrowserServers(remoteBrowserServers);
+        remoteBrowserServers = servers;
+        if (!servers.length) {
+          root.innerHTML = `
+            <div class="rounded-md border border-dashed border-input px-4 py-5 text-sm text-muted-foreground">
+              还没有远程打码服务，点击上方“新增远程服务”开始配置。
+            </div>
+          `;
+          return;
+        }
+        root.innerHTML = servers
+          .map((server, index) => {
+            const lastStatus = server.last_error
+              ? `最近失败: ${server.last_error_at || "-"}`
+              : server.last_success_at
+                ? `最近成功: ${server.last_success_at}`
+                : "暂无调用记录";
+            return `
+              <div class="rounded-lg border border-input bg-muted/10 p-4 space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-2">
+                    <span class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full bg-primary/10 px-2 text-xs font-semibold">
+                      ${index + 1}
+                    </span>
+                    <span class="text-sm font-medium">${escapeHtml(server.name || `远程打码服务 ${index + 1}`)}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-[11px] text-green-700">
+                      成功 ${server.success_count || 0}
+                    </span>
+                    <span class="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] text-red-700">
+                      失败 ${server.failure_count || 0}
+                    </span>
+                    <button type="button" onclick="removeRemoteBrowserServerRow(${index})"
+                      class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent">
+                      删除
+                    </button>
+                  </div>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <label class="text-sm font-medium mb-2 block">服务名称</label>
+                    <input type="text" value="${escapeHtml(server.name || "")}"
+                      onchange="updateRemoteBrowserServerField(${index}, 'name', this.value.trim())"
+                      class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="例如：香港节点 / 备用节点" />
+                  </div>
+                  <div>
+                    <label class="text-sm font-medium mb-2 block">请求超时（秒）</label>
+                    <input type="number" min="5" max="300" value="${Number(server.timeout || 60)}"
+                      onchange="updateRemoteBrowserServerField(${index}, 'timeout', this.value)"
+                      class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="60" />
+                  </div>
+                </div>
+                <div>
+                  <label class="text-sm font-medium mb-2 block">远程服务 Base URL</label>
+                  <input type="text" value="${escapeHtml(server.base_url || "")}"
+                    onchange="updateRemoteBrowserServerField(${index}, 'base_url', this.value.trim())"
+                    class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="http://127.0.0.1:8060" />
+                </div>
+                <div>
+                  <label class="text-sm font-medium mb-2 block">远程服务 API Key</label>
+                  <input type="text" value="${escapeHtml(server.api_key || "")}"
+                    onchange="updateRemoteBrowserServerField(${index}, 'api_key', this.value.trim())"
+                    class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="fcs_xxx" />
+                </div>
+                <p class="text-xs text-muted-foreground">
+                  ${escapeHtml(lastStatus)}
+                </p>
+              </div>
+            `;
+          })
+          .join("");
+      },
       loadCaptchaConfig = async () => {
         try {
           console.log("开始加载验证码配置...");
@@ -6580,12 +6745,14 @@
           $("cfgCapsolverApiKey").value = d.capsolver_api_key || "";
           $("cfgCapsolverBaseUrl").value =
             d.capsolver_base_url || "https://api.capsolver.com";
-          $("cfgRemoteBrowserBaseUrl").value =
-            d.remote_browser_base_url || "";
-          $("cfgRemoteBrowserApiKey").value =
-            d.remote_browser_api_key || "";
-          $("cfgRemoteBrowserTimeout").value =
-            d.remote_browser_timeout || 60;
+          remoteBrowserServers = normalizeRemoteBrowserServers(
+            d.remote_browser_servers,
+            {
+              base_url: d.remote_browser_base_url || "",
+              api_key: d.remote_browser_api_key || "",
+              timeout: d.remote_browser_timeout || 60,
+            },
+          );
           $("cfgRemoteBrowserProxyEnabled").checked =
             d.remote_browser_proxy_enabled || false;
           $("cfgBrowserProxyEnabled").checked =
@@ -6593,6 +6760,7 @@
           $("cfgBrowserProxyUrl").value = d.browser_proxy_url || "";
           $("cfgBrowserCount").value = d.browser_count || 1;
           renderCaptchaPriorityList();
+          renderRemoteBrowserServers();
           toggleCaptchaOptions();
           toggleBrowserProxyInput();
           console.log("验证码配置加载成功");
@@ -6612,9 +6780,8 @@
           ezBaseUrl = $("cfgEzcaptchaBaseUrl").value.trim(),
           solverApiKey = $("cfgCapsolverApiKey").value.trim(),
           solverBaseUrl = $("cfgCapsolverBaseUrl").value.trim(),
-          remoteBaseUrl = $("cfgRemoteBrowserBaseUrl").value.trim(),
-          remoteApiKey = $("cfgRemoteBrowserApiKey").value.trim(),
-          remoteTimeout = parseInt($("cfgRemoteBrowserTimeout").value) || 60,
+          normalizedRemoteServers = normalizeRemoteBrowserServers(remoteBrowserServers),
+          primaryRemoteServer = normalizedRemoteServers[0] || { base_url: "", api_key: "", timeout: 60 },
           remoteBrowserProxyEnabled = $("cfgRemoteBrowserProxyEnabled").checked,
           browserProxyEnabled = $("cfgBrowserProxyEnabled").checked,
           browserProxyUrl = $("cfgBrowserProxyUrl").value.trim(),
@@ -6631,9 +6798,7 @@
           ezBaseUrl,
           solverApiKey,
           solverBaseUrl,
-          remoteBaseUrl,
-          remoteApiKey,
-          remoteTimeout,
+          remoteBrowserServerCount: normalizedRemoteServers.length,
           remoteBrowserProxyEnabled,
           browserProxyEnabled,
           browserProxyUrl,
@@ -6653,9 +6818,10 @@
               ezcaptcha_base_url: ezBaseUrl,
               capsolver_api_key: solverApiKey,
               capsolver_base_url: solverBaseUrl,
-              remote_browser_base_url: remoteBaseUrl,
-              remote_browser_api_key: remoteApiKey,
-              remote_browser_timeout: remoteTimeout,
+              remote_browser_servers: normalizedRemoteServers,
+              remote_browser_base_url: primaryRemoteServer.base_url || "",
+              remote_browser_api_key: primaryRemoteServer.api_key || "",
+              remote_browser_timeout: parseInt(primaryRemoteServer.timeout, 10) || 60,
               remote_browser_proxy_enabled: remoteBrowserProxyEnabled,
               browser_proxy_enabled: browserProxyEnabled,
               browser_proxy_url: browserProxyUrl,
@@ -8664,7 +8830,10 @@
         `开始 ${fmtDateTimeText(job.started_at || job.created_at)}`,
       ];
       if (job.finished_at) summaryParts.push(`结束 ${fmtDateTimeText(job.finished_at)}`);
-      if (job.last_error) summaryParts.push(`最近错误：${job.last_error}`);
+      if (job.last_error) {
+        const errStr = String(job.last_error);
+        summaryParts.push(`最近错误：${errStr.length > 120 ? errStr.slice(0, 120) + "…" : errStr}`);
+      }
       if (job.summary) summaryParts.unshift(job.summary);
       $("imageLoadTestSummary").textContent = summaryParts.join(" · ");
     }

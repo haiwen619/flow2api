@@ -19,6 +19,7 @@ class FakeFlowClient:
         token_id=None,
         token_image_concurrency=None,
         progress_callback=None,
+        is_load_test=False,
     ):
         if progress_callback is not None:
             await progress_callback("solving_image_captcha", 38)

@@ -5,6 +5,7 @@ import json
 import mimetypes
 import re
 import time
+from contextlib import suppress
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
@@ -203,6 +204,42 @@ def _parse_cluster_dispatch_response_payload(
     if text:
         return _truncate_for_log(text, 1200)
     return None
+
+
+async def _stream_with_heartbeat(
+    source: AsyncIterator[Any],
+    *,
+    heartbeat_interval: float = 15.0,
+    heartbeat_payload: Any = ": keepalive\n\n",
+) -> AsyncIterator[Any]:
+    """Keep SSE streams alive during long upstream waits."""
+    iterator = source.__aiter__()
+    pending_next: Optional[asyncio.Task] = None
+
+    try:
+        while True:
+            if pending_next is None:
+                pending_next = asyncio.create_task(iterator.__anext__())
+
+            try:
+                chunk = await asyncio.wait_for(asyncio.shield(pending_next), timeout=heartbeat_interval)
+            except asyncio.TimeoutError:
+                yield heartbeat_payload
+                continue
+            except StopAsyncIteration:
+                break
+
+            pending_next = None
+            if chunk:
+                yield chunk
+    finally:
+        if pending_next is not None and not pending_next.done():
+            pending_next.cancel()
+            with suppress(BaseException):
+                await pending_next
+        if hasattr(source, "aclose"):
+            with suppress(BaseException):
+                await source.aclose()
 
 
 async def _write_cluster_dispatch_request_log(
@@ -1032,7 +1069,11 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
             stream_headers["Connection"] = "keep-alive"
             stream_headers["X-Accel-Buffering"] = "no"
             return StreamingResponse(
-                iter_stream(),
+                _stream_with_heartbeat(
+                    iter_stream(),
+                    heartbeat_interval=15.0,
+                    heartbeat_payload=b": keepalive\n\n",
+                ),
                 status_code=upstream_response.status_code,
                 media_type=upstream_response.headers.get("content-type", "text/event-stream"),
                 headers=stream_headers,
@@ -1123,6 +1164,8 @@ async def _execute_local_chat_completion(
         f"[CHAT_COMPLETIONS][INPUT] {json.dumps(_build_request_summary_for_log(request), ensure_ascii=False)}"
     )
 
+    request_extra = getattr(request, "model_extra", None) or {}
+    internal_load_test = bool(request_extra.get("flow2api_internal_load_test"))
     prompt = ""
     images: List[bytes] = []
     history_messages = request.messages or []
@@ -1276,6 +1319,7 @@ async def _execute_local_chat_completion(
                     prompt=prompt,
                     images=images if images else None,
                     stream=True,
+                    is_load_test=internal_load_test,
                 ):
                     yield chunk
                 yield "data: [DONE]\n\n"
@@ -1290,7 +1334,11 @@ async def _execute_local_chat_completion(
         }
         if response_headers:
             headers.update(response_headers)
-        return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+        return StreamingResponse(
+            _stream_with_heartbeat(generate(), heartbeat_interval=15.0, heartbeat_payload=": keepalive\n\n"),
+            media_type="text/event-stream",
+            headers=headers,
+        )
 
     try:
         result = None
@@ -1299,6 +1347,7 @@ async def _execute_local_chat_completion(
             prompt=prompt,
             images=images if images else None,
             stream=False,
+            is_load_test=internal_load_test,
         ):
             result = chunk
     finally:

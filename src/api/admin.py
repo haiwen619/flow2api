@@ -4,6 +4,7 @@ import io
 import json
 import re
 import secrets
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -24,7 +25,12 @@ from curl_cffi.requests import AsyncSession
 from ..core.auth import AuthManager
 from ..core.config import config
 from ..core.database import Database
-from ..core.models import normalize_captcha_priority_order
+from ..core.models import (
+    normalize_captcha_priority_order,
+    normalize_remote_browser_servers,
+    sort_remote_browser_servers_by_success,
+    get_primary_remote_browser_server,
+)
 from ..services.concurrency_manager import ConcurrencyManager
 from ..services.image_load_test_service import image_load_test_service
 from ..services.load_balancer import LoadBalancer
@@ -339,13 +345,57 @@ def _normalize_http_base_url(base_url: str) -> str:
 
     return normalized
 
-def _get_remote_browser_client_config() -> tuple[str, str, int]:
-    base_url = _normalize_http_base_url(config.remote_browser_base_url)
-    api_key = (config.remote_browser_api_key or "").strip()
-    if not api_key:
-        raise RuntimeError("远程打码服务 API Key 未配置")
-    timeout = max(5, int(config.remote_browser_timeout or 60))
-    return base_url, api_key, timeout
+
+def _format_remote_browser_server_label(server: Dict[str, Any]) -> str:
+    name = str(server.get("name") or "").strip()
+    base_url = str(server.get("base_url") or "").strip()
+    if name and base_url:
+        return f"{name} ({base_url})"
+    return name or base_url or str(server.get("id") or "remote_browser")
+
+
+def _get_remote_browser_client_configs() -> List[Dict[str, Any]]:
+    raw_servers = sort_remote_browser_servers_by_success(
+        getattr(config, "remote_browser_servers", []),
+        legacy_base_url=config.remote_browser_base_url,
+        legacy_api_key=config.remote_browser_api_key,
+        legacy_timeout=config.remote_browser_timeout,
+    )
+    candidates: List[Dict[str, Any]] = []
+    invalid_messages: List[str] = []
+
+    for server in raw_servers:
+        base_url_raw = str(server.get("base_url") or "").strip()
+        api_key = str(server.get("api_key") or "").strip()
+        label = _format_remote_browser_server_label(server)
+
+        if not base_url_raw:
+            invalid_messages.append(f"{label}: 未配置服务地址")
+            continue
+        try:
+            base_url = _normalize_http_base_url(base_url_raw)
+        except RuntimeError as exc:
+            invalid_messages.append(f"{label}: {exc}")
+            continue
+        if not api_key:
+            invalid_messages.append(f"{label}: 未配置 API Key")
+            continue
+
+        candidates.append(
+            {
+                **server,
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout": max(5, int(server.get("timeout") or config.remote_browser_timeout or 60)),
+            }
+        )
+
+    if candidates:
+        return candidates
+
+    if invalid_messages:
+        raise RuntimeError("无可用远程打码服务：" + "；".join(invalid_messages[:4]))
+    raise RuntimeError("远程打码服务未配置")
 
 
 def _sync_json_http_request(
@@ -509,8 +559,6 @@ async def _score_test_with_remote_browser_service(
     enterprise: bool = False,
 ) -> Dict[str, Any]:
     """调用远程有头打码服务执行页面内打码+分数校验。"""
-    base_url, api_key, timeout = _get_remote_browser_client_config()
-    endpoint = f"{base_url}/api/v1/custom-score"
     request_payload = {
         "website_url": website_url,
         "website_key": website_key,
@@ -518,27 +566,50 @@ async def _score_test_with_remote_browser_service(
         "action": action,
         "enterprise": enterprise,
     }
+    errors: List[str] = []
 
-    status_code, response_payload, response_text = await asyncio.to_thread(
-        _sync_json_http_request,
-        "POST",
-        endpoint,
-        {"Authorization": f"Bearer {api_key}"},
-        request_payload,
-        timeout,
-    )
+    for server in _get_remote_browser_client_configs():
+        try:
+            endpoint = f"{server['base_url']}/api/v1/custom-score"
+            status_code, response_payload, response_text = await asyncio.to_thread(
+                _sync_json_http_request,
+                "POST",
+                endpoint,
+                {"Authorization": f"Bearer {server['api_key']}"},
+                request_payload,
+                int(server["timeout"]),
+            )
 
-    if status_code >= 400:
-        detail = ""
-        if isinstance(response_payload, dict):
-            detail = response_payload.get("detail") or response_payload.get("message") or str(response_payload)
-        if not detail:
-            detail = (response_text or "").strip()
-        raise RuntimeError(f"远程打码服务请求失败 (HTTP {status_code}): {detail or '未知错误'}")
+            if status_code >= 400:
+                detail = ""
+                if isinstance(response_payload, dict):
+                    detail = response_payload.get("detail") or response_payload.get("message") or str(response_payload)
+                if not detail:
+                    detail = (response_text or "").strip()
+                errors.append(
+                    f"{_format_remote_browser_server_label(server)}: HTTP {status_code} {detail or '未知错误'}"
+                )
+                continue
 
-    if not isinstance(response_payload, dict):
-        raise RuntimeError("远程打码服务返回格式错误")
-    return response_payload
+            if not isinstance(response_payload, dict):
+                errors.append(f"{_format_remote_browser_server_label(server)}: 返回格式错误")
+                continue
+
+            response_payload.setdefault(
+                "remote_browser_server",
+                {
+                    "id": server.get("id"),
+                    "name": server.get("name"),
+                    "base_url": server.get("base_url"),
+                    "success_count": server.get("success_count", 0),
+                    "failure_count": server.get("failure_count", 0),
+                },
+            )
+            return response_payload
+        except Exception as exc:
+            errors.append(f"{_format_remote_browser_server_label(server)}: {exc}")
+
+    raise RuntimeError("所有远程打码服务均失败: " + " | ".join(errors[:4]))
 
 
 def set_dependencies(
@@ -557,6 +628,15 @@ def set_dependencies(
     concurrency_manager = cm
     load_balancer = lb
     cluster_manager = cluster_mgr
+
+
+def _get_loaded_service_instance(module_name: str, class_name: str = "BrowserCaptchaService"):
+    """Return an already-loaded singleton service instance without importing the module."""
+    module = sys.modules.get(module_name)
+    service_cls = getattr(module, class_name, None) if module else None
+    if service_cls is None:
+        return None
+    return getattr(service_cls, "_instance", None)
 
 
 # ========== Request Models ==========
@@ -3328,6 +3408,12 @@ async def get_logs(
     }
 
 
+@router.get("/api/logs/storage")
+async def get_log_storage(token: str = Depends(verify_admin_token)):
+    """Get request log storage stats."""
+    return await db.get_log_storage_stats()
+
+
 @router.get("/api/logs/{log_id}")
 async def get_log_detail(
     log_id: int,
@@ -3419,12 +3505,6 @@ async def get_project_version(token: str = Depends(verify_admin_token)):
             "path": str(version_path.relative_to(project_root)).replace("\\", "/"),
         },
     }
-
-
-@router.get("/api/logs/storage")
-async def get_log_storage(token: str = Depends(verify_admin_token)):
-    """Get request log storage stats."""
-    return await db.get_log_storage_stats()
 
 
 @router.post("/api/logs/cleanup")
@@ -3718,6 +3798,12 @@ async def update_captcha_config(
         request.get("captcha_priority_order", request.get("captcha_method"))
     )
     captcha_method = captcha_priority_order[0]
+    remote_browser_servers = normalize_remote_browser_servers(
+        request.get("remote_browser_servers"),
+        legacy_base_url=request.get("remote_browser_base_url"),
+        legacy_api_key=request.get("remote_browser_api_key"),
+        legacy_timeout=request.get("remote_browser_timeout", 60),
+    )
     remote_browser_base_url = request.get("remote_browser_base_url")
     remote_browser_api_key = request.get("remote_browser_api_key")
     remote_browser_timeout = request.get("remote_browser_timeout", 60)
@@ -3732,22 +3818,49 @@ async def update_captcha_config(
         if not is_valid:
             return {"success": False, "message": error_msg}
 
-    if remote_browser_base_url:
-        try:
-            remote_browser_base_url = _normalize_http_base_url(remote_browser_base_url)
-        except RuntimeError as e:
-            return {"success": False, "message": str(e)}
+    normalized_remote_servers: List[Dict[str, Any]] = []
+    for index, server in enumerate(remote_browser_servers, start=1):
+        server_name = str(server.get("name") or f"远程打码服务 {index}").strip()
+        base_url_value = str(server.get("base_url") or "").strip()
+        api_key_value = str(server.get("api_key") or "").strip()
+        timeout_value = server.get("timeout", remote_browser_timeout)
 
-    try:
-        remote_browser_timeout = max(5, int(remote_browser_timeout or 60))
-    except Exception:
-        return {"success": False, "message": "远程打码超时时间必须是整数秒"}
+        if base_url_value:
+            try:
+                base_url_value = _normalize_http_base_url(base_url_value)
+            except RuntimeError as e:
+                return {"success": False, "message": f"远程打码服务「{server_name}」配置错误: {e}"}
+        try:
+            timeout_value = max(5, int(timeout_value or 60))
+        except Exception:
+            return {"success": False, "message": f"远程打码服务「{server_name}」超时时间必须是整数秒"}
+
+        normalized_remote_servers.append(
+            {
+                **server,
+                "name": server_name,
+                "base_url": base_url_value,
+                "api_key": api_key_value,
+                "timeout": timeout_value,
+            }
+        )
+
+    primary_remote_server = get_primary_remote_browser_server(
+        normalized_remote_servers,
+        legacy_timeout=remote_browser_timeout,
+    )
+    remote_browser_base_url = primary_remote_server.get("base_url", "")
+    remote_browser_api_key = primary_remote_server.get("api_key", "")
+    remote_browser_timeout = primary_remote_server.get("timeout", 60)
 
     if captcha_method == "remote_browser":
-        if not (remote_browser_base_url or "").strip():
-            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务地址"}
-        if not (remote_browser_api_key or "").strip():
-            return {"success": False, "message": "remote_browser 模式需要配置远程打码服务 API Key"}
+        if not normalized_remote_servers:
+            return {"success": False, "message": "remote_browser 模式至少需要配置一个远程打码服务"}
+        for server in normalized_remote_servers:
+            if not str(server.get("base_url") or "").strip():
+                return {"success": False, "message": f"远程打码服务「{server.get('name') or server.get('id') or '-'}」未配置服务地址"}
+            if not str(server.get("api_key") or "").strip():
+                return {"success": False, "message": f"远程打码服务「{server.get('name') or server.get('id') or '-'}」未配置 API Key"}
 
     await db.update_captcha_config(
         captcha_method=captcha_method,
@@ -3760,6 +3873,7 @@ async def update_captcha_config(
         capsolver_api_key=capsolver_api_key,
         capsolver_base_url=capsolver_base_url,
         captcha_priority_order=captcha_priority_order,
+        remote_browser_servers=normalized_remote_servers,
         remote_browser_base_url=remote_browser_base_url,
         remote_browser_api_key=remote_browser_api_key,
         remote_browser_timeout=remote_browser_timeout,
@@ -3769,23 +3883,25 @@ async def update_captcha_config(
         browser_count=max(1, int(browser_count)) if browser_count else 1
     )
 
-    # 本地有头浏览器打码启用时刷新实例数量；禁用时主动回收实例，避免继续占用 CPU/内存
+    # 本地有头浏览器打码启用时刷新实例数量；禁用时仅回收已存在的实例，避免保存远程配置时触发本地浏览器模块初始化
     try:
-        from ..services.browser_captcha import BrowserCaptchaService
-        browser_service = await BrowserCaptchaService.get_instance(db)
         if "browser" in captcha_priority_order:
+            from ..services.browser_captcha import BrowserCaptchaService
+            browser_service = await BrowserCaptchaService.get_instance(db)
             await browser_service.reload_browser_count()
         else:
-            await browser_service.close()
+            browser_service = _get_loaded_service_instance("src.services.browser_captcha")
+            if browser_service is not None:
+                await browser_service.close()
     except Exception:
         pass
 
-    # personal 模式未启用时也回收内置浏览器实例，避免残留进程
+    # personal 模式未启用时也仅回收已存在的内置浏览器实例，避免保存非 personal 配置时触发 nodriver 检查
     if "personal" not in captcha_priority_order:
         try:
-            from ..services.browser_captcha_personal import BrowserCaptchaService as PersonalBrowserCaptchaService
-            personal_service = await PersonalBrowserCaptchaService.get_instance(db)
-            await personal_service.close()
+            personal_service = _get_loaded_service_instance("src.services.browser_captcha_personal")
+            if personal_service is not None:
+                await personal_service.close()
         except Exception:
             pass
 
@@ -3810,6 +3926,7 @@ async def get_captcha_config(token: str = Depends(verify_admin_token)):
         "ezcaptcha_base_url": captcha_config.ezcaptcha_base_url,
         "capsolver_api_key": captcha_config.capsolver_api_key,
         "capsolver_base_url": captcha_config.capsolver_base_url,
+        "remote_browser_servers": captcha_config.remote_browser_servers,
         "remote_browser_base_url": captcha_config.remote_browser_base_url,
         "remote_browser_api_key": captcha_config.remote_browser_api_key,
         "remote_browser_timeout": captcha_config.remote_browser_timeout,

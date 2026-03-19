@@ -8,7 +8,24 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db_compat import dbapi as aiosqlite, is_mysql_target
 from .config import config
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, normalize_captcha_priority_order, SUPPORTED_CAPTCHA_METHODS_ORDER
+from .models import (
+    Token,
+    TokenStats,
+    Task,
+    RequestLog,
+    AdminConfig,
+    ProxyConfig,
+    GenerationConfig,
+    CacheConfig,
+    Project,
+    CaptchaConfig,
+    PluginConfig,
+    normalize_captcha_priority_order,
+    SUPPORTED_CAPTCHA_METHODS_ORDER,
+    DEFAULT_REMOTE_BROWSER_TIMEOUT,
+    normalize_remote_browser_servers,
+    get_primary_remote_browser_server,
+)
 
 
 class Database:
@@ -62,6 +79,30 @@ class Database:
         )
         result = await cursor.fetchone()
         return result is not None
+
+    @staticmethod
+    def _serialize_remote_browser_servers(
+        servers: Any,
+        legacy_base_url: Any = "",
+        legacy_api_key: Any = "",
+        legacy_timeout: Any = DEFAULT_REMOTE_BROWSER_TIMEOUT,
+    ) -> str:
+        normalized = normalize_remote_browser_servers(
+            servers,
+            legacy_base_url=legacy_base_url,
+            legacy_api_key=legacy_api_key,
+            legacy_timeout=legacy_timeout,
+        )
+        return json.dumps(normalized, ensure_ascii=False)
+
+    @staticmethod
+    def _resolve_remote_browser_servers_from_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return normalize_remote_browser_servers(
+            row.get("remote_browser_servers"),
+            legacy_base_url=row.get("remote_browser_base_url", ""),
+            legacy_api_key=row.get("remote_browser_api_key", ""),
+            legacy_timeout=row.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+        )
 
     async def _column_exists(self, db, table_name: str, column_name: str) -> bool:
         """Check if a column exists in a table"""
@@ -353,7 +394,8 @@ class Database:
             yescaptcha_base_url = "https://api.yescaptcha.com"
             remote_browser_base_url = ""
             remote_browser_api_key = ""
-            remote_browser_timeout = 60
+            remote_browser_timeout = DEFAULT_REMOTE_BROWSER_TIMEOUT
+            remote_browser_servers = "[]"
             remote_browser_proxy_enabled = False
 
             if config_dict:
@@ -369,24 +411,41 @@ class Database:
                 yescaptcha_base_url = captcha_config.get("yescaptcha_base_url", "https://api.yescaptcha.com")
                 remote_browser_base_url = captcha_config.get("remote_browser_base_url", "")
                 remote_browser_api_key = captcha_config.get("remote_browser_api_key", "")
-                remote_browser_timeout = captcha_config.get("remote_browser_timeout", 60)
+                remote_browser_timeout = captcha_config.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
+                remote_browser_servers = self._serialize_remote_browser_servers(
+                    captcha_config.get("remote_browser_servers"),
+                    legacy_base_url=remote_browser_base_url,
+                    legacy_api_key=remote_browser_api_key,
+                    legacy_timeout=remote_browser_timeout,
+                )
+                primary_remote = get_primary_remote_browser_server(
+                    captcha_config.get("remote_browser_servers"),
+                    legacy_base_url=remote_browser_base_url,
+                    legacy_api_key=remote_browser_api_key,
+                    legacy_timeout=remote_browser_timeout,
+                )
+                remote_browser_base_url = primary_remote.get("base_url", "")
+                remote_browser_api_key = primary_remote.get("api_key", "")
+                remote_browser_timeout = primary_remote.get("timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
                 remote_browser_proxy_enabled = bool(captcha_config.get("remote_browser_proxy_enabled", False))
             try:
                 remote_browser_timeout = max(5, int(remote_browser_timeout))
             except Exception:
-                remote_browser_timeout = 60
+                remote_browser_timeout = DEFAULT_REMOTE_BROWSER_TIMEOUT
 
             await db.execute("""
                 INSERT INTO captcha_config (
                     id, captcha_method, yescaptcha_api_key, yescaptcha_base_url,
+                    remote_browser_servers,
                     remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                     remote_browser_proxy_enabled, captcha_priority_order
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 captcha_method,
                 yescaptcha_api_key,
                 yescaptcha_base_url,
+                remote_browser_servers,
                 remote_browser_base_url,
                 remote_browser_api_key,
                 remote_browser_timeout,
@@ -463,6 +522,7 @@ class Database:
                         ezcaptcha_base_url TEXT DEFAULT 'https://api.ez-captcha.com',
                         capsolver_api_key TEXT DEFAULT '',
                         capsolver_base_url TEXT DEFAULT 'https://api.capsolver.com',
+                        remote_browser_servers TEXT,
                         remote_browser_base_url TEXT DEFAULT '',
                         remote_browser_api_key TEXT DEFAULT '',
                         remote_browser_timeout INTEGER DEFAULT 60,
@@ -617,6 +677,7 @@ class Database:
                     ("capsolver_api_key", "TEXT DEFAULT ''"),
                     ("capsolver_base_url", "TEXT DEFAULT 'https://api.capsolver.com'"),
                     ("browser_count", "INTEGER DEFAULT 1"),
+                    ("remote_browser_servers", "TEXT"),
                     ("remote_browser_base_url", "TEXT DEFAULT ''"),
                     ("remote_browser_api_key", "TEXT DEFAULT ''"),
                     ("remote_browser_timeout", "INTEGER DEFAULT 60"),
@@ -889,6 +950,7 @@ class Database:
                     capsolver_api_key TEXT DEFAULT '',
                     capsolver_base_url TEXT DEFAULT 'https://api.capsolver.com',
                     captcha_priority_order TEXT,
+                    remote_browser_servers TEXT,
                     remote_browser_base_url TEXT DEFAULT '',
                     remote_browser_api_key TEXT DEFAULT '',
                     remote_browser_timeout INTEGER DEFAULT 60,
@@ -2601,6 +2663,7 @@ class Database:
             config.set_ezcaptcha_base_url(captcha_config.ezcaptcha_base_url)
             config.set_capsolver_api_key(captcha_config.capsolver_api_key)
             config.set_capsolver_base_url(captcha_config.capsolver_base_url)
+            config.set_remote_browser_servers(captcha_config.remote_browser_servers)
             config.set_remote_browser_base_url(captcha_config.remote_browser_base_url)
             config.set_remote_browser_api_key(captcha_config.remote_browser_api_key)
             config.set_remote_browser_timeout(captcha_config.remote_browser_timeout)
@@ -2732,6 +2795,7 @@ class Database:
         capsolver_api_key: str = None,
         capsolver_base_url: str = None,
         captcha_priority_order = None,
+        remote_browser_servers = None,
         remote_browser_base_url: str = None,
         remote_browser_api_key: str = None,
         remote_browser_timeout: int = None,
@@ -2775,14 +2839,47 @@ class Database:
                 new_ez_url = ezcaptcha_base_url if ezcaptcha_base_url is not None else current.get("ezcaptcha_base_url", "https://api.ez-captcha.com")
                 new_cs_key = capsolver_api_key if capsolver_api_key is not None else current.get("capsolver_api_key", "")
                 new_cs_url = capsolver_base_url if capsolver_base_url is not None else current.get("capsolver_base_url", "https://api.capsolver.com")
-                new_remote_base_url = remote_browser_base_url if remote_browser_base_url is not None else current.get("remote_browser_base_url", "")
-                new_remote_api_key = remote_browser_api_key if remote_browser_api_key is not None else current.get("remote_browser_api_key", "")
-                new_remote_timeout = remote_browser_timeout if remote_browser_timeout is not None else current.get("remote_browser_timeout", 60)
+                current_remote_servers = self._resolve_remote_browser_servers_from_row(current)
+                if remote_browser_servers is not None:
+                    new_remote_servers = normalize_remote_browser_servers(
+                        remote_browser_servers,
+                        legacy_base_url=remote_browser_base_url,
+                        legacy_api_key=remote_browser_api_key,
+                        legacy_timeout=remote_browser_timeout if remote_browser_timeout is not None else current.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+                    )
+                else:
+                    new_remote_servers = [dict(server) for server in current_remote_servers]
+                    if any(value is not None for value in (remote_browser_base_url, remote_browser_api_key, remote_browser_timeout)):
+                        if not new_remote_servers:
+                            new_remote_servers = normalize_remote_browser_servers(
+                                [],
+                                legacy_base_url=remote_browser_base_url,
+                                legacy_api_key=remote_browser_api_key,
+                                legacy_timeout=remote_browser_timeout if remote_browser_timeout is not None else current.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+                            )
+                        if new_remote_servers:
+                            if remote_browser_base_url is not None:
+                                new_remote_servers[0]["base_url"] = str(remote_browser_base_url or "").strip().rstrip("/")
+                            if remote_browser_api_key is not None:
+                                new_remote_servers[0]["api_key"] = str(remote_browser_api_key or "").strip()
+                            if remote_browser_timeout is not None:
+                                new_remote_servers[0]["timeout"] = max(5, int(remote_browser_timeout))
+                primary_remote = get_primary_remote_browser_server(
+                    new_remote_servers,
+                    legacy_timeout=remote_browser_timeout if remote_browser_timeout is not None else current.get("remote_browser_timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT),
+                )
+                new_remote_base_url = primary_remote.get("base_url", "")
+                new_remote_api_key = primary_remote.get("api_key", "")
+                new_remote_timeout = primary_remote.get("timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
+                new_remote_servers_json = self._serialize_remote_browser_servers(
+                    new_remote_servers,
+                    legacy_timeout=new_remote_timeout,
+                )
                 new_remote_proxy_enabled = remote_browser_proxy_enabled if remote_browser_proxy_enabled is not None else current.get("remote_browser_proxy_enabled", False)
                 new_proxy_enabled = browser_proxy_enabled if browser_proxy_enabled is not None else current.get("browser_proxy_enabled", False)
                 new_proxy_url = browser_proxy_url if browser_proxy_url is not None else current.get("browser_proxy_url")
                 new_browser_count = browser_count if browser_count is not None else current.get("browser_count", 1)
-                new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else 60
+                new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else DEFAULT_REMOTE_BROWSER_TIMEOUT
                 new_priority_order = json.dumps(new_order, ensure_ascii=False)
 
                 await db.execute("""
@@ -2792,12 +2889,14 @@ class Database:
                         ezcaptcha_api_key = ?, ezcaptcha_base_url = ?,
                         capsolver_api_key = ?, capsolver_base_url = ?,
                         captcha_priority_order = ?,
+                        remote_browser_servers = ?,
                         remote_browser_base_url = ?, remote_browser_api_key = ?, remote_browser_timeout = ?,
                         remote_browser_proxy_enabled = ?, browser_proxy_enabled = ?, browser_proxy_url = ?, browser_count = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
                 """, (new_method, new_yes_key, new_yes_url, new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
                       new_priority_order,
+                      new_remote_servers_json,
                       (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_remote_proxy_enabled, new_proxy_enabled, new_proxy_url, new_browser_count))
             else:
@@ -2816,9 +2915,23 @@ class Database:
                 new_ez_url = ezcaptcha_base_url if ezcaptcha_base_url is not None else "https://api.ez-captcha.com"
                 new_cs_key = capsolver_api_key if capsolver_api_key is not None else ""
                 new_cs_url = capsolver_base_url if capsolver_base_url is not None else "https://api.capsolver.com"
-                new_remote_base_url = remote_browser_base_url if remote_browser_base_url is not None else ""
-                new_remote_api_key = remote_browser_api_key if remote_browser_api_key is not None else ""
-                new_remote_timeout = remote_browser_timeout if remote_browser_timeout is not None else 60
+                new_remote_servers = normalize_remote_browser_servers(
+                    remote_browser_servers,
+                    legacy_base_url=remote_browser_base_url if remote_browser_base_url is not None else "",
+                    legacy_api_key=remote_browser_api_key if remote_browser_api_key is not None else "",
+                    legacy_timeout=remote_browser_timeout if remote_browser_timeout is not None else DEFAULT_REMOTE_BROWSER_TIMEOUT,
+                )
+                primary_remote = get_primary_remote_browser_server(
+                    new_remote_servers,
+                    legacy_timeout=remote_browser_timeout if remote_browser_timeout is not None else DEFAULT_REMOTE_BROWSER_TIMEOUT,
+                )
+                new_remote_base_url = primary_remote.get("base_url", "")
+                new_remote_api_key = primary_remote.get("api_key", "")
+                new_remote_timeout = primary_remote.get("timeout", DEFAULT_REMOTE_BROWSER_TIMEOUT)
+                new_remote_servers_json = self._serialize_remote_browser_servers(
+                    new_remote_servers,
+                    legacy_timeout=new_remote_timeout,
+                )
                 new_remote_proxy_enabled = remote_browser_proxy_enabled if remote_browser_proxy_enabled is not None else False
                 new_proxy_enabled = browser_proxy_enabled if browser_proxy_enabled is not None else False
                 new_proxy_url = browser_proxy_url
@@ -2831,16 +2944,70 @@ class Database:
                         capmonster_api_key, capmonster_base_url, ezcaptcha_api_key, ezcaptcha_base_url,
                         capsolver_api_key, capsolver_base_url,
                         captcha_priority_order,
+                        remote_browser_servers,
                         remote_browser_base_url, remote_browser_api_key, remote_browser_timeout,
                         remote_browser_proxy_enabled, browser_proxy_enabled, browser_proxy_url, browser_count)
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (new_method, new_yes_key, new_yes_url, new_cap_key, new_cap_url,
                       new_ez_key, new_ez_url, new_cs_key, new_cs_url,
                       new_priority_order,
+                      new_remote_servers_json,
                       (new_remote_base_url or "").strip(), (new_remote_api_key or "").strip(), new_remote_timeout,
                       new_remote_proxy_enabled, new_proxy_enabled, new_proxy_url, new_browser_count))
 
             await db.commit()
+
+    async def update_remote_browser_server_stats(
+        self,
+        server_id: str,
+        *,
+        success: bool = False,
+        error_message: Optional[str] = None,
+    ) -> bool:
+        normalized_server_id = str(server_id or "").strip()
+        if not normalized_server_id:
+            return False
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM captcha_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if not row:
+                return False
+
+            current = dict(row)
+            servers = self._resolve_remote_browser_servers_from_row(current)
+            target = None
+            for item in servers:
+                if str(item.get("id") or "").strip() == normalized_server_id:
+                    target = item
+                    break
+
+            if target is None:
+                return False
+
+            timestamp = datetime.now(timezone.utc).isoformat()
+            if success:
+                target["success_count"] = int(target.get("success_count", 0) or 0) + 1
+                target["last_success_at"] = timestamp
+                target["last_error"] = ""
+            else:
+                target["failure_count"] = int(target.get("failure_count", 0) or 0) + 1
+                target["last_error_at"] = timestamp
+                target["last_error"] = str(error_message or "").strip()[:300]
+
+            await db.execute(
+                """
+                    UPDATE captcha_config
+                    SET remote_browser_servers = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """,
+                (self._serialize_remote_browser_servers(servers),),
+            )
+            await db.commit()
+
+        config.set_remote_browser_servers(servers)
+        return True
 
     # Plugin config operations
     async def get_plugin_config(self) -> PluginConfig:
