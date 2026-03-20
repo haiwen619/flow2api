@@ -3409,9 +3409,13 @@ async def get_logs(
 
 
 @router.get("/api/logs/storage")
-async def get_log_storage(token: str = Depends(verify_admin_token)):
+async def get_log_storage(
+    recaptcha_recent_limit: int = Query(1000, ge=1, le=10000, description="reCAPTCHA 平均耗时统计使用最近多少条日志"),
+    token: str = Depends(verify_admin_token),
+):
     """Get request log storage stats."""
-    return await db.get_log_storage_stats()
+    _ = token
+    return await db.get_log_storage_stats(recaptcha_recent_limit=recaptcha_recent_limit)
 
 
 @router.get("/api/logs/{log_id}")

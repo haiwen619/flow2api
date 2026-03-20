@@ -102,11 +102,11 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
   -d '{
     "model": "gemini-3.0-pro-image",
     "contents": [
-      { "parts": [ { "text": "A portrait poster of a cyberpunk character, neon city." } ] }
+      { "parts": [ { "text": "生成一只可爱小狗" } ] }
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "3:4", "imageSize": "2K" }
+      "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
     },
     "stream": true
   }'
@@ -173,7 +173,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "1:1", "imageSize": "1K" }
+      "imageConfig": { "aspectRatio": "4:3", "imageSize": "8K" }
     },
     "stream": true
   }'
@@ -181,8 +181,8 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 
 
 
-curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
-  -H "Authorization: Bearer sk-lPSOlrLXS6KfFq12yDdXa4d3cc9Bcx5BatP9Lf9mdVTPDFAf" \
+curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gemini-3.0-pro-image",
@@ -191,7 +191,7 @@ curl -X POST "http://23.159.248.139:3000/v1/chat/completions" \
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "9:16", "imageSize": "1K" }
+      "imageConfig": { "aspectRatio": "4:3", "imageSize": "1K" }
     },
     "stream": true
   }'

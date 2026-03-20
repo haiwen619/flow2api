@@ -1459,7 +1459,7 @@
           </div>
         </div>
         <div class="border-b border-border p-4 space-y-4">
-          <div class="grid gap-3 md:grid-cols-5">
+          <div class="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
             <div class="rounded-lg border border-border bg-muted/20 p-4">
               <div class="text-xs text-muted-foreground">今日错误总数</div>
               <div id="logsTodayErrorTotal" class="mt-2 text-2xl font-semibold text-red-600">0</div>
@@ -1479,6 +1479,36 @@
             <div class="rounded-lg border border-border bg-muted/20 p-4">
               <div class="text-xs text-muted-foreground">日志时间范围</div>
               <div id="logsTimeRange" class="mt-2 text-sm font-medium text-foreground">-</div>
+            </div>
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="flex items-center justify-between">
+                <div class="text-xs text-muted-foreground">平均耗时(秒)</div>
+                <button onclick="refreshAvgDuration()" id="logsAvgDurationRefreshBtn"
+                  class="rounded p-0.5 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                  title="手动刷新平均耗时">
+                  <svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <polyline points="23 4 23 10 17 10" />
+                    <polyline points="1 20 1 14 7 14" />
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                  </svg>
+                </button>
+              </div>
+              <div id="logsAvgDuration" class="mt-2 text-2xl font-semibold text-foreground">-</div>
+              <div id="logsAvgDurationMeta" class="mt-0.5 text-xs text-muted-foreground"></div>
+            </div>
+            <div class="rounded-lg border border-border bg-muted/20 p-4">
+              <div class="text-xs text-muted-foreground">reCAPTCHA 平均</div>
+              <div id="logsRecaptchaAvg" class="mt-2 text-2xl font-semibold text-foreground">0 ms</div>
+              <div class="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <span>最近</span>
+                <input id="logsRecaptchaLimit" type="number" min="1" max="10000" value="1000"
+                  onchange="handleLogsRecaptchaLimitChange()"
+                  onkeydown="if (event.key === 'Enter') { event.preventDefault(); handleLogsRecaptchaLimitChange(); }"
+                  class="h-7 w-24 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground" />
+                <span>条</span>
+              </div>
+              <div id="logsRecaptchaMeta" class="mt-1 text-xs text-muted-foreground"></div>
             </div>
           </div>
           <div class="rounded-lg border border-border bg-background p-4">
@@ -7117,9 +7147,23 @@
         }
         return `${current.toFixed(current >= 100 || idx === 0 ? 0 : current >= 10 ? 1 : 2)} ${units[idx]}`;
       },
+      getLogsRecaptchaRecentLimit = () => {
+        const input = $("logsRecaptchaLimit");
+        const fallback = 1000;
+        const raw = Number(input?.value || fallback);
+        const safe = Number.isFinite(raw)
+          ? Math.max(1, Math.min(10000, Math.floor(raw)))
+          : fallback;
+        if (input) input.value = String(safe);
+        return safe;
+      },
+      handleLogsRecaptchaLimitChange = async () => {
+        await loadLogStorageStats();
+      },
       loadLogStorageStats = async () => {
         try {
-          const r = await apiRequest("/api/logs/storage");
+          const recaptchaRecentLimit = getLogsRecaptchaRecentLimit();
+          const r = await apiRequest(`/api/logs/storage?recaptcha_recent_limit=${encodeURIComponent(recaptchaRecentLimit)}`);
           if (!r) return;
           const d = await r.json();
           if ($("logsDbSize")) {
@@ -7129,6 +7173,36 @@
             const oldest = d.oldest_at ? formatLogTimeBeijing(d.oldest_at) : "-";
             const newest = d.newest_at ? formatLogTimeBeijing(d.newest_at) : "-";
             $("logsTimeRange").textContent = `${oldest} ~ ${newest}`;
+          }
+          if ($("logsAvgDuration")) {
+            const overall = d.overall_avg_duration != null ? d.overall_avg_duration : null;
+            const today = d.today_avg_duration != null ? d.today_avg_duration : null;
+            if (overall != null) {
+              $("logsAvgDuration").textContent = overall.toFixed(2);
+            } else {
+              $("logsAvgDuration").textContent = "-";
+            }
+            const metaEl = $("logsAvgDurationMeta");
+            if (metaEl) {
+              const parts = [];
+              if (today != null && d.today_count > 0) parts.push(`今日 ${today.toFixed(2)}s (${d.today_count}条)`);
+              if (d.avg_sampled) parts.push("近5000条采样");
+              metaEl.textContent = parts.join(" · ");
+            }
+          }
+          if ($("logsRecaptchaAvg")) {
+            const avgMs = Number(d.recaptcha_recent_avg_ms || 0);
+            $("logsRecaptchaAvg").textContent = `${Math.round(avgMs)} ms`;
+            const input = $("logsRecaptchaLimit");
+            const effectiveLimit = Number(d.recaptcha_recent_limit || recaptchaRecentLimit || 1000);
+            if (input) input.value = String(effectiveLimit);
+            const matched = Number(d.recaptcha_recent_matched || 0);
+            const metaEl = $("logsRecaptchaMeta");
+            if (metaEl) {
+              metaEl.textContent = matched > 0
+                ? `查询最近 ${effectiveLimit} 条，命中 ${matched} 条请求`
+                : `查询最近 ${effectiveLimit} 条暂无打码数据`;
+            }
           }
         } catch (e) {
           console.error("加载日志存储统计失败:", e);
@@ -7267,6 +7341,15 @@
       },
       refreshLogs = async () => {
         await loadLogs(currentLogsPage);
+      },
+      refreshAvgDuration = async () => {
+        const btn = $("logsAvgDurationRefreshBtn");
+        if (btn) btn.disabled = true;
+        try {
+          await loadLogStorageStats();
+        } finally {
+          if (btn) btn.disabled = false;
+        }
       },
       clearAllLogs = async () => {
         if (!confirm("确定要清空所有日志吗？此操作不可恢复！")) return;
@@ -7696,6 +7779,7 @@
           );
         });
         if (t !== "cluster") stopClusterAutoRefresh();
+        if (t !== "logs") stopLogsAvgDurationAutoRefresh();
         if (t !== "loadAnalysis") {
           stopDiagAutoRefresh();
           stopCpuPreview();
@@ -7711,6 +7795,7 @@
           loadATAutoRefreshConfig();
         } else if (t === "logs") {
           loadLogs();
+          startLogsAvgDurationAutoRefresh();
         } else if (t === "cluster") {
           loadClusterConfig();
           refreshClusterDiagnostics();
@@ -8092,6 +8177,8 @@
 
     // ========== 集群诊断面板 ==========
     let _clusterAutoRefreshTimer = null;
+    let _logsAvgDurationTimer = null;
+    const _LOGS_AVG_DURATION_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
     function toggleClusterRoleFields() {
       const role = $("cfgClusterRole")?.value || "standalone";
@@ -8114,6 +8201,24 @@
       if (_clusterAutoRefreshTimer) {
         clearInterval(_clusterAutoRefreshTimer);
         _clusterAutoRefreshTimer = null;
+      }
+    }
+
+    function startLogsAvgDurationAutoRefresh() {
+      stopLogsAvgDurationAutoRefresh();
+      _logsAvgDurationTimer = setInterval(() => {
+        if (!$("panelLogs") || $("panelLogs").classList.contains("hidden")) {
+          stopLogsAvgDurationAutoRefresh();
+          return;
+        }
+        loadLogStorageStats();
+      }, _LOGS_AVG_DURATION_INTERVAL);
+    }
+
+    function stopLogsAvgDurationAutoRefresh() {
+      if (_logsAvgDurationTimer) {
+        clearInterval(_logsAvgDurationTimer);
+        _logsAvgDurationTimer = null;
       }
     }
 

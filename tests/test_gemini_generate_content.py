@@ -81,7 +81,13 @@ def test_stream_generate_content_returns_sse_chunks(client, fake_handler, monkey
                     "role": "user",
                     "parts": [{"text": "draw a city"}],
                 }
-            ]
+            ],
+            "generationConfig": {
+                "imageConfig": {
+                    "aspectRatio": "16:9",
+                    "imageSize": "1K",
+                }
+            },
         },
     )
 
@@ -104,6 +110,52 @@ def test_stream_generate_content_returns_sse_chunks(client, fake_handler, monkey
     image_part = second_chunk["candidates"][0]["content"]["parts"][0]["inlineData"]
     assert image_part["mimeType"] == "image/png"
     assert second_chunk["candidates"][0]["finishReason"] == "STOP"
+
+
+def test_generate_content_rejects_missing_aspect_ratio(client, fake_handler):
+    response = client.post(
+        "/v1beta/models/gemini-3.0-pro-image:generateContent",
+        json={
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": "draw a mountain"}],
+                }
+            ],
+            "generationConfig": {
+                "imageConfig": {
+                    "imageSize": "2K",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "imageConfig.aspectRatio is required for image generation."
+    assert fake_handler.calls == []
+
+
+def test_generate_content_rejects_missing_image_size(client, fake_handler):
+    response = client.post(
+        "/v1beta/models/gemini-3.0-pro-image:generateContent",
+        json={
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": "draw a mountain"}],
+                }
+            ],
+            "generationConfig": {
+                "imageConfig": {
+                    "aspectRatio": "16:9",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "imageConfig.imageSize is required for image generation."
+    assert fake_handler.calls == []
 
 
 def test_models_generate_content_supports_system_instruction_and_file_data(client, fake_handler):

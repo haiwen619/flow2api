@@ -2396,8 +2396,76 @@ class Database:
                 continue
         return total
 
-    async def get_log_storage_stats(self) -> Dict[str, Any]:
+    @classmethod
+    def _extract_request_recaptcha_ms(cls, payload: Any) -> Optional[int]:
+        """Extract total reCAPTCHA time for a single request log from response_body."""
+        decoded = payload
+        if isinstance(decoded, str):
+            text = decoded.strip()
+            if not text:
+                return None
+            try:
+                decoded = json.loads(text)
+            except Exception:
+                return None
+
+        if not isinstance(decoded, dict):
+            return None
+
+        performance = decoded.get("performance")
+        if not isinstance(performance, dict):
+            return None
+
+        total_ms = 0.0
+        found = False
+
+        candidate_nodes = [
+            performance,
+            performance.get("image_generation"),
+            performance.get("video_generation"),
+        ]
+        for node in candidate_nodes:
+            if not isinstance(node, dict):
+                continue
+            attempt_groups = [
+                node.get("generation_attempts"),
+                (node.get("upstream_trace") or {}).get("generation_attempts")
+                if isinstance(node.get("upstream_trace"), dict) else None,
+            ]
+            for attempts in attempt_groups:
+                if not isinstance(attempts, list):
+                    continue
+                for attempt in attempts:
+                    if not isinstance(attempt, dict):
+                        continue
+                    value = attempt.get("recaptcha_ms")
+                    if isinstance(value, (int, float)) and value > 0:
+                        total_ms += float(value)
+                        found = True
+
+        if not found:
+            for value in (
+                performance.get("recaptcha_ms"),
+                (performance.get("image_generation") or {}).get("recaptcha_ms")
+                if isinstance(performance.get("image_generation"), dict) else None,
+                (performance.get("video_generation") or {}).get("recaptcha_ms")
+                if isinstance(performance.get("video_generation"), dict) else None,
+            ):
+                if isinstance(value, (int, float)) and value > 0:
+                    total_ms += float(value)
+                    found = True
+
+        if not found or total_ms <= 0:
+            return None
+        return int(round(total_ms))
+
+    async def get_log_storage_stats(self, *, recaptcha_recent_limit: int = 1000) -> Dict[str, Any]:
         """Return lightweight storage stats for request logs."""
+        # Sampling threshold: use latest N rows for avg when total exceeds this
+        _AVG_SAMPLE_SIZE = 5000
+        _AVG_SAMPLE_THRESHOLD = 50000
+        safe_recaptcha_limit = max(1, min(int(recaptcha_recent_limit or 1000), 10000))
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             count_cursor = await db.execute("SELECT COUNT(1) FROM request_logs")
@@ -2409,6 +2477,59 @@ class Database:
             )
             time_row = await time_cursor.fetchone()
 
+            # Avg duration: exact for small tables, sampled (latest N rows) for large tables
+            avg_sampled = False
+            if total_logs == 0:
+                overall_avg = 0.0
+            elif total_logs <= _AVG_SAMPLE_THRESHOLD:
+                avg_cursor = await db.execute(
+                    "SELECT AVG(duration) FROM request_logs WHERE duration IS NOT NULL AND duration > 0"
+                )
+                avg_row = await avg_cursor.fetchone()
+                overall_avg = float(avg_row[0]) if avg_row and avg_row[0] else 0.0
+            else:
+                avg_cursor = await db.execute(
+                    "SELECT AVG(d) FROM (SELECT duration AS d FROM request_logs"
+                    " WHERE duration IS NOT NULL AND duration > 0"
+                    " ORDER BY ROWID DESC LIMIT ?)",
+                    (_AVG_SAMPLE_SIZE,),
+                )
+                avg_row = await avg_cursor.fetchone()
+                overall_avg = float(avg_row[0]) if avg_row and avg_row[0] else 0.0
+                avg_sampled = True
+
+            # Today's avg (UTC day boundary; front-end shows Beijing offset label)
+            today_avg_cursor = await db.execute(
+                "SELECT AVG(duration), COUNT(1) FROM request_logs"
+                " WHERE duration IS NOT NULL AND duration > 0"
+                " AND created_at >= date('now')"
+            )
+            today_avg_row = await today_avg_cursor.fetchone()
+            today_avg = float(today_avg_row[0]) if today_avg_row and today_avg_row[0] else 0.0
+            today_count = int(today_avg_row[1]) if today_avg_row and today_avg_row[1] else 0
+
+            recaptcha_cursor = await db.execute(
+                """
+                SELECT response_body
+                FROM request_logs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (safe_recaptcha_limit,),
+            )
+            recaptcha_rows = await recaptcha_cursor.fetchall()
+            recaptcha_request_values: List[int] = []
+            for row in recaptcha_rows:
+                recaptcha_ms = self._extract_request_recaptcha_ms(row["response_body"])
+                if recaptcha_ms is not None and recaptcha_ms > 0:
+                    recaptcha_request_values.append(int(recaptcha_ms))
+
+            recaptcha_avg_ms = (
+                sum(recaptcha_request_values) / len(recaptcha_request_values)
+                if recaptcha_request_values
+                else 0.0
+            )
+
         return {
             "backend": self.backend,
             "total_logs": total_logs,
@@ -2416,6 +2537,14 @@ class Database:
             "newest_at": (time_row["newest_at"] if time_row else None),
             "db_size_bytes": self._get_sqlite_storage_size_bytes() if self.backend == "sqlite" else None,
             "supports_vacuum": self.backend == "sqlite",
+            "overall_avg_duration": round(overall_avg, 2),
+            "today_avg_duration": round(today_avg, 2),
+            "today_count": today_count,
+            "avg_sampled": avg_sampled,
+            "recaptcha_recent_limit": safe_recaptcha_limit,
+            "recaptcha_recent_scanned": len(recaptcha_rows),
+            "recaptcha_recent_matched": len(recaptcha_request_values),
+            "recaptcha_recent_avg_ms": int(round(recaptcha_avg_ms)) if recaptcha_avg_ms > 0 else 0,
         }
 
     @classmethod

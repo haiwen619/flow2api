@@ -110,11 +110,27 @@ def _truncate_for_log(value: Any, limit: int = 200) -> Any:
     return value
 
 
+def _generation_config_to_dict(generation_config: Any) -> Dict[str, Any]:
+    """Normalize generationConfig to a plain dict for logging and routing."""
+    if generation_config is None:
+        return {}
+    if isinstance(generation_config, dict):
+        return generation_config
+    if hasattr(generation_config, "model_dump"):
+        try:
+            dumped = generation_config.model_dump(exclude_none=True)
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            return {}
+    return {}
+
+
 def _build_request_summary_for_log(request: ChatCompletionRequest) -> Dict[str, Any]:
     """构建 /v1/chat/completions 入参摘要日志"""
-    generation_config = request.generationConfig if isinstance(request.generationConfig, dict) else {}
-    image_config = generation_config.get("imageConfig") if isinstance(generation_config, dict) else None
-    response_modalities = generation_config.get("responseModalities") if isinstance(generation_config, dict) else None
+    generation_config = _generation_config_to_dict(request.generationConfig)
+    image_config = generation_config.get("imageConfig")
+    response_modalities = generation_config.get("responseModalities")
 
     summary: Dict[str, Any] = {
         "model": request.model,
@@ -548,25 +564,51 @@ def _normalize_image_size(image_size: Optional[str]) -> Optional[str]:
     return "__unsupported__"
 
 
-def _resolve_model_from_image_config(model: str, generation_config: Optional[Dict[str, Any]]) -> str:
+def _is_image_model_request(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in IMAGE_MODEL_FAMILIES:
+        return True
+    if normalized in MODEL_CONFIG:
+        return MODEL_CONFIG.get(normalized, {}).get("type") == "image"
+    parsed_family, _, _ = _split_image_model_id(normalized)
+    return bool(parsed_family and parsed_family in IMAGE_MODEL_FAMILIES)
+
+
+def _resolve_model_from_image_config(model: str, generation_config: Any) -> str:
     """根据 generationConfig.imageConfig 自动选择具体图片模型"""
-    if not generation_config or not isinstance(generation_config, dict):
-        if model in IMAGE_MODEL_FAMILIES:
-            default_model = f"{model}-landscape"
-            if default_model in MODEL_CONFIG:
-                return default_model
+    generation_config_dict = _generation_config_to_dict(generation_config)
+    if not generation_config_dict:
+        if _is_image_model_request(model):
+            raise HTTPException(
+                status_code=400,
+                detail="imageConfig.aspectRatio is required for image generation.",
+            )
         return model
 
-    image_config = generation_config.get("imageConfig")
+    image_config = generation_config_dict.get("imageConfig")
     if not isinstance(image_config, dict):
-        if model in IMAGE_MODEL_FAMILIES:
-            default_model = f"{model}-landscape"
-            if default_model in MODEL_CONFIG:
-                return default_model
+        if _is_image_model_request(model):
+            raise HTTPException(
+                status_code=400,
+                detail="imageConfig.aspectRatio is required for image generation.",
+            )
         return model
 
     raw_aspect_ratio = image_config.get("aspectRatio")
     raw_image_size = image_config.get("imageSize")
+
+    if _is_image_model_request(model) and not str(raw_aspect_ratio or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="imageConfig.aspectRatio is required for image generation.",
+        )
+    if _is_image_model_request(model) and not str(raw_image_size or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="imageConfig.imageSize is required for image generation.",
+        )
 
     normalized_aspect_ratio = _normalize_aspect_ratio(raw_aspect_ratio)
     normalized_image_size = _normalize_image_size(raw_image_size)
@@ -576,14 +618,6 @@ def _resolve_model_from_image_config(model: str, generation_config: Optional[Dic
 
     if raw_image_size is not None and normalized_image_size == "__unsupported__":
         raise HTTPException(status_code=400, detail=f"Unsupported imageConfig.imageSize: {raw_image_size}")
-
-    # 没有任何可映射参数时保持原模型
-    if not raw_aspect_ratio and raw_image_size is None:
-        if model in IMAGE_MODEL_FAMILIES:
-            default_model = f"{model}-landscape"
-            if default_model in MODEL_CONFIG:
-                return default_model
-        return model
 
     requested_model_config = MODEL_CONFIG.get(model)
     family = None
@@ -609,11 +643,7 @@ def _resolve_model_from_image_config(model: str, generation_config: Optional[Dic
 
     target_ratio = normalized_aspect_ratio or inferred_ratio or "landscape"
 
-    # imageSize 未显式传入时，保留原模型 size（如 -2k/-4k）
-    if raw_image_size is None:
-        target_size = inferred_size
-    else:
-        target_size = normalized_image_size
+    target_size = normalized_image_size
 
     size_suffix = f"-{target_size}" if target_size else ""
     target_model = f"{family}-{target_ratio}{size_suffix}"
@@ -871,7 +901,7 @@ def _resolve_requested_model_id(request: ChatCompletionRequest) -> tuple[str, st
     original_model = model
     auto_defaulted_model = False
     if not model and request.contents:
-        generation_config = request.generationConfig if isinstance(request.generationConfig, dict) else {}
+        generation_config = _generation_config_to_dict(request.generationConfig)
         response_modalities = generation_config.get("responseModalities", [])
         if isinstance(response_modalities, list) and any(
             str(modality).upper() == "IMAGE" for modality in response_modalities
@@ -1242,10 +1272,8 @@ async def _execute_local_chat_completion(
         images.append(await _load_image_bytes_from_uri(request.image))
 
     model_config = MODEL_CONFIG.get(resolved_model)
-    generation_config_for_log = request.generationConfig if isinstance(request.generationConfig, dict) else {}
-    image_config_for_log = (
-        generation_config_for_log.get("imageConfig") if isinstance(generation_config_for_log, dict) else None
-    )
+    generation_config_for_log = _generation_config_to_dict(request.generationConfig)
+    image_config_for_log = generation_config_for_log.get("imageConfig")
     debug_logger.log_info(
         "[CHAT_COMPLETIONS][MODEL_ROUTING] "
         + json.dumps(
