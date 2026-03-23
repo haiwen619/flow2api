@@ -68,6 +68,8 @@ class ClusterManager:
         self._inflight_dispatches: Dict[str, int] = {}  # node_id → 主节点已发出但未完成的请求数
         self._worker_heartbeat_task: Optional[asyncio.Task] = None
         self._master_cleanup_task: Optional[asyncio.Task] = None
+        # 子节点缓存：从主节点 heartbeat 响应中获取的全局已占用 token email 列表
+        self._cached_global_occupied_emails: set = set()
         self._last_master_sync: Dict[str, Any] = {
             "success": False,
             "last_attempt_at": None,
@@ -359,7 +361,31 @@ class ClusterManager:
                 existing["enabled"] = bool(manual_override)
             self._nodes[node_id] = existing
 
-        return {"success": True, "received_at": _utc_now_iso(), "node_id": node_id}
+        all_occupied = await self._build_global_occupied_emails()
+        # 排除当前请求节点自身的 token，避免子节点把自己的 token 当作"已被占用"而过滤掉
+        requesting_worker_emails = {
+            str(r.get("email") or "").strip().lower()
+            for r in _normalize_worker_token_usage_rows(payload.get("worker_tokens") or [])
+            if r.get("email")
+        }
+        occupied_emails = [e for e in all_occupied if e not in requesting_worker_emails]
+        return {
+            "success": True,
+            "received_at": _utc_now_iso(),
+            "node_id": node_id,
+            "occupied_token_emails": occupied_emails,
+        }
+
+    async def _build_global_occupied_emails(self) -> list:
+        """汇总所有子节点当前占用的 token email，供跨节点过滤使用。
+        注意：不包含调用方自身节点的 token（由调用方在返回前排除）。
+        """
+        worker_emails = await self.get_worker_used_token_emails()
+        return list(worker_emails)
+
+    def get_globally_occupied_emails(self) -> set:
+        """子节点调用：返回从上次 heartbeat 响应缓存的全局占用 email 集合。"""
+        return set(self._cached_global_occupied_emails)
 
     async def get_worker_token_usage_map(self) -> Dict[str, List[Dict[str, Any]]]:
         now_ts = time.time()
@@ -496,6 +522,17 @@ class ClusterManager:
         roundtrip_ms = int((time.perf_counter() - started_at) * 1000)
         if response.status_code >= 400:
             raise RuntimeError(f"HTTP {response.status_code}: {response.text}")
+
+        # 缓存主节点返回的全局占用 email 列表，用于本节点选 token 时过滤
+        try:
+            resp_data = response.json()
+            occupied = resp_data.get("occupied_token_emails")
+            if isinstance(occupied, list):
+                self._cached_global_occupied_emails = {
+                    str(e).strip().lower() for e in occupied if e
+                }
+        except Exception:
+            pass
 
         self._last_master_sync.update(
             {

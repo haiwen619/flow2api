@@ -257,13 +257,14 @@ async def lifespan(app: FastAPI):
     # Start 429 auto-unban task
     import asyncio
     async def auto_unban_task():
-        """定时任务：每小时检查并解禁429被禁用的token"""
+        """定时任务：每小时检查并解禁429被禁用的token，以及每日配额解禁"""
         while True:
             try:
                 await asyncio.sleep(3600)  # 每小时执行一次
                 await token_manager.auto_unban_429_tokens()
+                await token_manager.auto_unban_daily_quota_tokens()
             except Exception as e:
-                print(f"[启动] 429 自动解禁任务异常: {e}")
+                print(f"[启动] 自动解禁任务异常: {e}")
 
     async def auto_refresh_at_task():
         """定时任务：每分钟巡检活跃Token并触发AT自动刷新"""
@@ -293,7 +294,7 @@ async def lifespan(app: FastAPI):
         print(f"[启动] 集群对外地址: {config.cluster_effective_node_public_base_url or '<未解析到>'}")
         if config.cluster_role == "worker" and not config.cluster_effective_node_public_base_url:
             print("[启动] 警告: 当前为子节点，但未解析到可对外访问地址；容器/NAT 场景建议显式配置 cluster.node_public_base_url")
-    print("[启动] 429 自动解禁任务已启动（每小时执行一次）")
+    print("[启动] 429/每日配额 自动解禁任务已启动（每小时执行一次）")
     print("[启动] AT 自动刷新任务已启动（每分钟执行一次）")
     print(f"[启动] 服务绑定地址: http://{config.server_host}:{config.server_port}")
     if config.server_auto_detected and config.detected_public_ip:

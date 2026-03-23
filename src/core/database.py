@@ -1922,6 +1922,17 @@ class Database:
             """, (token_id,))
             await db.commit()
 
+    async def reset_all_error_stats(self):
+        """清空所有 token 的今日错误和累计总错误计数（管理员手动触发）。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE token_stats
+                SET today_error_count = 0,
+                    error_count = 0,
+                    consecutive_error_count = 0
+            """)
+            await db.commit()
+
     # Config operations
     async def get_admin_config(self) -> Optional[AdminConfig]:
         """Get admin configuration"""

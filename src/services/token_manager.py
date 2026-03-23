@@ -1785,6 +1785,64 @@ class TokenManager:
             banned_at=datetime.now(timezone.utc)
         )
 
+    async def ban_token_for_daily_quota(self, token_id: int):
+        """因每日配额耗尽禁用token，次日零点（UTC）自动解禁。
+
+        Args:
+            token_id: Token ID
+        """
+        now = datetime.now(timezone.utc)
+        debug_logger.log_warning(
+            f"[DAILY_QUOTA_BAN] 禁用Token {token_id} (原因: 每日配额耗尽，将于明日 UTC 零点后自动解禁)"
+        )
+        await self.db.update_token(
+            token_id,
+            is_active=False,
+            ban_reason="daily_quota_reached",
+            banned_at=now,
+        )
+
+    async def auto_unban_daily_quota_tokens(self):
+        """自动解禁因每日配额耗尽被禁用的 token。
+
+        规则：UTC 日期已翻到禁用日期的次日，即可解禁。
+        """
+        all_tokens = await self.db.get_all_tokens()
+        now = datetime.now(timezone.utc)
+        today_utc = now.date()
+
+        for token in all_tokens:
+            if token.ban_reason != "daily_quota_reached":
+                continue
+            if token.is_active:
+                continue
+            if not token.banned_at:
+                continue
+
+            banned_at_aware = token.banned_at if token.banned_at.tzinfo else token.banned_at.replace(tzinfo=timezone.utc)
+            banned_date = banned_at_aware.date()
+
+            # 只要当前 UTC 日期 > 禁用日期，即可解禁
+            if today_utc > banned_date:
+                # 检查 token 是否已过期
+                if token.at_expires:
+                    at_expires_aware = token.at_expires if token.at_expires.tzinfo else token.at_expires.replace(tzinfo=timezone.utc)
+                    if at_expires_aware <= now:
+                        debug_logger.log_info(f"[DAILY_QUOTA_UNBAN] Token {token.id} 已过期，跳过解禁")
+                        continue
+
+                debug_logger.log_info(
+                    f"[DAILY_QUOTA_UNBAN] 解禁Token {token.id} "
+                    f"(禁用日期: {banned_date}, 今日: {today_utc})"
+                )
+                await self.db.update_token(
+                    token.id,
+                    is_active=True,
+                    ban_reason=None,
+                    banned_at=None,
+                )
+                await self.db.reset_error_count(token.id)
+
     async def auto_unban_429_tokens(self):
         """自动解禁因429被禁用的token
 

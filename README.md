@@ -183,7 +183,7 @@ curl -X POST "https://limited-sky-yukon-deer.trycloudflare.com/v1/chat/completio
 
 
 
-curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{

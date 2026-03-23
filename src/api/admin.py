@@ -122,6 +122,45 @@ def _extract_error_summary(payload: Any) -> str:
     return _truncate_text(payload)
 
 
+def _extract_cluster_dispatch_token_email(payload: Any) -> str:
+    """从集群分流日志载荷中提取子节点实际使用的 Token 邮箱。"""
+    if payload is None:
+        return ""
+
+    if isinstance(payload, str):
+        raw = payload.strip()
+        if not raw:
+            return ""
+        try:
+            return _extract_cluster_dispatch_token_email(json.loads(raw))
+        except Exception:
+            match = re.search(r'"worker_token_email"\s*:\s*"([^"]+)"', raw)
+            return match.group(1).strip() if match else ""
+
+    if isinstance(payload, dict):
+        dispatch = payload.get("dispatch")
+        if isinstance(dispatch, dict):
+            email = str(dispatch.get("worker_token_email") or "").strip()
+            if email:
+                return email
+        for key in ("response", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, (dict, list, str)):
+                email = _extract_cluster_dispatch_token_email(nested)
+                if email:
+                    return email
+        return ""
+
+    if isinstance(payload, list):
+        for item in payload:
+            email = _extract_cluster_dispatch_token_email(item)
+            if email:
+                return email
+        return ""
+
+    return ""
+
+
 def _parse_optional_int(value: Any) -> Optional[int]:
     try:
         raw = str(value).strip()
@@ -1555,6 +1594,7 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
     """Get all tokens with statistics"""
     _ = token
     token_rows = await db.get_all_tokens_with_stats()
+    export_bindings = await db.get_token_export_binding_map()
     worker_usage_map = (
         await cluster_manager.get_worker_token_usage_map()
         if cluster_manager and cluster_manager.is_master()
@@ -1567,6 +1607,7 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
     result = []
     for row in token_rows:
         token_id = int(row.get("id") or 0)
+        export_binding = export_bindings.get(token_id) or {}
         pending_status = str(row.get("last_refresh_status") or "").strip().upper()
         if pending_status in {"PENDING", "RUNNING", "IN_PROGRESS"}:
             try:
@@ -1677,6 +1718,8 @@ async def get_tokens(token: str = Depends(verify_admin_token)):
             "cluster_worker_nodes": cluster_worker_nodes,
             "cluster_worker_usage_count": len(cluster_worker_usages),
             "cluster_worker_usages": cluster_worker_usages,
+            "export_binding_node_id": str(export_binding.get("node_id") or "").strip() or None,
+            "export_binding_node_name": str(export_binding.get("node_name") or "").strip() or None,
             **disable_reason_meta,
         })
 
@@ -2449,6 +2492,13 @@ async def disable_token(
     """Disable token"""
     await token_manager.disable_token(token_id, reason="manual_disabled")
     return {"success": True, "message": "Token已禁用"}
+
+
+@router.post("/api/tokens/reset-error-stats")
+async def reset_all_token_error_stats(token: str = Depends(verify_admin_token)):
+    """清空所有 Token 的今日错误和累计总错误计数。"""
+    await db.reset_all_error_stats()
+    return {"success": True, "message": "错误统计已清空"}
 
 
 @router.post("/api/tokens/{token_id}/refresh-credits")
@@ -3396,7 +3446,7 @@ async def get_logs(
         "items": [{
             "id": log.get("id"),
             "token_id": log.get("token_id"),
-            "token_email": log.get("token_email"),
+            "token_email": log.get("token_email") or _extract_cluster_dispatch_token_email(log.get("response_body_excerpt")),
             "token_username": log.get("token_username"),
             "operation": log.get("operation"),
             "proxy_source": log.get("proxy_source"),
@@ -3444,7 +3494,7 @@ async def get_log_detail(
     return {
         "id": log.get("id"),
         "token_id": log.get("token_id"),
-        "token_email": log.get("token_email"),
+        "token_email": log.get("token_email") or _extract_cluster_dispatch_token_email(log.get("response_body")),
         "token_username": log.get("token_username"),
         "operation": log.get("operation"),
         "status_code": log.get("status_code"),

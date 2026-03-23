@@ -857,6 +857,7 @@ class GenerationHandler:
         images: Optional[List[bytes]] = None,
         stream: bool = False,
         is_load_test: bool = False,
+        request_meta: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator:
         """统一生成入口
 
@@ -981,6 +982,9 @@ class GenerationHandler:
             return
 
         debug_logger.log_info(f"[GENERATION] 已选择Token: {token.id} ({token.email})")
+        if isinstance(request_meta, dict):
+            request_meta["token_id"] = int(token.id)
+            request_meta["token_email"] = str(token.email or "").strip()
         if self.load_balancer:
             pending_token_state["active"] = True
         await perf_monitor.on_request_progress(
@@ -1294,6 +1298,15 @@ class GenerationHandler:
                         yield self._create_stream_chunk(
                             f"⚠️ 账号已被标记为封禁状态 (PERMISSION_DENIED)\n"
                     )
+                elif "per_model_daily_quota_reached" in error_lower or "public_error_per_model_daily_quota_reached" in error_lower:
+                    await self.token_manager.ban_token_for_daily_quota(token.id)
+                    debug_logger.log_warning(
+                        f"[GENERATION] Token {token.id} 今日图片配额已耗尽，已暂停至明日 UTC 零点后自动恢复"
+                    )
+                    if stream:
+                        yield self._create_stream_chunk(
+                            f"⚠️ 账号今日配额已耗尽，已暂停并将于明日自动恢复\n"
+                        )
                 else:
                     # 记录错误（所有错误统一处理）
                     await self.token_manager.record_error(token.id)

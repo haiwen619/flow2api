@@ -243,11 +243,17 @@ class LoadBalancer:
         debug_logger.log_info(f"[LOAD_BALANCER] 获取到 {len(active_tokens)} 个活跃Token")
 
         worker_used_emails = set()
-        if self.cluster_manager and self.cluster_manager.is_master():
+        if self.cluster_manager:
             try:
-                worker_used_emails = await self.cluster_manager.get_worker_used_token_emails()
+                if self.cluster_manager.is_master():
+                    # 主节点：实时聚合所有子节点 + 自身占用的 email
+                    worker_used_emails = await self.cluster_manager._build_global_occupied_emails()
+                    worker_used_emails = set(worker_used_emails)
+                else:
+                    # 子节点：使用上次 heartbeat 响应中缓存的全局占用 email 列表
+                    worker_used_emails = self.cluster_manager.get_globally_occupied_emails()
             except Exception as exc:
-                debug_logger.log_warning(f"[LOAD_BALANCER] 获取子节点 Token 占用状态失败: {exc}")
+                debug_logger.log_warning(f"[LOAD_BALANCER] 获取全局 Token 占用状态失败: {exc}")
 
         if not active_tokens:
             debug_logger.log_info(f"[LOAD_BALANCER] ❌ 没有活跃的Token")
@@ -260,7 +266,7 @@ class LoadBalancer:
         for token in active_tokens:
             token_email = str(getattr(token, "email", "") or "").strip().lower()
             if token_email and token_email in worker_used_emails:
-                filtered_reasons[token.id] = "已被子节点占用"
+                filtered_reasons[token.id] = "已被其他节点占用"
                 continue
             normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
             if model and not supports_model_for_tier(model, normalized_tier):

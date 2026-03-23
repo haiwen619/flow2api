@@ -222,6 +222,24 @@ def _parse_cluster_dispatch_response_payload(
     return None
 
 
+def _extract_worker_token_meta_from_headers(headers: Any) -> Dict[str, Any]:
+    token_email = str(
+        headers.get("X-Flow2API-Worker-Token-Email")
+        or headers.get("x-flow2api-worker-token-email")
+        or ""
+    ).strip()
+    token_id_raw = str(
+        headers.get("X-Flow2API-Worker-Token-Id")
+        or headers.get("x-flow2api-worker-token-id")
+        or ""
+    ).strip()
+    token_id = int(token_id_raw) if token_id_raw.isdigit() else None
+    return {
+        "worker_token_email": token_email or None,
+        "worker_token_id": token_id,
+    }
+
+
 async def _stream_with_heartbeat(
     source: AsyncIterator[Any],
     *,
@@ -1126,6 +1144,7 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
             upstream_response = await client.post(endpoint, headers=headers, json=payload)
+        worker_token_meta = _extract_worker_token_meta_from_headers(upstream_response.headers)
         if cluster_manager:
             await cluster_manager.record_dispatch(
                 target_node_id=target_node_id,
@@ -1148,6 +1167,8 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                 "dispatch": {
                     "target_node_id": target_node_id,
                     "target_node_name": target_node_name,
+                    "worker_token_email": worker_token_meta.get("worker_token_email"),
+                    "worker_token_id": worker_token_meta.get("worker_token_id"),
                     "mode": "json",
                     "remote_status_code": upstream_response.status_code,
                 },
@@ -1210,6 +1231,7 @@ async def _execute_local_chat_completion(
     original_model: Optional[str],
     auto_defaulted_model: bool,
     response_headers: Optional[Dict[str, str]] = None,
+    internal_cluster_request: bool = False,
 ):
     debug_logger.log_info(
         f"[CHAT_COMPLETIONS][INPUT] {json.dumps(_build_request_summary_for_log(request), ensure_ascii=False)}"
@@ -1391,12 +1413,14 @@ async def _execute_local_chat_completion(
 
     try:
         result = None
+        request_meta: Dict[str, Any] = {}
         async for chunk in generation_handler.handle_generation(
             model=resolved_model,
             prompt=prompt,
             images=images if images else None,
             stream=False,
             is_load_test=internal_load_test,
+            request_meta=request_meta,
         ):
             result = chunk
     finally:
@@ -1410,6 +1434,13 @@ async def _execute_local_chat_completion(
         response = JSONResponse(content=json.loads(result))
     except json.JSONDecodeError:
         response = JSONResponse(content={"result": result})
+    if internal_cluster_request:
+        token_email = str(request_meta.get("token_email") or "").strip()
+        token_id = request_meta.get("token_id")
+        if token_email:
+            response.headers["X-Flow2API-Worker-Token-Email"] = token_email
+        if token_id is not None:
+            response.headers["X-Flow2API-Worker-Token-Id"] = str(token_id)
     if response_headers:
         for key, value in response_headers.items():
             response.headers[key] = value
@@ -1420,6 +1451,7 @@ async def _handle_chat_completion_request(
     request: ChatCompletionRequest,
     *,
     allow_cluster_dispatch: bool,
+    internal_cluster_request: bool = False,
 ):
     try:
         resolved_model, generation_type, original_model, auto_defaulted_model = _resolve_requested_model_id(request)
@@ -1448,6 +1480,7 @@ async def _handle_chat_completion_request(
                 original_model=original_model,
                 auto_defaulted_model=auto_defaulted_model,
                 response_headers=response_headers,
+                internal_cluster_request=internal_cluster_request,
             )
 
         return await _execute_local_chat_completion(
@@ -1456,6 +1489,7 @@ async def _handle_chat_completion_request(
             generation_type=generation_type,
             original_model=original_model,
             auto_defaulted_model=auto_defaulted_model,
+            internal_cluster_request=internal_cluster_request,
         )
     except HTTPException:
         raise
@@ -1825,4 +1859,8 @@ async def execute_cluster_chat_completion(
     authorized: bool = Depends(verify_internal_cluster_request),
 ):
     _ = authorized
-    return await _handle_chat_completion_request(request, allow_cluster_dispatch=False)
+    return await _handle_chat_completion_request(
+        request,
+        allow_cluster_dispatch=False,
+        internal_cluster_request=True,
+    )
