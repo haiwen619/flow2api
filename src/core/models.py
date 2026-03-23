@@ -1,5 +1,6 @@
 """Data models for Flow2API"""
 import json
+import random
 import uuid
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Optional, List, Union, Any, Literal, Dict
@@ -109,6 +110,11 @@ def normalize_remote_browser_servers(
         except Exception:
             failure_count = 0
 
+        try:
+            weight = max(1, min(100, int(item.get("weight", 50) or 50)))
+        except Exception:
+            weight = 50
+
         normalized.append(
             {
                 "id": server_id,
@@ -119,6 +125,7 @@ def normalize_remote_browser_servers(
                     item.get("timeout", item.get("request_timeout", legacy_timeout)),
                     default=legacy_timeout,
                 ),
+                "weight": weight,
                 "success_count": success_count,
                 "failure_count": failure_count,
                 "last_success_at": str(item.get("last_success_at") or "").strip(),
@@ -171,6 +178,7 @@ def get_primary_remote_browser_server(
         "base_url": "",
         "api_key": "",
         "timeout": normalize_remote_browser_timeout(legacy_timeout),
+        "weight": 50,
         "success_count": 0,
         "failure_count": 0,
         "last_success_at": "",
@@ -200,6 +208,36 @@ def sort_remote_browser_servers_by_success(
         )
     )
     return [dict(server) for _, server in indexed_servers]
+
+
+def weighted_pick_remote_browser_server(
+    candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """按 weight 权重随机选取首选节点，其余节点按成功次数降序兜底。"""
+    if len(candidates) <= 1:
+        return list(candidates)
+
+    weights = [max(1, int(s.get("weight", 50) or 50)) for s in candidates]
+    total = sum(weights)
+    r = random.uniform(0, total)
+    cumulative = 0.0
+    chosen_idx = len(candidates) - 1
+    for i, w in enumerate(weights):
+        cumulative += w
+        if r <= cumulative:
+            chosen_idx = i
+            break
+
+    chosen = candidates[chosen_idx]
+    rest = [s for i, s in enumerate(candidates) if i != chosen_idx]
+    rest_sorted = sorted(
+        rest,
+        key=lambda s: (
+            -int(s.get("success_count", 0) or 0),
+            int(s.get("failure_count", 0) or 0),
+        ),
+    )
+    return [chosen] + rest_sorted
 
 
 class Token(BaseModel):

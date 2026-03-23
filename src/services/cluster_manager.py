@@ -65,6 +65,7 @@ class ClusterManager:
         self._delegated_auto_login_lock = asyncio.Lock()
         self._local_active_requests = 0
         self._local_lock = asyncio.Lock()
+        self._inflight_dispatches: Dict[str, int] = {}  # node_id → 主节点已发出但未完成的请求数
         self._worker_heartbeat_task: Optional[asyncio.Task] = None
         self._master_cleanup_task: Optional[asyncio.Task] = None
         self._last_master_sync: Dict[str, Any] = {
@@ -89,6 +90,13 @@ class ClusterManager:
         node_id = str(target_node_id or "").strip()
         if not node_id:
             return
+
+        # 释放飞行中计数（在主节点收到响应时调用）
+        inflight = self._inflight_dispatches.get(node_id, 0)
+        if inflight > 1:
+            self._inflight_dispatches[node_id] = inflight - 1
+        elif inflight == 1:
+            self._inflight_dispatches.pop(node_id, None)
 
         is_success = error is None and (status_code is None or int(status_code) < 400)
         now_iso = _utc_now_iso()
@@ -559,15 +567,21 @@ class ClusterManager:
         if not healthy_nodes:
             return {"dispatch_to": "local", "reason": "no_healthy_nodes"}
 
+        # 快照当前飞行中的请求数（asyncio 单线程，无 await 的赋值操作是原子的）
+        inflight_snapshot = dict(self._inflight_dispatches)
+
         candidates: List[Dict[str, Any]] = []
         local_candidate: Optional[Dict[str, Any]] = None
         for node in healthy_nodes:
+            node_id_key = str(node.get("node_id") or "")
             node_max = max(0, int(node.get("node_max_concurrency") or 0))
             active = max(0, int(node.get("active_requests") or 0))
             if node_max <= 0:
                 available = 0
             else:
-                available = max(0, node_max - active)
+                # 减去已发出但尚未完成的飞行请求，防止心跳过期期间重复超发
+                inflight = inflight_snapshot.get(node_id_key, 0)
+                available = max(0, node_max - active - inflight)
             if available <= 0:
                 continue
 
@@ -608,6 +622,13 @@ class ClusterManager:
             return {"dispatch_to": "local", "reason": "selected_remote_missing_base_url"}
         if _is_unreachable_cluster_base_url(selected_base_url):
             return {"dispatch_to": "local", "reason": "selected_remote_unreachable_base_url", "node": selected}
+
+        # 记录飞行中请求，防止下次 choose_dispatch_target 再次超发到同一节点
+        selected_node_id = str(selected.get("node_id") or "")
+        if selected_node_id:
+            self._inflight_dispatches[selected_node_id] = (
+                self._inflight_dispatches.get(selected_node_id, 0) + 1
+            )
 
         return {"dispatch_to": "remote", "reason": "selected_remote", "node": selected}
 

@@ -557,8 +557,9 @@ async def _score_test_with_remote_browser_service(
     verify_url: str,
     action: str,
     enterprise: bool = False,
+    server_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """调用远程有头打码服务执行页面内打码+分数校验。"""
+    """调用远程有头打码服务执行页面内打码+分数校验。server_id 不为空时只测试指定节点。"""
     request_payload = {
         "website_url": website_url,
         "website_key": website_key,
@@ -567,8 +568,17 @@ async def _score_test_with_remote_browser_service(
         "enterprise": enterprise,
     }
     errors: List[str] = []
+    all_configs = _get_remote_browser_client_configs()
 
-    for server in _get_remote_browser_client_configs():
+    if server_id:
+        normalized_id = str(server_id).strip()
+        targets = [s for s in all_configs if str(s.get("id") or "").strip() == normalized_id]
+        if not targets:
+            raise RuntimeError(f"未找到 ID 为 {normalized_id!r} 的远程打码节点")
+    else:
+        targets = all_configs
+
+    for server in targets:
         try:
             endpoint = f"{server['base_url']}/api/v1/custom-score"
             status_code, response_payload, response_text = await asyncio.to_thread(
@@ -693,6 +703,7 @@ class CaptchaScoreTestRequest(BaseModel):
     action: Optional[str] = "homepage"
     verify_url: Optional[str] = "https://antcpt.com/score_detector/verify.php"
     enterprise: Optional[bool] = False
+    server_id: Optional[str] = None  # 指定远程打码节点 ID，不传则用默认优先级顺序
 
 
 class ServerConfigRequest(BaseModel):
@@ -3941,6 +3952,21 @@ async def get_captcha_config(token: str = Depends(verify_admin_token)):
     }
 
 
+@router.post("/api/captcha/remote-browser/reset-stats")
+async def reset_remote_browser_server_stats(
+    request: dict,
+    token: str = Depends(verify_admin_token)
+):
+    """Reset success/failure stats for a remote browser server."""
+    server_id = str(request.get("server_id") or "").strip()
+    if not server_id:
+        raise HTTPException(status_code=400, detail="server_id is required")
+    ok = await db.reset_remote_browser_server_stats(server_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="server not found")
+    return {"ok": True}
+
+
 @router.post("/api/captcha/score-test")
 async def test_captcha_score(
     request: Optional[CaptchaScoreTestRequest] = None,
@@ -4032,6 +4058,7 @@ async def test_captcha_score(
                 verify_url=verify_url,
                 action=action,
                 enterprise=enterprise,
+                server_id=req.server_id or None,
             )
             if isinstance(score_payload, dict):
                 if score_payload.get("success") is False:

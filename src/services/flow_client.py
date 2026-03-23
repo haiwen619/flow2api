@@ -18,6 +18,7 @@ from ..core.config import config
 from ..core.models import (
     normalize_captcha_priority_order,
     sort_remote_browser_servers_by_success,
+    weighted_pick_remote_browser_server,
 )
 from .perf_monitor import perf_monitor
 
@@ -1176,8 +1177,8 @@ class FlowClient:
         """
         url = f"{self.api_base_url}/projects/{project_id}/flowMedia:batchGenerateImages"
 
-        # 403/reCAPTCHA 重试逻辑
-        max_retries = config.flow_max_retries
+        # 403/reCAPTCHA 重试逻辑：图片生成最多2次（1次初始+1次重试），打码失败不重试
+        max_retries = 2
         last_error = None
         perf_trace: Dict[str, Any] = {
             "max_retries": max_retries,
@@ -1222,20 +1223,12 @@ class FlowClient:
             attempt_trace["recaptcha_ms"] = int((time.time() - recaptcha_started_at) * 1000)
             attempt_trace["recaptcha_ok"] = bool(recaptcha_token)
             if not recaptcha_token:
-                last_error = Exception("Failed to obtain reCAPTCHA token")
+                last_error = Exception("打码失败，图片生成请求终止")
                 attempt_trace["success"] = False
                 attempt_trace["error"] = str(last_error)
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
                 perf_trace["generation_attempts"].append(attempt_trace)
-                should_retry = await self._handle_missing_recaptcha_token(
-                    retry_attempt=retry_attempt,
-                    max_retries=max_retries,
-                    browser_id=browser_id,
-                    project_id=project_id,
-                    log_prefix="[IMAGE] 生成",
-                )
-                if should_retry:
-                    continue
+                debug_logger.log_error(f"[IMAGE] 生成 打码失败，不再重试，直接终止请求")
                 raise last_error
             if progress_callback is not None:
                 await progress_callback("submitting_image", 48)
@@ -2388,7 +2381,7 @@ class FlowClient:
                 return preferred
 
         if candidates:
-            return candidates
+            return weighted_pick_remote_browser_server(candidates)
 
         debug_logger.log_warning(
             "[reCAPTCHA RemoteBrowser] remote_browser 配置缺失: "

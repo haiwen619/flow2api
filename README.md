@@ -149,13 +149,15 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
     "stream": true
   }'
 
+  https://limited-sky-yukon-deer.trycloudflare.com/
+
 
 # 6) 别名模型写法: 1x1 + 4k
-curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+curl -X POST "https://limited-sky-yukon-deer.trycloudflare.com/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-3.0-pro-image-1x1-4k",
+    "model": "gemini-3.0-pro-image-1x1-1k",
     "messages": [
       { "role": "user", "content": "A cute 3D toy character, centered composition, high detail." }
     ],
@@ -163,17 +165,17 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
   }'
 
 # 7) 测试 2.5 模型 + imageConfig（会被 imageConfig 覆盖为 16:9 + 1K） 
-curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+curl -X POST "https://limited-sky-yukon-deer.trycloudflare.com/v1/chat/completions" \
   -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-2.5-flash-image",
+    "model": "gemini-3.0-pro-image",
     "contents": [
       { "parts": [ { "text": "A realistic food photo, studio light, clean table." } ] }
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "4:3", "imageSize": "8K" }
+      "imageConfig": { "aspectRatio": "4:3", "imageSize": "1K" }
     },
     "stream": true
   }'
@@ -191,7 +193,7 @@ curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "4:3", "imageSize": "1K" }
+      "imageConfig": { "aspectRatio": "4:3", "imageSize": "1k" }
     },
     "stream": true
   }'

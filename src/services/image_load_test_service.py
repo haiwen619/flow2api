@@ -861,6 +861,7 @@ class ImageLoadTestService:
                 request = ChatCompletionRequest(
                     model=request_model,
                     messages=[{"role": "user", "content": prompt}],
+                    generationConfig=self._build_generation_config_for_model(request_model),
                     stream=False,
                     flow2api_internal_load_test=True,
                 )
@@ -1020,6 +1021,36 @@ class ImageLoadTestService:
         del errors[8:]
 
     @staticmethod
+    def _build_generation_config_for_model(model: str) -> Dict[str, Any]:
+        normalized = str(model or "").strip().lower()
+        aspect_ratio = "16:9"
+        image_size = "1K"
+
+        if "-three-four" in normalized:
+            aspect_ratio = "3:4"
+        elif "-four-three" in normalized:
+            aspect_ratio = "4:3"
+        elif "-square" in normalized:
+            aspect_ratio = "1:1"
+        elif "-portrait" in normalized:
+            aspect_ratio = "9:16"
+        elif "-landscape" in normalized:
+            aspect_ratio = "16:9"
+
+        if normalized.endswith("-4k"):
+            image_size = "4K"
+        elif normalized.endswith("-2k"):
+            image_size = "2K"
+
+        return {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {
+                "aspectRatio": aspect_ratio,
+                "imageSize": image_size,
+            },
+        }
+
+    @staticmethod
     def _extract_error_message_from_text(body_text: Any) -> str:
         """从响应体提取错误消息。仅当 JSON 成功解析且包含 error/detail/message 字段时才返回错误，
         JSON 解析失败（如被截断的大型成功响应）一律返回空串视为无错误。"""
@@ -1053,6 +1084,8 @@ class ImageLoadTestService:
         body_text: Any = None,
         exc: Optional[BaseException] = None,
     ) -> str:
+        if isinstance(error_message, str) and error_message.strip():
+            return error_message.strip()
         message = cls._extract_error_message_from_text(error_message)
         if not message and body_text is not None:
             message = cls._extract_error_message_from_text(body_text)
@@ -1070,7 +1103,10 @@ class ImageLoadTestService:
             return f"请求被取消（可能由图片生成总超时 {image_total_timeout} 秒触发）"
 
         if isinstance(exc_obj, HTTPException):
-            detail = cls._extract_error_message_from_text(getattr(exc_obj, "detail", ""))
+            raw_detail = getattr(exc_obj, "detail", "")
+            if isinstance(raw_detail, str) and raw_detail.strip():
+                return raw_detail.strip()
+            detail = cls._extract_error_message_from_text(raw_detail)
             if detail:
                 return detail
 

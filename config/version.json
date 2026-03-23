@@ -1,7 +1,7 @@
 {
-  "version": "v1.1.11",
+  "version": "v1.1.12",
   "build": "2026.03.20",
   "release_date": "2026-03-20",
   "channel": "stable",
-  "notes": "修复 /v1/chat/completions 对 Gemini generationConfig.imageConfig 的解析，补充请求日志 reCAPTCHA 平均耗时统计，并增强图片模型路由与日志展示。"
+  "notes": "增强代理配置UI与功能，完善Token列表导出Project ID能力，优化打码服务项目配置导出接口，提升管理后台整体交互体验。"
 }

@@ -241,6 +241,11 @@
           title="项目版本信息" type="button">
           版本 --
         </button>
+        <span id="clusterHeaderAlert" style="display:none"
+          class="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 cursor-pointer animate-pulse"
+          onclick="switchTab('cluster')" title="集群健康节点不足，点击查看详情">
+          ⚠ 集群异常
+        </span>
         <button onclick="openReadmeModal()"
           class="inline-flex items-center justify-center text-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7 px-2.5 gap-1"
           title="查看 README 说明文档">
@@ -323,9 +328,9 @@
           代理池
         </button>
         <button onclick="switchTab('cluster')" id="tabCluster"
-          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 text-muted-foreground"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 text-muted-foreground relative"
           title="主从集群诊断">
-          集群诊断
+          集群诊断<span id="clusterTabAlert" class="hidden absolute -top-0.5 -right-2 h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>
         </button>
         <button onclick="switchTab('loadAnalysis')" id="tabLoadAnalysis"
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 text-muted-foreground"
@@ -6609,6 +6614,7 @@
               base_url: String(item.base_url || item.url || "").trim(),
               api_key: String(item.api_key || "").trim(),
               timeout: Math.max(5, parseInt(item.timeout, 10) || parseInt(fallback.timeout, 10) || 60),
+              weight: Math.max(1, Math.min(100, parseInt(item.weight, 10) || 50)),
               success_count: Math.max(0, parseInt(item.success_count, 10) || 0),
               failure_count: Math.max(0, parseInt(item.failure_count, 10) || 0),
               last_success_at: String(item.last_success_at || "").trim(),
@@ -6628,6 +6634,7 @@
             base_url: fallbackBaseUrl,
             api_key: fallbackApiKey,
             timeout: Math.max(5, parseInt(fallback.timeout, 10) || 60),
+            weight: 50,
             success_count: 0,
             failure_count: 0,
             last_success_at: "",
@@ -6645,6 +6652,7 @@
             base_url: "",
             api_key: "",
             timeout: 60,
+            weight: 50,
             success_count: 0,
             failure_count: 0,
             last_success_at: "",
@@ -6659,7 +6667,9 @@
         if (!current[index]) return;
         current[index] = {
           ...current[index],
-          [field]: field === "timeout" ? Math.max(5, parseInt(value, 10) || 60) : value,
+          [field]: field === "timeout" ? Math.max(5, parseInt(value, 10) || 60)
+                 : field === "weight"  ? Math.max(1, Math.min(100, parseInt(value, 10) || 50))
+                 : value,
         };
         remoteBrowserServers = current;
       },
@@ -6668,6 +6678,67 @@
         current.splice(index, 1);
         remoteBrowserServers = current;
         renderRemoteBrowserServers();
+      },
+      resetRemoteBrowserServerStats = async (index) => {
+        const servers = normalizeRemoteBrowserServers(remoteBrowserServers);
+        const server = servers[index];
+        const serverId = server && String(server.id || "").trim();
+        if (!serverId) return showToast("无法识别服务 ID，请先保存配置", "error");
+        const token = localStorage.getItem("adminToken");
+        try {
+          const res = await fetch("/api/captcha/remote-browser/reset-stats", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+            body: JSON.stringify({ server_id: serverId }),
+          });
+          if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+          showToast("统计记录已清空", "success");
+          // 刷新页面数据
+          const cfg = await (await fetch("/api/captcha/config", { headers: { "Authorization": `Bearer ${token}` } })).json();
+          remoteBrowserServers = cfg.remote_browser_servers || [];
+          renderRemoteBrowserServers();
+        } catch (e) {
+          showToast(`清空失败: ${e.message}`, "error");
+        }
+      },
+      testRemoteServerScore = async (index) => {
+        const servers = normalizeRemoteBrowserServers(remoteBrowserServers);
+        const server = servers[index];
+        const serverId = server && String(server.id || "").trim();
+        if (!serverId) return showToast("无法识别服务 ID，请先保存配置", "error");
+        const btn = document.getElementById(`btnTestRemoteScore_${index}`);
+        const resultEl = document.getElementById(`remoteScoreResult_${index}`);
+        if (btn) { btn.disabled = true; btn.textContent = "测试中..."; }
+        if (resultEl) { resultEl.textContent = "正在测试..."; resultEl.className = "text-xs text-muted-foreground"; }
+        try {
+          const token = localStorage.getItem("adminToken");
+          const res = await fetch("/api/captcha/score-test", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+            body: JSON.stringify({ server_id: serverId }),
+          });
+          const d = await res.json();
+          if (!res.ok) throw new Error(d.detail || d.message || res.statusText);
+          const verify = d.verify_result || {};
+          const score = verify.score !== undefined ? verify.score : d.score !== undefined ? d.score : "-";
+          const parts = [
+            `score=${score}`,
+            verify.action ? `action=${verify.action}` : null,
+            d.token_elapsed_ms !== undefined ? `取token ${d.token_elapsed_ms}ms` : null,
+            d.elapsed_ms !== undefined ? `总耗时 ${d.elapsed_ms}ms` : null,
+            d.message || null,
+          ].filter(Boolean).join(" | ");
+          if (resultEl) {
+            resultEl.textContent = d.success ? `✓ ${parts}` : `✗ ${d.message || parts}`;
+            resultEl.className = `text-xs ${d.success ? "text-green-600" : "text-red-600"}`;
+          }
+          showToast(d.success ? `[${server.name || index+1}] 分数测试成功: ${score}` : `[${server.name || index+1}] 分数测试失败: ${d.message || "未知错误"}`, d.success ? "success" : "error");
+        } catch (e) {
+          if (resultEl) { resultEl.textContent = `✗ ${e.message}`; resultEl.className = "text-xs text-red-600"; }
+          showToast(`分数测试失败: ${e.message}`, "error");
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = "测试打码分数"; }
+        }
       },
       renderRemoteBrowserServers = () => {
         const root = $("remoteBrowserServersList");
@@ -6699,25 +6770,40 @@
                     <span class="text-sm font-medium">${escapeHtml(server.name || `远程打码服务 ${index + 1}`)}</span>
                   </div>
                   <div class="flex items-center gap-2">
+                    <span class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700"
+                      title="流量权重（1-100），按比例分配请求">
+                      权重 ${server.weight ?? 50}%
+                    </span>
                     <span class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-[11px] text-green-700">
                       成功 ${server.success_count || 0}
                     </span>
                     <span class="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] text-red-700">
                       失败 ${server.failure_count || 0}
                     </span>
+                    <button type="button" onclick="resetRemoteBrowserServerStats(${index})"
+                      class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent">
+                      清空记录
+                    </button>
                     <button type="button" onclick="removeRemoteBrowserServerRow(${index})"
                       class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent">
                       删除
                     </button>
                   </div>
                 </div>
-                <div class="grid gap-3 md:grid-cols-2">
+                <div class="grid gap-3 md:grid-cols-3">
                   <div>
                     <label class="text-sm font-medium mb-2 block">服务名称</label>
                     <input type="text" value="${escapeHtml(server.name || "")}"
                       onchange="updateRemoteBrowserServerField(${index}, 'name', this.value.trim())"
                       class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       placeholder="例如：香港节点 / 备用节点" />
+                  </div>
+                  <div>
+                    <label class="text-sm font-medium mb-2 block">流量权重（1-100）</label>
+                    <input type="number" min="1" max="100" value="${Number(server.weight ?? 50)}"
+                      onchange="updateRemoteBrowserServerField(${index}, 'weight', this.value)"
+                      class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="50" />
                   </div>
                   <div>
                     <label class="text-sm font-medium mb-2 block">请求超时（秒）</label>
@@ -6744,6 +6830,14 @@
                 <p class="text-xs text-muted-foreground">
                   ${escapeHtml(lastStatus)}
                 </p>
+                <div class="flex items-center gap-2 mt-1">
+                  <button type="button" id="btnTestRemoteScore_${index}"
+                    onclick="testRemoteServerScore(${index})"
+                    class="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-3 text-xs hover:bg-accent">
+                    测试打码分数
+                  </button>
+                  <span id="remoteScoreResult_${index}" class="text-xs text-muted-foreground"></span>
+                </div>
               </div>
             `;
           })
@@ -8179,6 +8273,9 @@
     let _clusterAutoRefreshTimer = null;
     let _logsAvgDurationTimer = null;
     const _LOGS_AVG_DURATION_INTERVAL = 30 * 60 * 1000; // 30 minutes
+    let _clusterMonitorTimer = null;  // 后台每分钟健康巡检
+    let _clusterAlertTimer = null;    // 每10秒视觉提醒
+    let _clusterAlertActive = false;  // 当前是否处于告警状态
 
     function toggleClusterRoleFields() {
       const role = $("cfgClusterRole")?.value || "standalone";
@@ -8202,6 +8299,81 @@
         clearInterval(_clusterAutoRefreshTimer);
         _clusterAutoRefreshTimer = null;
       }
+    }
+
+    // --- 集群健康后台巡检（独立线程，每60秒检查一次，与面板刷新互不影响）---
+    async function checkClusterHealthBackground() {
+      try {
+        const resp = await fetch("/api/cluster/diagnostics", {
+          headers: { Authorization: `Bearer ${localStorage.getItem("adminToken")}` },
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const role = String((data.snapshot || {}).role || "standalone").trim().toLowerCase();
+        const healthy = Number((data.snapshot || {}).healthy_nodes ?? 0);
+        updateClusterAlertUI(healthy, role);
+      } catch (_) {}
+    }
+
+    function updateClusterAlertUI(healthyNodes, role = "standalone") {
+      const normalizedRole = String(role || "standalone").trim().toLowerCase();
+      const isWorker = normalizedRole === "worker";
+      const isAlert = !isWorker && healthyNodes < 3;
+      _clusterAlertActive = isAlert;
+
+      // 顶部导航栏警告徽章
+      const headerAlert = document.getElementById("clusterHeaderAlert");
+      if (headerAlert) {
+        headerAlert.style.display = isAlert ? "inline-flex" : "none";
+        headerAlert.textContent = isAlert ? `⚠ 集群在线 ${healthyNodes}/3` : "";
+      }
+
+      // 集群诊断标签红点
+      const tabAlert = document.getElementById("clusterTabAlert");
+      if (tabAlert) tabAlert.classList.toggle("hidden", !isAlert);
+
+      // 健康节点数字颜色
+      const healthyEl = document.getElementById("clusterHealthyNodes");
+      if (healthyEl) {
+        healthyEl.classList.toggle("text-green-600", !isAlert);
+        healthyEl.classList.toggle("text-red-600", isAlert);
+      }
+
+      if (isAlert) {
+        startClusterAlertReminder();
+      } else {
+        stopClusterAlertReminder();
+      }
+    }
+
+    function startClusterAlertReminder() {
+      if (_clusterAlertTimer) return;
+      // 本地开发环境不弹出集群节点不足提示
+      if (location.hostname === "127.0.0.1" || location.hostname === "localhost") return;
+      // 立即提示一次
+      const healthyEl = document.getElementById("clusterHealthyNodes");
+      const cnt = Number(healthyEl?.textContent ?? 0);
+      showToast(`集群节点不足：当前在线 ${cnt} 台，低于阈值 3 台`, "warning", [], { persist: false, duration: 6000 });
+      // 之后每10秒重复提醒
+      _clusterAlertTimer = setInterval(() => {
+        if (!_clusterAlertActive) { stopClusterAlertReminder(); return; }
+        const c = Number(document.getElementById("clusterHealthyNodes")?.textContent ?? 0);
+        showToast(`集群节点不足：当前在线 ${c} 台，低于阈值 3 台`, "warning", [], { persist: false, duration: 6000 });
+      }, 10000);
+    }
+
+    function stopClusterAlertReminder() {
+      if (_clusterAlertTimer) {
+        clearInterval(_clusterAlertTimer);
+        _clusterAlertTimer = null;
+      }
+    }
+
+    function startClusterMonitor() {
+      if (_clusterMonitorTimer) return;
+      // 登录后延迟5秒进行首次检查
+      setTimeout(checkClusterHealthBackground, 5000);
+      _clusterMonitorTimer = setInterval(checkClusterHealthBackground, 60000);
     }
 
     function startLogsAvgDurationAutoRefresh() {
@@ -8533,6 +8705,12 @@
         `;
         jobTbody.appendChild(row);
       });
+
+      // 同步告警UI（使面板刷新与后台巡检保持一致）
+      updateClusterAlertUI(
+        Number(snapshot.healthy_nodes ?? 0),
+        String(snapshot.role || "standalone").trim().toLowerCase(),
+      );
     }
 
     // ========== 负载分析面板 ==========
@@ -9730,6 +9908,7 @@
       loadProjectVersion();
       loadATAutoRefreshConfig();
       toggleClusterRoleFields();
+      startClusterMonitor();
       renderCpuPreviewState({ running: false });
       updateCpuPreviewSamplesView();
       loadCpuPreviewHistory();

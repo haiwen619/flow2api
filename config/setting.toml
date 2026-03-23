@@ -92,5 +92,5 @@ node_weight = 100
 node_max_concurrency = 200
 heartbeat_interval_seconds = 10
 heartbeat_timeout_seconds = 30
-dispatch_timeout_seconds = 1800
+dispatch_timeout_seconds = 120
 prefer_local = true

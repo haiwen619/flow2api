@@ -3138,7 +3138,50 @@ class Database:
         config.set_remote_browser_servers(servers)
         return True
 
-    # Plugin config operations
+    async def reset_remote_browser_server_stats(self, server_id: str) -> bool:
+        """Reset success_count/failure_count and related timestamps for a remote browser server."""
+        normalized_server_id = str(server_id or "").strip()
+        if not normalized_server_id:
+            return False
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM captcha_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if not row:
+                return False
+
+            current = dict(row)
+            servers = self._resolve_remote_browser_servers_from_row(current)
+            target = None
+            for item in servers:
+                if str(item.get("id") or "").strip() == normalized_server_id:
+                    target = item
+                    break
+
+            if target is None:
+                return False
+
+            target["success_count"] = 0
+            target["failure_count"] = 0
+            target["last_success_at"] = ""
+            target["last_error_at"] = ""
+            target["last_error"] = ""
+
+            await db.execute(
+                """
+                    UPDATE captcha_config
+                    SET remote_browser_servers = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """,
+                (self._serialize_remote_browser_servers(servers),),
+            )
+            await db.commit()
+
+        config.set_remote_browser_servers(servers)
+        return True
+
+
     async def get_plugin_config(self) -> PluginConfig:
         """Get plugin configuration"""
         async with aiosqlite.connect(self.db_path) as db:

@@ -923,6 +923,10 @@ def _resolve_requested_model_id(request: ChatCompletionRequest) -> tuple[str, st
     return resolved_model, model_config["type"], original_model, auto_defaulted_model
 
 
+class _ClusterWorkerFullError(Exception):
+    """子节点返回 503（并发已满），主节点应回退到本机执行。"""
+
+
 def _resolve_cluster_target_base_url(target_node: Dict[str, Any]) -> str:
     base_url = str(target_node.get("base_url") or "").strip().rstrip("/")
     if not base_url:
@@ -934,6 +938,7 @@ def _resolve_cluster_target_base_url(target_node: Dict[str, Any]) -> str:
         return base_url
 
     if parsed.port:
+        # URL 里已有显式端口，直接使用
         return base_url
 
     try:
@@ -944,7 +949,13 @@ def _resolve_cluster_target_base_url(target_node: Dict[str, Any]) -> str:
     if reported_port <= 0:
         return base_url
 
-    if (parsed.scheme == "http" and reported_port == 80) or (parsed.scheme == "https" and reported_port == 443):
+    # HTTPS 默认 443：若 URL 本身无端口，说明是域名类反代/Cloudflare Tunnel，
+    # 不应将本地 server_port 追加进去，否则会变成 https://domain:8000 而无法连接。
+    if parsed.scheme == "https":
+        return base_url
+
+    # HTTP 的非标准端口才需要追加
+    if parsed.scheme == "http" and reported_port == 80:
         return base_url
 
     hostname = str(parsed.hostname or "").strip()
@@ -1024,6 +1035,10 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                 )
                 await upstream_response.aclose()
                 await client.aclose()
+                if upstream_response.status_code == 503:
+                    raise _ClusterWorkerFullError(
+                        f"worker {target_node_name} 返回 503（并发已满）"
+                    )
                 return Response(
                     content=body,
                     status_code=upstream_response.status_code,
@@ -1142,12 +1157,18 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                 ),
             },
         )
+        if upstream_response.status_code == 503:
+            raise _ClusterWorkerFullError(
+                f"worker {target_node_name} 返回 503（并发已满）"
+            )
         return Response(
             content=upstream_response.content,
             status_code=upstream_response.status_code,
             media_type=upstream_response.headers.get("content-type", "application/json"),
             headers=response_headers,
         )
+    except _ClusterWorkerFullError:
+        raise  # 向上传递，由调用方决定是否回退本机
     except HTTPException:
         raise
     except Exception as exc:
@@ -1408,7 +1429,13 @@ async def _handle_chat_completion_request(
                 generation_type=generation_type,
             )
             if decision.get("dispatch_to") == "remote":
-                return await _proxy_cluster_chat_completion(request, decision)
+                try:
+                    return await _proxy_cluster_chat_completion(request, decision)
+                except _ClusterWorkerFullError as e:
+                    debug_logger.log_warning(
+                        f"[CLUSTER] {e}，回退本机执行"
+                    )
+                    # fall through → 下方本机执行逻辑
 
             response_headers = {
                 "X-Flow2API-Dispatch": "local",
