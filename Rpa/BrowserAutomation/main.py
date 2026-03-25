@@ -2587,6 +2587,8 @@ async def _detect_google_labs_onboarding_modal(page) -> Optional[dict]:
         "review our privacy policy",
         "your data and labs.google/fx",
         "privacy policy",
+        # 语言无关标记 —— labs.google/fx 在所有语言中都保持不变
+        "labs.google/fx",
     ]
 
     for sel in container_selectors:
@@ -2832,10 +2834,19 @@ async def _click_google_labs_dialog_button(
 
                     const buttons = Array.from(dialog.querySelectorAll("button, div[role='button']"))
                         .filter((el) => isVisible(el));
-                    const target = buttons.find((el) => {
+                    let target = buttons.find((el) => {
                         const label = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
                         return !!label && buttonMarkers.some((marker) => label.includes(marker));
                     });
+
+                    // 后备策略：如果文本匹配失败，选择对话框中最后一个可见且未禁用的按钮
+                    // （隐私弹框中 Continue/Next 始终是最后一个按钮）
+                    if (!target && buttons.length >= 2) {
+                        const lastBtn = buttons[buttons.length - 1];
+                        if (lastBtn && !isDisabled(lastBtn)) {
+                            target = lastBtn;
+                        }
+                    }
 
                     if (!target) {
                         return {
@@ -2948,11 +2959,24 @@ async def _scroll_google_labs_modal_and_click_continue(
     """在目标页隐私弹框中滚动到底并点击 Continue。"""
     clicked, label = await _click_google_labs_dialog_button(
         page,
-        button_markers=["continue", "继续", "下一步"],
+        button_markers=[
+            "continue", "继续", "下一步",
+            # 多语言 continue/next 翻译
+            "tiếp tục",      # 越南语
+            "続行", "次へ",   # 日语
+            "계속", "다음",   # 韩语
+            "continuer",     # 法语
+            "weiter",        # 德语
+            "continuar",     # 西班牙语/葡萄牙语
+            "продолжить", "далее",  # 俄语
+            "lanjutkan",     # 印尼语
+            "ดำเนินการต่อ",    # 泰语
+        ],
         modal_markers=[
             "review our privacy policy",
             "your data and labs.google/fx",
             "privacy policy",
+            "labs.google/fx",
         ],
         timeout_ms=timeout_ms,
         scroll_to_bottom=True,
@@ -3025,6 +3049,7 @@ async def _best_effort_google_labs_onboarding_modal(
             "review our privacy policy",
             "your data and labs.google/fx",
             "privacy policy",
+            "labs.google/fx",
         }:
             continue_clicked = await _scroll_google_labs_modal_and_click_continue(
                 page,
@@ -3040,11 +3065,12 @@ async def _best_effort_google_labs_onboarding_modal(
 
         clicked, clicked_label = await _click_google_labs_dialog_button(
             page,
-            button_markers=["next", "下一步"],
+            button_markers=["next", "下一步", "tiếp tục", "次へ", "다음", "suivant", "weiter", "siguiente", "далее"],
             modal_markers=[
                 "experience and shape ai tools for creativity",
                 "i'd like to receive marketing emails",
                 "i'd like to receive research invitations",
+                "labs.google/fx",
             ],
             timeout_ms=min(3_000, max(1_000, int((deadline - time.time()) * 1000))),
         )

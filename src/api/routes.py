@@ -1145,6 +1145,22 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
             upstream_response = await client.post(endpoint, headers=headers, json=payload)
         worker_token_meta = _extract_worker_token_meta_from_headers(upstream_response.headers)
+        parsed_response = _parse_cluster_dispatch_response_payload(
+            content_type=upstream_response.headers.get("content-type", "application/json"),
+            body_bytes=upstream_response.content,
+        )
+        # 检查响应体中的应用层错误（即使 HTTP 状态码为 200，响应体可能含有 error 字段）
+        response_error: Optional[str] = None
+        if upstream_response.status_code < 400 and isinstance(parsed_response, dict):
+            error_info = parsed_response.get("error")
+            if error_info:
+                if isinstance(error_info, dict):
+                    err_msg = str(error_info.get("message") or error_info.get("code") or "")
+                    err_status = error_info.get("status_code", 0)
+                    response_error = f"[{err_status}] {err_msg}".strip(" []") if err_msg or err_status else str(error_info)[:200]
+                else:
+                    response_error = str(error_info)[:200]
+        is_success = upstream_response.status_code < 400 and response_error is None
         if cluster_manager:
             await cluster_manager.record_dispatch(
                 target_node_id=target_node_id,
@@ -1153,7 +1169,7 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                 resolved_model=resolved_model,
                 status_code=upstream_response.status_code,
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
-                error=None if upstream_response.status_code < 400 else upstream_response.text[:500],
+                error=response_error if response_error else (None if upstream_response.status_code < 400 else upstream_response.text[:500]),
             )
         await _write_cluster_dispatch_request_log(
             request=request,
@@ -1161,8 +1177,8 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
             target_node=target_node,
             status_code=upstream_response.status_code,
             duration_seconds=(time.perf_counter() - started_at),
-            status_text="cluster_dispatched" if upstream_response.status_code < 400 else "cluster_dispatch_failed",
-            progress=100 if upstream_response.status_code < 400 else 0,
+            status_text="cluster_dispatched" if is_success else "cluster_dispatch_failed",
+            progress=100 if is_success else 0,
             response_payload={
                 "dispatch": {
                     "target_node_id": target_node_id,
@@ -1172,10 +1188,7 @@ async def _proxy_cluster_chat_completion(request: ChatCompletionRequest, decisio
                     "mode": "json",
                     "remote_status_code": upstream_response.status_code,
                 },
-                "response": _parse_cluster_dispatch_response_payload(
-                    content_type=upstream_response.headers.get("content-type", "application/json"),
-                    body_bytes=upstream_response.content,
-                ),
+                "response": parsed_response,
             },
         )
         if upstream_response.status_code == 503:

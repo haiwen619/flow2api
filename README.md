@@ -8,6 +8,8 @@ https://rt.lmmllm.com
 Esc_j6qIXg_k1xTgeYL0WLIhKNYfzpYXTsMJq
 
 
+New-NetFirewallRule -DisplayName "Sub2API-CRS2-8020" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8020
+
 
 New-NetFirewallRule -DisplayName "Flow2API-RemoteBrowser-8060" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8060
 
