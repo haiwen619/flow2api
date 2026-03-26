@@ -2219,6 +2219,8 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
     // 批量任务管理
     let currentBatchTaskId = null;
     let batchTaskPollInterval = null;
+    // 记录上一次轮询时各任务的状态，用于检测"刚刚完成"的任务
+    const batchTaskPrevStatuses = new Map();
 
     document.getElementById('btnBatchTasks').addEventListener('click', function() {
       showBatchTasksPanel();
@@ -2297,7 +2299,8 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
         refreshBatchTasks();
       }, 3000);
 
-      refreshBatchTasks();
+      // 首次加载时先初始化状态快照，不触发弹框
+      refreshBatchTasks(true);
     }
 
     function closeBatchTasksPanel() {
@@ -2309,7 +2312,119 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
       panels.forEach(panel => panel.remove());
     }
 
-    async function refreshBatchTasks() {
+    // 从 account_key 中提取纯邮箱（去掉 "gemini:" / "google:" 等平台前缀）
+    function extractEmailFromAccountKey(accountKey) {
+      const str = String(accountKey || '').trim();
+      const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+      const m = str.match(emailPattern);
+      return m ? m[0] : str;
+    }
+
+    // 批量任务完成后询问是否删除 Token 列表中对应 Token
+    async function promptDeleteTokensAfterBatch(task) {
+      const token = getAuthToken();
+      if (!token) return;
+
+      // 拉取该批次中成功的 job，收集并提取邮箱
+      let successEmails = [];
+      try {
+        const resp = await fetch(`/accountpool/validate/batch/task/${task.batch_task_id}/jobs`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+        if (resp.ok && data && data.success && Array.isArray(data.jobs)) {
+          successEmails = data.jobs
+            .filter(j => j.status === 'success' && j.account_key)
+            .map(j => extractEmailFromAccountKey(j.account_key))
+            .filter(Boolean);
+          // 去重
+          successEmails = [...new Set(successEmails)];
+        }
+      } catch (_) {}
+
+      if (successEmails.length === 0) return;
+
+      const confirmed = await showBatchCompleteDeleteDialog(task, successEmails);
+      if (!confirmed) return;
+
+      try {
+        // 等待 Token 异步写入完成（验证完成后 Token 写入可能有短暂延迟）
+        showToast('正在等待 Token 数据写入，请稍候...', 'material-symbols:hourglass-top');
+        await new Promise(resolve => setTimeout(resolve, 4000));
+
+        showToast(`正在从 Token 列表删除 ${successEmails.length} 个 Token...`, 'material-symbols:sync');
+        const resp = await fetch('/api/tokens/delete-by-keywords', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ keywords: successEmails, limit: successEmails.length })
+        });
+        const data = await resp.json();
+        if (resp.ok && data && data.success) {
+          const deleted = Number(data.deleted) || 0;
+          showToast(
+            deleted > 0
+              ? `已从 Token 列表删除 ${deleted} 个 Token`
+              : '未在 Token 列表中找到对应 Token，请稍后在 Token 管理页手动删除',
+            deleted > 0 ? 'material-symbols:check-circle' : 'material-symbols:warning'
+          );
+        } else {
+          showToast(`删除失败: ${(data && (data.detail || data.error)) || '未知错误'}`, 'material-symbols:error');
+        }
+      } catch (e) {
+        showToast(`网络错误: ${e.message}`, 'material-symbols:error');
+      }
+    }
+
+    function showBatchCompleteDeleteDialog(task, successEmails) {
+      return new Promise((resolve) => {
+        const sample = successEmails.slice(0, 5).join('\n');
+        const moreText = successEmails.length > 5 ? `\n... 等共 ${successEmails.length} 个` : '';
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-[200] flex items-center justify-center bg-black/50 px-4';
+        overlay.innerHTML = `
+          <div class="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-slate-200">
+            <div class="px-5 pt-5 pb-3 border-b border-slate-100 flex items-center space-x-3">
+              <span class="flex-shrink-0 w-9 h-9 rounded-full bg-emerald-100 flex items-center justify-center">
+                <span class="iconify text-emerald-600 text-xl" data-icon="material-symbols:check-circle-outline"></span>
+              </span>
+              <div>
+                <div class="text-base font-semibold text-slate-800">批量验证任务已完成</div>
+                <div class="text-xs text-slate-500 mt-0.5">
+                  成功 ${task.success} 个 / 失败 ${task.failed} 个 / 共 ${task.total} 个
+                </div>
+              </div>
+            </div>
+            <div class="px-5 py-4 space-y-3">
+              <p class="text-sm text-slate-700">
+                成功登录获取到 <span class="font-semibold text-emerald-700">${successEmails.length}</span> 个 Token。<br>
+                是否同时从 <span class="font-semibold">Token 列表</span>中删除这些账号对应的 Token？
+              </p>
+              <div class="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-500 whitespace-pre-line font-mono leading-relaxed max-h-32 overflow-y-auto">${sample}${moreText}</div>
+              <p class="text-xs text-slate-400">适用场景：这些 Token 已在其他地方使用，不需要在当前系统中保留。</p>
+            </div>
+            <div class="px-5 pb-5 pt-2 flex items-center justify-end space-x-2">
+              <button data-action="no" class="px-4 py-2 rounded-lg text-sm bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors">不删除</button>
+              <button data-action="yes" class="px-4 py-2 rounded-lg text-sm bg-red-600 text-white hover:bg-red-700 transition-colors">是，删除这些 Token</button>
+            </div>
+          </div>
+        `;
+        const cleanup = () => { try { overlay.remove(); } catch (_) {} };
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) { cleanup(); resolve(false); return; }
+          const btn = e.target && e.target.closest('[data-action]');
+          if (!btn) return;
+          cleanup();
+          resolve(btn.getAttribute('data-action') === 'yes');
+        });
+        document.body.appendChild(overlay);
+        if (window.Iconify) window.Iconify.scan(overlay);
+      });
+    }
+
+    async function refreshBatchTasks(seedOnly = false) {
       const token = getAuthToken();
       if (!token) return;
 
@@ -2403,6 +2518,22 @@ trnkahussianwm39@gmail.com 123 456465sdasdfa"></textarea>
             </div>
           `;
         }).join('');
+
+        // 检测刚刚从运行态 → completed 的任务，逐个提示用户
+        const justCompleted = seedOnly ? [] : tasks.filter(t =>
+          t.status === 'completed' &&
+          batchTaskPrevStatuses.get(t.batch_task_id) === 'running'
+        );
+        // 更新状态记录
+        tasks.forEach(t => batchTaskPrevStatuses.set(t.batch_task_id, t.status));
+        // 依次弹出提示（串行，避免多个弹框叠加）
+        if (justCompleted.length > 0) {
+          (async () => {
+            for (const task of justCompleted) {
+              await promptDeleteTokensAfterBatch(task);
+            }
+          })();
+        }
 
       } catch (e) {
         console.error('获取批量任务列表失败:', e);

@@ -77,7 +77,7 @@ remote_browser_timeout = 60   # 远程有头打码请求超时(秒)
 [rpa]
 test_bitbrowser_id_local = "8775a712ab0c4db59e0811ad115bc565"
 test_bitbrowser_id_server = "b053c6d206644055aee44da3326ee24d"
-test_bitbrowser_ids_local = ["8775a712ab0c4db59e0811ad115bc565"]
+test_bitbrowser_ids_local = ["8775a712ab0c4db59e0811ad115bc565", "9d838bfd394049eaa50b7f7b70a8c344", "ea7efc70fb6249718581e45670f9ef5d", "fb0b487b3d5a4e68911423d371ee940d", "29ca834b824143b58ac1e4faee83619f"]
 test_bitbrowser_ids_server = ["b053c6d206644055aee44da3326ee24d"]
 bitbrowser_auto_create = false
 

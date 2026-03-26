@@ -2476,6 +2476,39 @@ async def delete_all_tokens(token: str = Depends(verify_admin_token)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class TokenKeywordsRequest(BaseModel):
+    keywords: List[str]
+    limit: int = 2000
+
+
+@router.post("/api/tokens/match-by-keywords")
+async def match_tokens_by_keywords(
+    body: TokenKeywordsRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Preview tokens that fuzzy-match the given keywords (email / name / remark)"""
+    try:
+        items = await db.match_tokens_by_keywords(body.keywords, body.limit)
+        return {"success": True, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/tokens/delete-by-keywords")
+async def delete_tokens_by_keywords(
+    body: TokenKeywordsRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Delete tokens that fuzzy-match the given keywords (email / name / remark)"""
+    try:
+        deleted = await db.delete_tokens_by_keywords(body.keywords, body.limit)
+        if concurrency_manager and deleted:
+            await concurrency_manager.initialize(await token_manager.get_all_tokens())
+        return {"success": True, "deleted": deleted, "message": f"已删除 {deleted} 个匹配Token"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/tokens/{token_id}/enable")
 async def enable_token(
     token_id: int,

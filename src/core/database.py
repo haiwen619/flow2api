@@ -1668,6 +1668,45 @@ class Database:
             await db.commit()
             return total
 
+    async def match_tokens_by_keywords(self, keywords: List[str], limit: int = 2000) -> List[dict]:
+        """Fuzzy match tokens by email / name / remark keywords"""
+        if not keywords:
+            return []
+        limit = max(1, min(5000, limit))
+        conditions = " OR ".join(
+            ["(LOWER(COALESCE(email,'')) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ? OR LOWER(COALESCE(remark,'')) LIKE ?)"]
+            * len(keywords)
+        )
+        params = []
+        for kw in keywords:
+            pattern = f"%{kw.lower()}%"
+            params.extend([pattern, pattern, pattern])
+        params.append(limit)
+        sql = f"SELECT id, email, name, remark, is_active FROM tokens WHERE {conditions} ORDER BY created_at DESC LIMIT ?"
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(sql, params)
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def delete_tokens_by_keywords(self, keywords: List[str], limit: int = 2000) -> int:
+        """Delete tokens fuzzy-matched by email / name / remark, return deleted count"""
+        matched = await self.match_tokens_by_keywords(keywords, limit)
+        if not matched:
+            return 0
+        ids = [row["id"] for row in matched]
+        placeholders = ",".join("?" * len(ids))
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(f"DELETE FROM request_logs WHERE token_id IN ({placeholders})", ids)
+            await db.execute(f"DELETE FROM tasks WHERE token_id IN ({placeholders})", ids)
+            await db.execute(f"DELETE FROM token_refresh_history WHERE token_id IN ({placeholders})", ids)
+            await db.execute(f"DELETE FROM token_export_bindings WHERE token_id IN ({placeholders})", ids)
+            await db.execute(f"DELETE FROM token_stats WHERE token_id IN ({placeholders})", ids)
+            await db.execute(f"DELETE FROM projects WHERE token_id IN ({placeholders})", ids)
+            await db.execute(f"DELETE FROM tokens WHERE id IN ({placeholders})", ids)
+            await db.commit()
+        return len(ids)
+
     # Project operations
     async def add_project(self, project: Project) -> int:
         """Add a new project"""

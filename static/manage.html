@@ -517,6 +517,11 @@
             title="删除全部Token">
             <span class="text-sm font-medium">全部删除</span>
           </button>
+          <button onclick="triggerTokenBatchDelete()"
+            class="inline-flex items-center justify-center rounded-md bg-orange-600 text-white hover:bg-orange-700 h-8 px-3"
+            title="按邮箱/关键词模糊匹配后批量删除Token">
+            <span class="text-sm font-medium">模糊批量删除</span>
+          </button>
           <button onclick="exportTokens()"
             class="inline-flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 h-8 px-3"
             title="导出所有Token">
@@ -4520,6 +4525,129 @@
           }
         } catch (e) {
           showToast("全部删除失败: " + e.message, "error");
+        }
+      },
+      parseTokenBatchKeywords = (raw) => {
+        const text = String(raw || '').trim();
+        if (!text) return [];
+        const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+        const parts = emailMatches.length ? emailMatches : text.split(/[\s,;|]+/g);
+        const seen = new Set();
+        const result = [];
+        parts.forEach(item => {
+          const v = String(item || '').trim().toLowerCase();
+          if (!v || v.length < 2 || seen.has(v)) return;
+          seen.add(v);
+          result.push(v);
+        });
+        return result;
+      },
+      showTokenBatchDeleteDialog = () => new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4';
+        overlay.innerHTML = `
+          <div class="w-full max-w-lg rounded-xl bg-white shadow-xl border border-slate-200" style="max-height:90vh;overflow-y:auto">
+            <div class="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <div class="text-base font-semibold text-slate-800">批量删除Token</div>
+                <div class="text-xs text-slate-500 mt-0.5">按邮箱/关键词模糊匹配Token列表，再统一批量删除</div>
+              </div>
+              <button data-action="cancel" class="text-slate-400 hover:text-slate-700 transition-colors" title="关闭">✕</button>
+            </div>
+            <div class="px-5 py-4 space-y-4">
+              <div>
+                <label class="text-sm text-slate-700 font-medium">批量邮箱 / 关键词</label>
+                <textarea id="tkBatchDeleteInput" rows="6"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200 resize-y"
+                  placeholder="可粘贴多行邮箱、逗号分隔邮箱，或邮箱片段关键词"></textarea>
+                <div id="tkBatchDeleteSummary" class="text-xs text-slate-400 mt-1">会按 email / name / remark 模糊匹配Token</div>
+              </div>
+              <div>
+                <label class="text-sm text-slate-700 font-medium">最大处理数量</label>
+                <input id="tkBatchDeleteLimit" type="number" min="1" max="5000" value="2000"
+                  class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" />
+                <div class="text-xs text-slate-400 mt-1">默认最多处理 2000 个匹配Token</div>
+              </div>
+              <div id="tkBatchDeleteError" class="hidden rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs px-3 py-2"></div>
+            </div>
+            <div class="px-5 pb-4 pt-2 flex items-center justify-end space-x-2">
+              <button data-action="cancel" class="px-4 py-2 rounded-lg text-sm bg-slate-100 text-slate-700 hover:bg-slate-200">取消</button>
+              <button data-action="ok" class="px-4 py-2 rounded-lg text-sm bg-orange-600 text-white hover:bg-orange-700">预览并删除</button>
+            </div>
+          </div>
+        `;
+        const cleanup = () => { try { overlay.remove(); } catch (_) {} };
+        const errorEl = overlay.querySelector('#tkBatchDeleteError');
+        const setError = (msg) => { errorEl.textContent = msg; errorEl.classList.remove('hidden'); };
+        const clearError = () => { errorEl.textContent = ''; errorEl.classList.add('hidden'); };
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) { cleanup(); resolve({ ok: false }); return; }
+          const action = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+          if (!action) return;
+          if (action.getAttribute('data-action') === 'cancel') { cleanup(); resolve({ ok: false }); }
+          if (action.getAttribute('data-action') === 'ok') {
+            clearError();
+            const kw = overlay.querySelector('#tkBatchDeleteInput').value;
+            const keywords = parseTokenBatchKeywords(kw);
+            let limit = Number(overlay.querySelector('#tkBatchDeleteLimit').value || '2000');
+            if (!keywords.length) { setError('请先输入至少一个邮箱或关键词'); return; }
+            if (!Number.isFinite(limit) || limit < 1) limit = 2000;
+            limit = Math.min(5000, Math.max(1, Math.floor(limit)));
+            cleanup();
+            resolve({ ok: true, keywords, limit });
+          }
+        });
+        const keywordInput = overlay.querySelector('#tkBatchDeleteInput');
+        const summaryEl = overlay.querySelector('#tkBatchDeleteSummary');
+        keywordInput.addEventListener('input', () => {
+          const kws = parseTokenBatchKeywords(keywordInput.value);
+          summaryEl.textContent = kws.length
+            ? `当前已解析 ${kws.length} 个邮箱/关键词，将按 email / name / remark 模糊匹配`
+            : '会按 email / name / remark 模糊匹配Token';
+        });
+        document.body.appendChild(overlay);
+        keywordInput.focus();
+      }),
+      triggerTokenBatchDelete = async () => {
+        const dlg = await showTokenBatchDeleteDialog();
+        if (!dlg || !dlg.ok) { showToast("已取消批量删除", "info"); return; }
+        try {
+          showToast(`正在按 ${dlg.keywords.length} 个关键词匹配Token...`, "info");
+          const matchR = await apiRequest('/api/tokens/match-by-keywords', {
+            method: 'POST',
+            body: JSON.stringify({ keywords: dlg.keywords, limit: dlg.limit })
+          });
+          if (!matchR) return;
+          const matchData = await matchR.json();
+          if (!matchData || !matchData.success) {
+            showToast('匹配失败: ' + (matchData.detail || matchData.error || '未知错误'), 'error');
+            return;
+          }
+          const items = Array.isArray(matchData.items) ? matchData.items : [];
+          if (items.length === 0) {
+            showToast(`未匹配到关键词对应的Token（关键词 ${dlg.keywords.length} 个）`, "info");
+            return;
+          }
+          const sample = items.slice(0, 6).map(t => t.email || '').filter(Boolean).join('、');
+          if (!confirm(`已匹配到 ${items.length} 个Token，确认全部删除吗？此操作不可恢复。\n示例：${sample}`)) {
+            showToast("已取消批量删除", "info");
+            return;
+          }
+          showToast(`正在批量删除 ${items.length} 个Token...`, "info");
+          const r = await apiRequest('/api/tokens/delete-by-keywords', {
+            method: 'POST',
+            body: JSON.stringify({ keywords: dlg.keywords, limit: dlg.limit })
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!d || !d.success) {
+            showToast('批量删除失败: ' + (d.detail || d.error || '未知错误'), 'error');
+            return;
+          }
+          showToast(d.message || `已删除 ${d.deleted} 个Token`, 'success');
+          await refreshTokens();
+        } catch (e) {
+          showToast('网络错误: ' + e.message, 'error');
         }
       },
       copySora2Code = async (code) => {
