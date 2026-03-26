@@ -20,6 +20,20 @@ SUPPORTED_CAPTCHA_METHODS_ORDER = [
 DEFAULT_REMOTE_BROWSER_TIMEOUT = 60
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "disabled"}:
+            return False
+    return default
+
+
 def normalize_captcha_priority_order(value: Any) -> List[str]:
     """规范化验证码打码优先级顺序，仅保留显式启用的方法。"""
     parsed: List[str] = []
@@ -121,6 +135,7 @@ def normalize_remote_browser_servers(
                 "name": name,
                 "base_url": base_url,
                 "api_key": api_key,
+                "enabled": _coerce_bool(item.get("enabled", item.get("is_active", True)), default=True),
                 "timeout": normalize_remote_browser_timeout(
                     item.get("timeout", item.get("request_timeout", legacy_timeout)),
                     default=legacy_timeout,
@@ -148,6 +163,7 @@ def normalize_remote_browser_servers(
             "name": legacy_url or "远程打码服务 1",
             "base_url": legacy_url,
             "api_key": legacy_key,
+            "enabled": True,
             "timeout": normalize_remote_browser_timeout(legacy_timeout),
             "success_count": 0,
             "failure_count": 0,
@@ -170,6 +186,9 @@ def get_primary_remote_browser_server(
         legacy_api_key=legacy_api_key,
         legacy_timeout=legacy_timeout,
     )
+    enabled_servers = [server for server in normalized if _coerce_bool(server.get("enabled", True), default=True)]
+    if enabled_servers:
+        return dict(enabled_servers[0])
     if normalized:
         return dict(normalized[0])
     return {
@@ -177,6 +196,7 @@ def get_primary_remote_browser_server(
         "name": "",
         "base_url": "",
         "api_key": "",
+        "enabled": True,
         "timeout": normalize_remote_browser_timeout(legacy_timeout),
         "weight": 50,
         "success_count": 0,

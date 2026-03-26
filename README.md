@@ -303,7 +303,23 @@ curl -X POST "http://23.159.248.139:8000/v1/chat/completions" \
 
 
 
-
+curl -X POST "http://38.49.55.206:8000/v1/chat/completions" \
+  -H "Authorization: Bearer jHrrRDxVD5twXN2t" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-landscape",
+    "messages": [
+      {
+        "role": "user",
+        "content": "一只可爱的猫咪在花园里玩耍"
+      }
+    ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": { "aspectRatio": "16:9", "imageSize": "1K" }
+  },
+  "stream": true
+  }'
 
 
 

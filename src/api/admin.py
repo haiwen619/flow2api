@@ -402,11 +402,15 @@ def _get_remote_browser_client_configs() -> List[Dict[str, Any]]:
     )
     candidates: List[Dict[str, Any]] = []
     invalid_messages: List[str] = []
+    disabled_count = 0
 
     for server in raw_servers:
         base_url_raw = str(server.get("base_url") or "").strip()
         api_key = str(server.get("api_key") or "").strip()
         label = _format_remote_browser_server_label(server)
+        if not bool(server.get("enabled", True)):
+            disabled_count += 1
+            continue
 
         if not base_url_raw:
             invalid_messages.append(f"{label}: 未配置服务地址")
@@ -432,6 +436,8 @@ def _get_remote_browser_client_configs() -> List[Dict[str, Any]]:
     if candidates:
         return candidates
 
+    if disabled_count and not invalid_messages:
+        raise RuntimeError("远程打码服务均已禁用")
     if invalid_messages:
         raise RuntimeError("无可用远程打码服务：" + "；".join(invalid_messages[:4]))
     raise RuntimeError("远程打码服务未配置")
@@ -3888,6 +3894,7 @@ async def update_captcha_config(
         server_name = str(server.get("name") or f"远程打码服务 {index}").strip()
         base_url_value = str(server.get("base_url") or "").strip()
         api_key_value = str(server.get("api_key") or "").strip()
+        enabled_value = bool(server.get("enabled", True))
         timeout_value = server.get("timeout", remote_browser_timeout)
 
         if base_url_value:
@@ -3906,9 +3913,15 @@ async def update_captcha_config(
                 "name": server_name,
                 "base_url": base_url_value,
                 "api_key": api_key_value,
+                "enabled": enabled_value,
                 "timeout": timeout_value,
             }
         )
+
+    enabled_remote_servers = [
+        server for server in normalized_remote_servers
+        if bool(server.get("enabled", True))
+    ]
 
     primary_remote_server = get_primary_remote_browser_server(
         normalized_remote_servers,
@@ -3919,9 +3932,9 @@ async def update_captcha_config(
     remote_browser_timeout = primary_remote_server.get("timeout", 60)
 
     if captcha_method == "remote_browser":
-        if not normalized_remote_servers:
-            return {"success": False, "message": "remote_browser 模式至少需要配置一个远程打码服务"}
-        for server in normalized_remote_servers:
+        if not enabled_remote_servers:
+            return {"success": False, "message": "remote_browser 模式至少需要启用一个远程打码服务"}
+        for server in enabled_remote_servers:
             if not str(server.get("base_url") or "").strip():
                 return {"success": False, "message": f"远程打码服务「{server.get('name') or server.get('id') or '-'}」未配置服务地址"}
             if not str(server.get("api_key") or "").strip():

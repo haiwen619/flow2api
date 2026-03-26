@@ -2348,12 +2348,16 @@ class FlowClient:
         )
         candidates: List[Dict[str, Any]] = []
         invalid_reasons: List[str] = []
+        disabled_servers: List[str] = []
 
         for server in raw_servers:
             base_url = str(server.get("base_url") or "").strip().rstrip("/")
             api_key = str(server.get("api_key") or "").strip()
             timeout = max(5, int(server.get("timeout") or config.remote_browser_timeout or 60))
             label = self._format_remote_browser_server_label(server)
+            if not bool(server.get("enabled", True)):
+                disabled_servers.append(label)
+                continue
 
             if not base_url:
                 invalid_reasons.append(f"{label}: 服务地址未配置")
@@ -2385,8 +2389,10 @@ class FlowClient:
 
         debug_logger.log_warning(
             "[reCAPTCHA RemoteBrowser] remote_browser 配置缺失: "
-            f"order={method_order}, invalid={invalid_reasons[:4]}"
+            f"order={method_order}, disabled={disabled_servers[:4]}, invalid={invalid_reasons[:4]}"
         )
+        if disabled_servers and not invalid_reasons:
+            raise RuntimeError("remote_browser 服务均已禁用")
         if invalid_reasons:
             raise RuntimeError("无可用 remote_browser 服务: " + "；".join(invalid_reasons[:4]))
         raise RuntimeError(

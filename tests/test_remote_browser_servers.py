@@ -1,5 +1,6 @@
 from src.core.models import (
     CaptchaConfig,
+    get_primary_remote_browser_server,
     normalize_remote_browser_servers,
     sort_remote_browser_servers_by_success,
 )
@@ -31,6 +32,30 @@ def test_sort_remote_browser_servers_by_success_count_desc():
     assert [item["id"] for item in servers] == ["c", "b", "a"]
 
 
+def test_normalize_remote_browser_servers_enabled_defaults_true():
+    servers = normalize_remote_browser_servers(
+        [
+            {"id": "a", "base_url": "https://a.example.com", "api_key": "a"},
+            {"id": "b", "base_url": "https://b.example.com", "api_key": "b", "enabled": False},
+        ]
+    )
+
+    assert servers[0]["enabled"] is True
+    assert servers[1]["enabled"] is False
+
+
+def test_primary_remote_browser_server_prefers_enabled_node():
+    primary = get_primary_remote_browser_server(
+        [
+            {"id": "disabled", "base_url": "https://disabled.example.com", "api_key": "disabled", "enabled": False},
+            {"id": "enabled", "base_url": "https://enabled.example.com", "api_key": "enabled", "enabled": True},
+        ]
+    )
+
+    assert primary["id"] == "enabled"
+    assert primary["base_url"] == "https://enabled.example.com"
+
+
 def test_captcha_config_syncs_primary_remote_browser_fields():
     cfg = CaptchaConfig(
         captcha_method="remote_browser",
@@ -40,12 +65,22 @@ def test_captcha_config_syncs_primary_remote_browser_fields():
                 "name": "主节点",
                 "base_url": "https://primary.example.com",
                 "api_key": "primary-key",
+                "enabled": False,
+                "timeout": 88,
+                "success_count": 3,
+            },
+            {
+                "id": "secondary",
+                "name": "备用节点",
+                "base_url": "https://secondary.example.com",
+                "api_key": "secondary-key",
+                "enabled": True,
                 "timeout": 88,
                 "success_count": 3,
             }
         ],
     )
 
-    assert cfg.remote_browser_base_url == "https://primary.example.com"
-    assert cfg.remote_browser_api_key == "primary-key"
+    assert cfg.remote_browser_base_url == "https://secondary.example.com"
+    assert cfg.remote_browser_api_key == "secondary-key"
     assert cfg.remote_browser_timeout == 88
