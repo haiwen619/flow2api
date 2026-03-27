@@ -1389,6 +1389,7 @@ class TokenManager:
                 at=candidate_at,
                 at_expires=at_expires,
                 credits=credits_result.get("credits", 0),
+                user_paygate_tier=credits_result.get("userPaygateTier"),
             )
             debug_logger.log_info(
                 f"[REAUTH_AT] Token {token_id}: 候选 token 可作为 AT 使用（余额: {credits_result.get('credits', 0)}）"
@@ -1562,6 +1563,7 @@ class TokenManager:
                                 at=direct_at,
                                 at_expires=direct_at_expires,
                                 credits=verify_direct.get("credits", 0),
+                                user_paygate_tier=verify_direct.get("userPaygateTier"),
                             )
                             debug_logger.log_info(
                                 f"[REAUTH_AT] Token {token_id}: strategy={strategy_name} reAuth同链路 AT 验证成功（余额: {verify_direct.get('credits', 0)}）"

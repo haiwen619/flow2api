@@ -3796,11 +3796,13 @@
         }
       },
       formatAccountType = (tier) => {
-        if (tier === "PAYGATE_TIER_NOT_PAID") {
-          return `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-gray-100 text-gray-700">普通</span>`;
-        } else {
+        if (tier === "PAYGATE_TIER_ONE" || tier === "PAYGATE_TIER_TWO") {
           return `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-purple-50 text-purple-700">会员</span>`;
         }
+        if (!tier || tier === "PAYGATE_TIER_NOT_PAID") {
+          return `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-gray-100 text-gray-700">普通</span>`;
+        }
+        return `<span class="inline-flex items-center rounded px-2 py-0.5 text-xs bg-gray-100 text-gray-700" title="${escapeHtml(String(tier))}">普通</span>`;
       },
       normalizeTokenEmailSearchKeyword = (value) =>
         String(value || "").trim().toLowerCase(),

@@ -463,11 +463,7 @@ async def _sync_json_http_request(
     req_headers = dict(headers or {})
     req_headers.setdefault("Accept", "application/json")
     request_method = (method or "GET").upper()
-    request_kwargs: Dict[str, Any] = {
-        "headers": req_headers,
-        "timeout": timeout,
-        "impersonate": "chrome120",
-    }
+    request_kwargs: Dict[str, Any] = {"headers": req_headers}
 
     if payload is not None:
         req_headers["Content-Type"] = "application/json; charset=utf-8"
@@ -475,16 +471,17 @@ async def _sync_json_http_request(
             request_kwargs["json"] = payload
 
     try:
-        async with AsyncSession() as session:
-            response = await session.request(
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            response = await client.request(
                 method=request_method,
                 url=url,
                 **request_kwargs,
             )
     except Exception as e:
-        raise RuntimeError(f"远程打码服务请求失败: {e}") from e
+        detail = str(e).strip() or e.__class__.__name__
+        raise RuntimeError(f"远程打码服务请求失败: {detail}") from e
 
-    status_code = int(getattr(response, "status_code", 0) or 0)
+    status_code = int(response.status_code or 0)
     text = response.text or ""
     parsed: Optional[Any] = None
     if text:
