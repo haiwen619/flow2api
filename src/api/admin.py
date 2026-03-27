@@ -447,6 +447,12 @@ def _get_remote_browser_client_configs() -> List[Dict[str, Any]]:
     raise RuntimeError("远程打码服务未配置")
 
 
+def _get_remote_browser_client_config() -> tuple[str, str, int]:
+    """兼容单节点调用方：返回当前优先级最高的可用远程打码服务配置。"""
+    primary = _get_remote_browser_client_configs()[0]
+    return str(primary["base_url"]), str(primary["api_key"]), int(primary["timeout"])
+
+
 async def _sync_json_http_request(
     method: str,
     url: str,
@@ -630,21 +636,13 @@ async def _score_test_with_remote_browser_service(
     for server in targets:
         try:
             endpoint = f"{server['base_url']}/api/v1/custom-score"
-            status_code, response_payload, response_text = await asyncio.to_thread(
-                _sync_json_http_request,
-                "POST",
-                endpoint,
-                {"Authorization": f"Bearer {server['api_key']}"},
-                request_payload,
-                int(server["timeout"]),
+            status_code, response_payload, response_text = await _sync_json_http_request(
+                method="POST",
+                url=endpoint,
+                headers={"Authorization": f"Bearer {server['api_key']}"},
+                payload=request_payload,
+                timeout=int(server["timeout"]),
             )
-    status_code, response_payload, response_text = await _sync_json_http_request(
-        method="POST",
-        url=endpoint,
-        headers={"Authorization": f"Bearer {api_key}"},
-        payload=request_payload,
-        timeout=timeout,
-    )
 
             if status_code >= 400:
                 detail = ""

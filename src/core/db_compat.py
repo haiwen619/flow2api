@@ -278,12 +278,13 @@ class _MySQLConnectionAdapter:
 
 
 class _SQLiteConnectContext:
-    def __init__(self, target: str):
+    def __init__(self, target: str, **connect_kwargs: Any):
         self._target = target
+        self._connect_kwargs = dict(connect_kwargs)
         self._conn = None
 
     async def __aenter__(self):
-        self._conn = await sqlite_aiosqlite.connect(self._target, timeout=30)
+        self._conn = await sqlite_aiosqlite.connect(self._target, **self._connect_kwargs)
         try:
             await self._conn.execute("PRAGMA foreign_keys=ON")
             await self._conn.execute("PRAGMA busy_timeout=30000")
@@ -303,10 +304,10 @@ class _DBAPICompat:
     Row = Row
 
     @staticmethod
-    def connect(target: str):
+    def connect(target: str, **kwargs: Any):
         if is_mysql_target(target):
             return _MySQLConnectionAdapter(target)
-        return _SQLiteConnectContext(target)
+        return _SQLiteConnectContext(target, **kwargs)
 
 
 dbapi = _DBAPICompat()

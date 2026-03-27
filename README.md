@@ -44,7 +44,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "21:9", "imageSize": "1K" }
+      "imageConfig": { "aspectRatio": "16:9", "imageSize": "2K" }
     },
     "stream": true
   }'

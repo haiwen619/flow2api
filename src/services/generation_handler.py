@@ -692,6 +692,13 @@ class GenerationHandler:
         """????????????????"""
         return dict(success=False, error_message=None, error_emitted=False)
 
+    def _create_response_state(self) -> Dict[str, Any]:
+        """为单次请求创建独立的响应状态，避免并发请求互相污染。"""
+        return {
+            "url": None,
+            "generated_assets": None,
+        }
+
     def _sanitize_log_payload(self, payload: Any) -> Any:
         """瘦身日志载荷，避免把大块 base64 / data URL 写入 request_logs。"""
         if payload is None:
@@ -878,6 +885,7 @@ class GenerationHandler:
             "is_load_test": bool(is_load_test or self._is_load_test_prompt(prompt)),
         }
         generation_result = self._create_generation_result()
+        response_state = self._create_response_state()
         request_log_state: Dict[str, Any] = {"id": None, "progress": 0, "status_text": "started", "finalized": False}
 
         # 防止并发链路复用到上一次请求的指纹上下文
@@ -1100,6 +1108,7 @@ class GenerationHandler:
                             token, project_id, model_config, prompt, images, stream,
                             perf_trace=perf_trace,
                             generation_result=generation_result,
+                            response_state=response_state,
                             request_log_state=request_log_state,
                             pending_token_state=pending_token_state
                         ),
@@ -2418,6 +2427,8 @@ class GenerationHandler:
 
         request_log_state["progress"] = safe_progress
         request_log_state["status_text"] = status_text
+        request_log_state["last_status_text"] = status_text
+        request_log_state["last_progress"] = safe_progress
         payload = {
             "status": "processing",
             "status_text": status_text,
