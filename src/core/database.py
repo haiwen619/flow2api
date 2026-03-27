@@ -1,11 +1,9 @@
 """Database storage layer for Flow2API"""
 import asyncio
-import aiosqlite
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,13 +21,13 @@ from .models import (
     Project,
     CaptchaConfig,
     PluginConfig,
+    CallLogicConfig,
     normalize_captcha_priority_order,
     SUPPORTED_CAPTCHA_METHODS_ORDER,
     DEFAULT_REMOTE_BROWSER_TIMEOUT,
     normalize_remote_browser_servers,
     get_primary_remote_browser_server,
 )
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, GenerationConfig, CacheConfig, Project, CaptchaConfig, PluginConfig, CallLogicConfig
 
 
 class Database:
@@ -809,7 +807,6 @@ class Database:
                 await db.commit()
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
         async with self._connect(write=True) as db:
             await db.execute("PRAGMA journal_mode = WAL")
             await db.execute("PRAGMA synchronous = NORMAL")
@@ -2345,9 +2342,6 @@ class Database:
         include_payload: bool = False,
     ) -> Dict[str, Any]:
         """Get paginated request logs with total count."""
-        async with aiosqlite.connect(self.db_path) as db:
-    async def get_logs(self, limit: int = 100, token_id: Optional[int] = None, include_payload: bool = False):
-        """Get request logs with token info, optionally including payload fields"""
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             payload_columns = "rl.request_body, rl.response_body," if include_payload else ""

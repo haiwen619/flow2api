@@ -2,7 +2,6 @@
 import asyncio
 import json
 import contextvars
-import os
 import time
 import uuid
 import random
@@ -15,12 +14,6 @@ import urllib.request
 from curl_cffi.requests import AsyncSession
 from ..core.logger import debug_logger
 from ..core.config import config
-from ..core.models import (
-    normalize_captcha_priority_order,
-    sort_remote_browser_servers_by_success,
-    weighted_pick_remote_browser_server,
-)
-from .perf_monitor import perf_monitor
 
 
 class FlowClient:
@@ -39,16 +32,6 @@ class FlowClient:
             "flow_request_fingerprint",
             default=None
         )
-        # 当前请求链路代理命中信息（system/proxy_pool/direct）
-        self._request_proxy_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
-            "flow_request_proxy",
-            default=None
-        )
-        # 当前请求链路命中的打码方式
-        self._request_captcha_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
-            "flow_request_captcha",
-            default=None
-        )
 
         # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
         # These will be applied as defaults (won't override caller-provided headers).
@@ -64,66 +47,8 @@ class FlowClient:
             "x-browser-year": "2026",
             "x-client-data": "CJS2yQEIpLbJAQipncoBCNj9ygEIlKHLAQiFoM0BGP6lzwE="
         }
-        # 发车策略改为”请求到就发”：
+        # 发车策略改为“请求到就发”：
         # 不在 flow2api 本地对提交做批次整形或排队，避免把同批请求打成阶梯。
-
-        # upsample 并发控制：上游图片生成结果集中返回时，所有请求同时触发 upsample
-        # 会导致大量打码请求同时涌入，需用信号量+错峰延迟分散压力。
-        # 信号量懒初始化，避免在事件循环启动前创建。
-        self._upsample_semaphore: Optional[asyncio.Semaphore] = None
-        self._upsample_entry_count: int = 0  # 累计进入 gate 的次数，用于计算错峰 slot
-
-    @staticmethod
-    def _is_load_test_prompt(prompt: Optional[str]) -> bool:
-        text = str(prompt or "")
-        return "并发自测样本" in text or "图片并发自测" in text
-
-    def _log_load_test_attempt(
-        self,
-        *,
-        prompt: Optional[str],
-        is_load_test: Optional[bool] = None,
-        stage: str,
-        token_id: Optional[int],
-        project_id: str,
-        model_name: str,
-        attempt_trace: Optional[Dict[str, Any]] = None,
-        extra: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        load_test_mode = self._is_load_test_prompt(prompt) if is_load_test is None else bool(is_load_test)
-        if not load_test_mode:
-            return
-        try:
-            runtime = perf_monitor.get_runtime_snapshot(include_top_processes=True, top_process_limit=5)
-            process_info = runtime.get("process") or {}
-            system_info = runtime.get("system") or {}
-            payload: Dict[str, Any] = {
-                "stage": stage,
-                "token_id": token_id,
-                "project_id": project_id,
-                "model_name": model_name,
-                "process_cpu_percent": process_info.get("cpu_percent", -1),
-                "process_memory_rss_mb": process_info.get("memory_rss_mb", -1),
-                "asyncio_tasks": process_info.get("asyncio_tasks", -1),
-                "system_cpu_percent": system_info.get("cpu_percent", -1),
-                "top_processes": runtime.get("top_processes") or [],
-            }
-            if attempt_trace:
-                payload["attempt"] = attempt_trace.get("attempt")
-                payload["recaptcha_ms"] = attempt_trace.get("recaptcha_ms", 0)
-                payload["launch_queue_ms"] = attempt_trace.get("launch_queue_ms", 0)
-                payload["launch_stagger_ms"] = attempt_trace.get("launch_stagger_ms", 0)
-                payload["duration_ms"] = attempt_trace.get("duration_ms", 0)
-                payload["success"] = attempt_trace.get("success")
-                payload["http_attempts"] = (attempt_trace.get("http_attempts") or [])[:3]
-                if attempt_trace.get("error"):
-                    payload["error"] = attempt_trace.get("error")
-            if extra:
-                payload.update(extra)
-            perf_monitor.record_loadtest_event("attempt", payload)
-            debug_logger.log_info(f"[LOADTEST_IMAGE_ATTEMPT] {json.dumps(payload, ensure_ascii=False, default=str)}")
-        except Exception as exc:
-            debug_logger.log_warning(f"[LOADTEST_IMAGE_ATTEMPT] 日志采样失败: {exc}")
 
     def _generate_user_agent(self, account_id: str = None) -> str:
         """基于账号ID生成固定的 User-Agent
@@ -194,19 +119,8 @@ class FlowClient:
         
         # 缓存结果
         self._user_agent_cache[account_id] = user_agent
-
+        
         return user_agent
-
-    # 支持的 Chrome 模拟版本池（近期版本，避免使用过旧版本被检测）
-    _IMPERSONATE_POOL = ["chrome119", "chrome120", "chrome123", "chrome124"]
-
-    def _pick_impersonate(self, account_id: Optional[str]) -> str:
-        """根据账号 ID 固定选择一个 Chrome 模拟版本，保证同账号 TLS 指纹一致。"""
-        if not account_id:
-            return self._IMPERSONATE_POOL[0]
-        import hashlib
-        idx = int(hashlib.md5(account_id.encode()).hexdigest()[:4], 16) % len(self._IMPERSONATE_POOL)
-        return self._IMPERSONATE_POOL[idx]
 
     def _set_request_fingerprint(self, fingerprint: Optional[Dict[str, Any]]):
         """设置当前请求链路的浏览器指纹上下文。"""
@@ -219,122 +133,9 @@ class FlowClient:
             return None
         return dict(fingerprint)
 
-    @staticmethod
-    def _normalize_request_proxy_source(
-        proxy_source: Optional[Any],
-        proxy_url: Optional[Any] = None,
-    ) -> str:
-        source = str(proxy_source or "").strip().lower()
-        has_proxy = bool(str(proxy_url or "").strip())
-        if source in {"proxy_pool", "system", "direct"}:
-            return source
-        if source in {"none", ""}:
-            return "direct"
-        if source in {"browser_config", "captcha_config", "browser", "remote_browser"}:
-            return "system" if has_proxy else "direct"
-        return "system" if has_proxy else "direct"
-
-    def _set_request_proxy_state(self, proxy_source: str, proxy_url: Optional[str]):
-        source = self._normalize_request_proxy_source(proxy_source, proxy_url)
-        self._request_proxy_ctx.set({
-            "proxy_source": source,
-            "proxy_url": proxy_url if proxy_url else None,
-        })
-
-    def _set_request_captcha_state(self, captcha_method: Optional[str]):
-        method = str(captcha_method or "").strip().lower()
-        self._request_captcha_ctx.set({"captcha_method": method} if method else None)
-
-    def get_request_captcha_method(self) -> str:
-        state = self._request_captcha_ctx.get()
-        if isinstance(state, dict):
-            method = str(state.get("captcha_method") or "").strip().lower()
-            if method:
-                return method
-        return ""
-
-    def get_request_proxy_source(self) -> str:
-        state = self._request_proxy_ctx.get()
-        if isinstance(state, dict):
-            return self._normalize_request_proxy_source(
-                state.get("proxy_source"),
-                state.get("proxy_url"),
-            )
-        return self._normalize_request_proxy_source(None, None)
-
-    def _normalize_remote_browser_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        merged: Dict[str, Any] = {}
-        nested_fingerprint = payload.get("fingerprint")
-        if isinstance(nested_fingerprint, dict):
-            merged.update(nested_fingerprint)
-
-        for key in (
-            "user_agent",
-            "accept_language",
-            "sec_ch_ua",
-            "sec_ch_ua_mobile",
-            "sec_ch_ua_platform",
-            "proxy_url",
-            "proxy_source",
-            "node_name",
-            "expires_in_seconds",
-        ):
-            value = payload.get(key)
-            if value is None:
-                continue
-            if isinstance(value, str):
-                value = value.strip()
-                if value == "":
-                    continue
-            merged[key] = value
-
-        if "proxy_source" in merged:
-            merged["proxy_source"] = self._normalize_request_proxy_source(
-                merged.get("proxy_source"),
-                merged.get("proxy_url"),
-            )
-
-        return merged
-
     def clear_request_fingerprint(self):
         """清理请求链路绑定的浏览器指纹。"""
         self._set_request_fingerprint(None)
-        self._set_request_proxy_state("direct", None)
-        self._set_request_captcha_state(None)
-
-    def _log_recaptcha_success(
-        self,
-        *,
-        captcha_method: str,
-        action: str,
-        project_id: str,
-        browser_ref: Optional[Union[int, str]] = None,
-        fingerprint: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        method_text = {
-            "personal": "内置浏览器打码",
-            "browser": "本地有头浏览器打码",
-            "remote_browser": "远程有头浏览器打码",
-            "yescaptcha": "YesCaptcha",
-            "capmonster": "CapMonster",
-            "ezcaptcha": "EZCaptcha",
-            "capsolver": "Capsolver",
-        }.get(str(captcha_method or "").strip().lower(), str(captcha_method or "unknown"))
-        ref_label = ""
-        if browser_ref is not None:
-            ref_key = "session_id" if str(captcha_method or "").strip().lower() == "remote_browser" else "browser_id"
-            ref_label = f", {ref_key}={browser_ref}"
-        proxy_url = ""
-        ua = ""
-        if isinstance(fingerprint, dict):
-            proxy_url = str(fingerprint.get("proxy_url") or "").strip()
-            ua = str(fingerprint.get("user_agent") or "").strip()
-        proxy_text = proxy_url or "direct"
-        ua_text = ua[:96] if ua else "-"
-        debug_logger.log_info(
-            f"[reCAPTCHA] 打码成功：已获取有效 token，方式={method_text}, action={action}, "
-            f"project_id={project_id}{ref_label}, proxy={proxy_text}, UA={ua_text}"
-        )
 
     async def _make_request(
         self,
@@ -368,42 +169,18 @@ class FlowClient:
         fingerprint = self._request_fingerprint_ctx.get()
 
         proxy_url = None
-        proxy_source = "direct"
         if self.proxy_manager:
-            if hasattr(self.proxy_manager, "select_proxy_with_source"):
-                proxy_url, proxy_source = await self.proxy_manager.select_proxy_with_source(
-                    st_token=st_token,
-                    at_token=at_token,
-                    use_media_proxy=use_media_proxy,
-                )
-            elif hasattr(self.proxy_manager, "select_proxy_url"):
-                proxy_url = await self.proxy_manager.select_proxy_url(
-                    st_token=st_token,
-                    at_token=at_token,
-                    use_media_proxy=use_media_proxy,
-                )
-                proxy_source = "system" if proxy_url else "direct"
-            elif use_media_proxy and hasattr(self.proxy_manager, "get_media_proxy_url"):
+            if use_media_proxy and hasattr(self.proxy_manager, "get_media_proxy_url"):
                 proxy_url = await self.proxy_manager.get_media_proxy_url()
-                proxy_source = "system" if proxy_url else "direct"
             elif hasattr(self.proxy_manager, "get_request_proxy_url"):
                 proxy_url = await self.proxy_manager.get_request_proxy_url()
-                proxy_source = "system" if proxy_url else "direct"
             else:
                 proxy_url = await self.proxy_manager.get_proxy_url()
-                proxy_source = "system" if proxy_url else "direct"
 
-        if respect_fingerprint_proxy and isinstance(fingerprint, dict):
-            if "proxy_url" in fingerprint or "proxy_source" in fingerprint:
-                proxy_url = fingerprint.get("proxy_url")
-                if proxy_url == "":
-                    proxy_url = None
-                proxy_source = self._normalize_request_proxy_source(
-                    fingerprint.get("proxy_source"),
-                    proxy_url,
-                )
-
-        self._set_request_proxy_state(proxy_source, proxy_url)
+        if respect_fingerprint_proxy and isinstance(fingerprint, dict) and "proxy_url" in fingerprint:
+            proxy_url = fingerprint.get("proxy_url")
+            if proxy_url == "":
+                proxy_url = None
         request_timeout = timeout or self.timeout
 
         if headers is None:
@@ -456,14 +233,7 @@ class FlowClient:
             if isinstance(fingerprint, dict):
                 proxy_for_log = proxy_url if proxy_url else "direct"
                 debug_logger.log_info(
-                    "[FINGERPRINT] 使用打码浏览器指纹提交请求: "
-                    f"UA={headers.get('User-Agent', '')[:120]}, "
-                    f"lang={headers.get('Accept-Language', '')[:32] or '-'}, "
-                    f"sec-ch-ua={headers.get('sec-ch-ua', '')[:80] or '-'}, "
-                    f"proxy={proxy_for_log}, "
-                    f"proxy_source={proxy_source}, "
-                    f"captcha_node={str(fingerprint.get('node_name') or '-')}," 
-                    f" token_ttl={fingerprint.get('expires_in_seconds', '-')}"
+                    f"[FINGERPRINT] 使用打码浏览器指纹提交请求: UA={headers.get('User-Agent', '')[:120]}, proxy={proxy_for_log}"
                 )
             debug_logger.log_request(
                 method=method,
@@ -483,7 +253,7 @@ class FlowClient:
                         headers=headers,
                         proxy=proxy_url,
                         timeout=request_timeout,
-                        impersonate=self._pick_impersonate(account_id)
+                        impersonate="chrome110"
                     )
                 else:  # POST
                     response = await session.post(
@@ -492,7 +262,7 @@ class FlowClient:
                         json=json_data,
                         proxy=proxy_url,
                         timeout=request_timeout,
-                        impersonate=self._pick_impersonate(account_id)
+                        impersonate="chrome110"
                     )
 
                 duration_ms = (time.time() - start_time) * 1000
@@ -709,37 +479,6 @@ class FlowClient:
     async def _release_video_launch_gate(self, token_id: Optional[int]):
         """保留接口形状，当前无需释放任何本地发车状态。"""
         return
-
-    async def _acquire_upsample_gate(self) -> float:
-        """获取 upsample 并发槽位，返回应等待的错峰延迟秒数。
-
-        工作原理：
-        - 用 asyncio.Semaphore 限制最大并发放大数（config.flow_image_upsample_concurrency）。
-        - 在获得槽位后，根据当前槽位在本批次中的序号，计算一个错峰延迟，
-          使同批并发的多个 upsample 请求分散打码，避免集中击穿打码服务。
-        - 延迟 = (slot_seq % concurrency) * stagger_interval
-          例如：concurrency=8, stagger=300ms → 第0个立即开始，第1个延迟300ms，…第7个延迟2100ms。
-        """
-        concurrency = config.flow_image_upsample_concurrency
-        stagger_ms = config.flow_image_upsample_stagger_ms
-
-        if concurrency > 0 and self._upsample_semaphore is None:
-            self._upsample_semaphore = asyncio.Semaphore(concurrency)
-
-        if self._upsample_semaphore is not None:
-            await self._upsample_semaphore.acquire()
-
-        # 计算当前请求在本批次中的槽位序号，用于错峰
-        effective_concurrency = max(1, concurrency if concurrency > 0 else 1)
-        slot = self._upsample_entry_count % effective_concurrency
-        self._upsample_entry_count += 1
-
-        return (slot * stagger_ms) / 1000.0
-
-    async def _release_upsample_gate(self) -> None:
-        """释放 upsample 并发槽位。"""
-        if self._upsample_semaphore is not None:
-            self._upsample_semaphore.release()
 
     async def _make_image_generation_request(
         self,
@@ -1164,7 +903,6 @@ class FlowClient:
         token_id: Optional[int] = None,
         token_image_concurrency: Optional[int] = None,
         progress_callback: Optional[Callable[[str, int], Awaitable[None]]] = None,
-        is_load_test: bool = False,
     ) -> tuple[dict, str, Dict[str, Any]]:
         """生成图片(同步返回)
 
@@ -1184,8 +922,8 @@ class FlowClient:
         """
         url = f"{self.api_base_url}/projects/{project_id}/flowMedia:batchGenerateImages"
 
-        # 403/reCAPTCHA 重试逻辑：图片生成最多2次（1次初始+1次重试），打码失败不重试
-        max_retries = 2
+        # 403/reCAPTCHA 重试逻辑
+        max_retries = config.flow_max_retries
         last_error = None
         perf_trace: Dict[str, Any] = {
             "max_retries": max_retries,
@@ -1230,12 +968,20 @@ class FlowClient:
             attempt_trace["recaptcha_ms"] = int((time.time() - recaptcha_started_at) * 1000)
             attempt_trace["recaptcha_ok"] = bool(recaptcha_token)
             if not recaptcha_token:
-                last_error = Exception("打码失败，图片生成请求终止")
+                last_error = Exception("Failed to obtain reCAPTCHA token")
                 attempt_trace["success"] = False
                 attempt_trace["error"] = str(last_error)
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
                 perf_trace["generation_attempts"].append(attempt_trace)
-                debug_logger.log_error(f"[IMAGE] 生成 打码失败，不再重试，直接终止请求")
+                should_retry = await self._handle_missing_recaptcha_token(
+                    retry_attempt=retry_attempt,
+                    max_retries=max_retries,
+                    browser_id=browser_id,
+                    project_id=project_id,
+                    log_prefix="[IMAGE] 生成",
+                )
+                if should_retry:
+                    continue
                 raise last_error
             if progress_callback is not None:
                 await progress_callback("submitting_image", 48)
@@ -1285,15 +1031,6 @@ class FlowClient:
                 attempt_trace["success"] = True
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
                 perf_trace["generation_attempts"].append(attempt_trace)
-                self._log_load_test_attempt(
-                    prompt=prompt,
-                    is_load_test=is_load_test,
-                    stage="generate_image_attempt_done",
-                    token_id=token_id,
-                    project_id=project_id,
-                    model_name=model_name,
-                    attempt_trace=attempt_trace,
-                )
                 perf_trace["final_success_attempt"] = retry_attempt + 1
                 return result, session_id, perf_trace
             except Exception as e:
@@ -1302,15 +1039,6 @@ class FlowClient:
                 attempt_trace["error"] = str(e)[:240]
                 attempt_trace["duration_ms"] = int((time.time() - attempt_started_at) * 1000)
                 perf_trace["generation_attempts"].append(attempt_trace)
-                self._log_load_test_attempt(
-                    prompt=prompt,
-                    is_load_test=is_load_test,
-                    stage="generate_image_attempt_failed",
-                    token_id=token_id,
-                    project_id=project_id,
-                    model_name=model_name,
-                    attempt_trace=attempt_trace,
-                )
                 should_retry = await self._handle_retryable_generation_error(
                     error=e,
                     retry_attempt=retry_attempt,
@@ -1358,83 +1086,72 @@ class FlowClient:
         max_retries = 3
         last_error = None
 
-        # 并发控制：限制同时进行放大的请求数，并错峰分散打码压力
-        stagger_delay_s = await self._acquire_upsample_gate()
-        try:
-            if stagger_delay_s > 0:
-                debug_logger.log_info(
-                    f"[IMAGE UPSAMPLE] 错峰等待 {stagger_delay_s:.2f}s，token_id={token_id}"
+        for retry_attempt in range(max_retries):
+            # 获取 reCAPTCHA token - 使用 IMAGE_GENERATION action
+            recaptcha_token, browser_id = await self._get_recaptcha_token(
+                project_id,
+                action="IMAGE_GENERATION",
+                token_id=token_id
+            )
+            if not recaptcha_token:
+                last_error = Exception("Failed to obtain reCAPTCHA token")
+                should_retry = await self._handle_missing_recaptcha_token(
+                    retry_attempt=retry_attempt,
+                    max_retries=max_retries,
+                    browser_id=browser_id,
+                    project_id=project_id,
+                    log_prefix="[IMAGE UPSAMPLE] 放大",
                 )
-                await asyncio.sleep(stagger_delay_s)
+                if should_retry:
+                    continue
+                raise last_error
+            upsample_session_id = session_id or self._generate_session_id()
 
-            for retry_attempt in range(max_retries):
-                # 获取 reCAPTCHA token - 使用 IMAGE_GENERATION action
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
-                    project_id,
-                    action="IMAGE_GENERATION",
-                    token_id=token_id
-                )
-                if not recaptcha_token:
-                    last_error = Exception("Failed to obtain reCAPTCHA token")
-                    should_retry = await self._handle_missing_recaptcha_token(
-                        retry_attempt=retry_attempt,
-                        max_retries=max_retries,
-                        browser_id=browser_id,
-                        project_id=project_id,
-                        log_prefix="[IMAGE UPSAMPLE] 放大",
-                    )
-                    if should_retry:
-                        continue
-                    raise last_error
-                upsample_session_id = session_id or self._generate_session_id()
-
-                json_data = {
-                    "mediaId": media_id,
-                    "targetResolution": target_resolution,
-                    "clientContext": {
-                        "recaptchaContext": {
-                            "token": recaptcha_token,
-                            "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
-                        },
-                        "sessionId": upsample_session_id,
-                        "projectId": project_id,
-                        "tool": "PINHOLE",
-                        "userPaygateTier": user_paygate_tier
-                    }
+            json_data = {
+                "mediaId": media_id,
+                "targetResolution": target_resolution,
+                "clientContext": {
+                    "recaptchaContext": {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
+                    },
+                    "sessionId": upsample_session_id,
+                    "projectId": project_id,
+                    "tool": "PINHOLE",
+                    "userPaygateTier": user_paygate_tier
                 }
+            }
 
-                # 4K/2K 放大使用专用超时，因为返回的 base64 数据量很大
-                try:
-                    result = await self._make_request(
-                        method="POST",
-                        url=url,
-                        json_data=json_data,
-                        use_at=True,
-                        at_token=at,
-                        timeout=config.upsample_timeout
-                    )
+            # 4K/2K 放大使用专用超时，因为返回的 base64 数据量很大
+            try:
+                result = await self._make_request(
+                    method="POST",
+                    url=url,
+                    json_data=json_data,
+                    use_at=True,
+                    at_token=at,
+                    timeout=config.upsample_timeout
+                )
 
-                    # 返回 base64 编码的图片
-                    return result.get("encodedImage", "")
-                except Exception as e:
-                    last_error = e
-                    should_retry = await self._handle_retryable_generation_error(
-                        error=e,
-                        retry_attempt=retry_attempt,
-                        max_retries=max_retries,
-                        browser_id=browser_id,
-                        project_id=project_id,
-                        log_prefix="[IMAGE UPSAMPLE] 放大",
-                    )
-                    if should_retry:
-                        continue
-                    raise
-                finally:
-                    await self._notify_browser_captcha_request_finished(browser_id)
+                # 返回 base64 编码的图片
+                return result.get("encodedImage", "")
+            except Exception as e:
+                last_error = e
+                should_retry = await self._handle_retryable_generation_error(
+                    error=e,
+                    retry_attempt=retry_attempt,
+                    max_retries=max_retries,
+                    browser_id=browser_id,
+                    project_id=project_id,
+                    log_prefix="[IMAGE UPSAMPLE] 放大",
+                )
+                if should_retry:
+                    continue
+                raise
+            finally:
+                await self._notify_browser_captcha_request_finished(browser_id)
 
-            raise last_error
-        finally:
-            await self._release_upsample_gate()
+        raise last_error
 
     # ========== 视频生成 (使用AT) - 异步返回 ==========
 
@@ -2197,9 +1914,6 @@ class FlowClient:
         """判断是否需要重试，返回日志提示内容"""
         error_lower = error_str.lower()
         if "403" in error_lower:
-            # PERMISSION_DENIED 是账号权限被封禁，不应重试
-            if "permission_denied" in error_lower or "does not have permission" in error_lower:
-                return None
             return "403错误"
         if "429" in error_lower or "too many requests" in error_lower:
             return "429限流"
@@ -2237,8 +1951,7 @@ class FlowClient:
             error_reason: 已归类的错误原因
             error_message: 原始错误文本
         """
-        captcha_method = self.get_request_captcha_method() or config.captcha_method
-        if captcha_method == "browser":
+        if config.captcha_method == "browser":
             try:
                 from .browser_captcha import BrowserCaptchaService
                 service = await BrowserCaptchaService.get_instance(self.db)
@@ -2248,7 +1961,7 @@ class FlowClient:
                 )
             except Exception:
                 pass
-        elif captcha_method == "personal" and project_id:
+        elif config.captcha_method == "personal" and project_id:
             try:
                 from .browser_captcha_personal import BrowserCaptchaService
                 service = await BrowserCaptchaService.get_instance(self.db)
@@ -2259,32 +1972,33 @@ class FlowClient:
                 )
             except Exception:
                 pass
-        elif captcha_method == "remote_browser" and browser_id:
+        elif config.captcha_method == "remote_browser" and browser_id:
             try:
-                await self._notify_remote_browser_session_event(
-                    browser_id,
-                    path_suffix="error",
-                    payload={"error_reason": error_reason or error_message or "upstream_error"},
+                session_id = quote(str(browser_id), safe="")
+                await self._call_remote_browser_service(
+                    method="POST",
+                    path=f"/api/v1/sessions/{session_id}/error",
+                    json_data={"error_reason": error_reason or error_message or "upstream_error"},
                 )
             except Exception as e:
                 debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 上报 error 失败: {e}")
 
     async def _notify_browser_captcha_request_finished(self, browser_id: Optional[Union[int, str]] = None):
         """通知有头浏览器：上游图片/视频请求已结束，可关闭对应打码浏览器。"""
-        captcha_method = self.get_request_captcha_method() or config.captcha_method
-        if captcha_method == "browser":
+        if config.captcha_method == "browser":
             try:
                 from .browser_captcha import BrowserCaptchaService
                 service = await BrowserCaptchaService.get_instance(self.db)
                 await service.report_request_finished(browser_id)
             except Exception:
                 pass
-        elif captcha_method == "remote_browser" and browser_id:
+        elif config.captcha_method == "remote_browser" and browser_id:
             try:
-                await self._notify_remote_browser_session_event(
-                    browser_id,
-                    path_suffix="finish",
-                    payload={"status": "success"},
+                session_id = quote(str(browser_id), safe="")
+                await self._call_remote_browser_service(
+                    method="POST",
+                    path=f"/api/v1/sessions/{session_id}/finish",
+                    json_data={"status": "success"},
                 )
             except Exception as e:
                 debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 上报 finish 失败: {e}")
@@ -2297,116 +2011,20 @@ class FlowClient:
         """生成sceneId: UUID"""
         return str(uuid.uuid4())
 
-    @staticmethod
-    def _format_remote_browser_server_label(server: Dict[str, Any]) -> str:
-        name = str(server.get("name") or "").strip()
-        base_url = str(server.get("base_url") or "").strip()
-        if name and base_url:
-            return f"{name} ({base_url})"
-        return name or base_url or str(server.get("id") or "remote_browser")
+    def _get_remote_browser_service_config(self) -> tuple[str, str, int]:
+        base_url = (config.remote_browser_base_url or "").strip().rstrip("/")
+        api_key = (config.remote_browser_api_key or "").strip()
+        timeout = max(5, int(config.remote_browser_timeout or 60))
 
-    @staticmethod
-    def _compose_remote_browser_session_ref(server_id: Optional[str], session_id: Any) -> str:
-        normalized_session_id = str(session_id or "").strip()
-        normalized_server_id = str(server_id or "").strip()
-        if normalized_server_id and normalized_session_id:
-            return f"{normalized_server_id}::{normalized_session_id}"
-        return normalized_session_id
+        if not base_url:
+            raise RuntimeError("remote_browser 服务地址未配置")
+        if not api_key:
+            raise RuntimeError("remote_browser API Key 未配置")
 
-    @staticmethod
-    def _parse_remote_browser_session_ref(browser_ref: Optional[Union[int, str]]) -> tuple[Optional[str], str]:
-        raw = str(browser_ref or "").strip()
-        if not raw:
-            return None, ""
-        server_id, sep, session_id = raw.partition("::")
-        if sep and server_id and session_id:
-            return server_id, session_id
-        return None, raw
+        if not (base_url.startswith("http://") or base_url.startswith("https://")):
+            raise RuntimeError("remote_browser 服务地址格式错误")
 
-    async def _record_remote_browser_server_result(
-        self,
-        server_id: Optional[str],
-        *,
-        success: bool,
-        error_message: Optional[str] = None,
-    ) -> None:
-        normalized_server_id = str(server_id or "").strip()
-        if not normalized_server_id or self.db is None:
-            return
-        try:
-            await self.db.update_remote_browser_server_stats(
-                normalized_server_id,
-                success=success,
-                error_message=error_message,
-            )
-        except Exception as exc:
-            debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 更新节点统计失败: {exc}")
-
-    def _get_remote_browser_service_candidates(
-        self,
-        preferred_server_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        method_order = normalize_captcha_priority_order(config.captcha_priority_order)
-        raw_servers = sort_remote_browser_servers_by_success(
-            getattr(config, "remote_browser_servers", []),
-            legacy_base_url=config.remote_browser_base_url,
-            legacy_api_key=config.remote_browser_api_key,
-            legacy_timeout=config.remote_browser_timeout,
-        )
-        candidates: List[Dict[str, Any]] = []
-        invalid_reasons: List[str] = []
-        disabled_servers: List[str] = []
-
-        for server in raw_servers:
-            base_url = str(server.get("base_url") or "").strip().rstrip("/")
-            api_key = str(server.get("api_key") or "").strip()
-            timeout = max(5, int(server.get("timeout") or config.remote_browser_timeout or 60))
-            label = self._format_remote_browser_server_label(server)
-            if not bool(server.get("enabled", True)):
-                disabled_servers.append(label)
-                continue
-
-            if not base_url:
-                invalid_reasons.append(f"{label}: 服务地址未配置")
-                continue
-            if not api_key:
-                invalid_reasons.append(f"{label}: API Key 未配置")
-                continue
-            if not (base_url.startswith("http://") or base_url.startswith("https://")):
-                invalid_reasons.append(f"{label}: 服务地址格式错误")
-                continue
-
-            candidates.append(
-                {
-                    **server,
-                    "base_url": base_url,
-                    "api_key": api_key,
-                    "timeout": timeout,
-                }
-            )
-
-        if preferred_server_id:
-            preferred_server_id = str(preferred_server_id).strip()
-            preferred = [item for item in candidates if str(item.get("id") or "").strip() == preferred_server_id]
-            if preferred:
-                return preferred
-
-        if candidates:
-            return weighted_pick_remote_browser_server(candidates)
-
-        debug_logger.log_warning(
-            "[reCAPTCHA RemoteBrowser] remote_browser 配置缺失: "
-            f"order={method_order}, disabled={disabled_servers[:4]}, invalid={invalid_reasons[:4]}"
-        )
-        if disabled_servers and not invalid_reasons:
-            raise RuntimeError("remote_browser 服务均已禁用")
-        if invalid_reasons:
-            raise RuntimeError("无可用 remote_browser 服务: " + "；".join(invalid_reasons[:4]))
-        raise RuntimeError(
-            "remote_browser 服务地址未配置"
-            "（请检查后台“验证码配置”里的 remote_browser 地址是否已保存；"
-            "服务启动后会优先加载数据库 captcha_config，而不是仅使用 setting.toml）"
-        )
+        return base_url, api_key, timeout
 
     @staticmethod
     async def _sync_json_http_request(
@@ -2457,22 +2075,10 @@ class FlowClient:
         path: str,
         json_data: Optional[Dict[str, Any]] = None,
         timeout_override: Optional[int] = None,
-        server_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        selected_server = server_config or self._get_remote_browser_service_candidates()[0]
-        base_url = str(selected_server.get("base_url") or "").strip().rstrip("/")
-        api_key = str(selected_server.get("api_key") or "").strip()
-        timeout = max(5, int(selected_server.get("timeout") or config.remote_browser_timeout or 60))
+        base_url, api_key, timeout = self._get_remote_browser_service_config()
         url = f"{base_url}{path}"
         effective_timeout = max(5, int(timeout_override or timeout))
-        request_method = (method or "GET").upper()
-        payload_text = json.dumps(json_data or {}, ensure_ascii=False)
-        server_label = self._format_remote_browser_server_label(selected_server)
-
-        debug_logger.log_info(
-            "[reCAPTCHA RemoteBrowser] 发起请求: "
-            f"server={server_label}, method={request_method}, url={url}, timeout={effective_timeout}s, payload={payload_text}"
-        )
 
         status_code, payload, response_text = await self._sync_json_http_request(
             method=method,
@@ -2488,53 +2094,12 @@ class FlowClient:
                 detail = payload.get("detail") or payload.get("message") or str(payload)
             if not detail:
                 detail = (response_text or "").strip() or f"HTTP {status_code}"
-            debug_logger.log_error(
-                "[reCAPTCHA RemoteBrowser] 请求失败: "
-                f"server={server_label}, method={request_method}, url={url}, status={status_code}, detail={detail}, payload={payload_text}"
-            )
             raise RuntimeError(f"remote_browser 请求失败: {detail}")
 
         if not isinstance(payload, dict):
-            debug_logger.log_error(
-                "[reCAPTCHA RemoteBrowser] 返回格式错误: "
-                f"server={server_label}, method={request_method}, url={url}, status={status_code}, body={response_text[:300]}, payload={payload_text}"
-            )
             raise RuntimeError("remote_browser 返回格式错误")
 
         return payload
-
-    async def _notify_remote_browser_session_event(
-        self,
-        browser_ref: Optional[Union[int, str]],
-        *,
-        path_suffix: str,
-        payload: Dict[str, Any],
-    ) -> None:
-        server_id, session_id = self._parse_remote_browser_session_ref(browser_ref)
-        if not session_id:
-            return
-
-        candidates = self._get_remote_browser_service_candidates(preferred_server_id=server_id)
-        encoded_session_id = quote(str(session_id), safe="")
-        last_error: Optional[Exception] = None
-
-        for server in candidates:
-            try:
-                result = await self._call_remote_browser_service(
-                    method="POST",
-                    path=f"/api/v1/sessions/{encoded_session_id}/{path_suffix}",
-                    json_data=payload,
-                    server_config=server,
-                )
-                if server_id or bool(result.get("found")):
-                    return
-            except Exception as exc:
-                last_error = exc
-                if server_id:
-                    raise
-
-        if last_error and server_id:
-            raise last_error
 
     def _resolve_remote_browser_solve_timeout(self, action: str) -> int:
         base_timeout = max(5, int(config.remote_browser_timeout or 60))
@@ -2556,210 +2121,6 @@ class FlowClient:
 
         return max(base_timeout, min(expected, 3600))
 
-    async def _get_recaptcha_token_by_method(
-        self,
-        captcha_method: str,
-        project_id: str,
-        action: str,
-        token_id: Optional[int],
-    ) -> tuple[Optional[str], Optional[Union[int, str]], str]:
-        method = str(captcha_method or "").strip().lower()
-
-        if self._should_skip_local_browser_captcha_method(method):
-            return None, None, "[skip] Docker 环境未启用本地有头浏览器打码"
-
-        if method == "personal":
-            try:
-                from .browser_captcha_personal import BrowserCaptchaService
-                service = await BrowserCaptchaService.get_instance(self.db)
-                token = await service.get_token(project_id, action)
-                fingerprint = service.get_last_fingerprint() if token else None
-                self._set_request_fingerprint(fingerprint if token else None)
-                if token:
-                    self._log_recaptcha_success(
-                        captcha_method=method,
-                        action=action,
-                        project_id=project_id,
-                        fingerprint=fingerprint,
-                    )
-                    return token, None, ""
-                return None, None, "内置浏览器未返回 token"
-            except RuntimeError as e:
-                error_msg = str(e)
-                debug_logger.log_error(f"[reCAPTCHA Personal] {error_msg}")
-                print(f"[reCAPTCHA] ❌ 内置浏览器打码失败: {error_msg}")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-            except ImportError as e:
-                error_msg = f"nodriver 导入失败: {str(e)}"
-                debug_logger.log_error(f"[reCAPTCHA Personal] {error_msg}")
-                print(f"[reCAPTCHA] ❌ nodriver 未安装，请运行: pip install nodriver")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-            except Exception as e:
-                error_msg = str(e)
-                debug_logger.log_error(f"[reCAPTCHA Personal] 错误: {error_msg}")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-
-        if method == "browser":
-            try:
-                from .browser_captcha import BrowserCaptchaService
-                service = await BrowserCaptchaService.get_instance(self.db)
-                token, browser_id = await service.get_token(project_id, action, token_id=token_id)
-                fingerprint = await service.get_fingerprint(browser_id) if token else None
-                self._set_request_fingerprint(fingerprint if token else None)
-                if token:
-                    self._log_recaptcha_success(
-                        captcha_method=method,
-                        action=action,
-                        project_id=project_id,
-                        browser_ref=browser_id,
-                        fingerprint=fingerprint,
-                    )
-                    return token, browser_id, ""
-                return None, None, "有头浏览器未返回 token"
-            except RuntimeError as e:
-                error_msg = str(e)
-                debug_logger.log_error(f"[reCAPTCHA Browser] {error_msg}")
-                print(f"[reCAPTCHA] ❌ 有头浏览器打码失败: {error_msg}")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-            except ImportError as e:
-                error_msg = f"playwright 导入失败: {str(e)}"
-                debug_logger.log_error(f"[reCAPTCHA Browser] {error_msg}")
-                print(f"[reCAPTCHA] ❌ playwright 未安装，请运行: pip install playwright && python -m playwright install chromium")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-            except Exception as e:
-                error_msg = str(e)
-                debug_logger.log_error(f"[reCAPTCHA Browser] 错误: {error_msg}")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-
-        if method == "remote_browser":
-            solve_timeout = self._resolve_remote_browser_solve_timeout(action)
-            last_errors: List[str] = []
-            try:
-                candidates = self._get_remote_browser_service_candidates()
-            except Exception as exc:
-                error_msg = str(exc)
-                debug_logger.log_error(f"[reCAPTCHA RemoteBrowser] 错误: {error_msg}")
-                self._set_request_fingerprint(None)
-                return None, None, error_msg
-
-            for server in candidates:
-                server_label = self._format_remote_browser_server_label(server)
-                try:
-                    payload = await self._call_remote_browser_service(
-                        method="POST",
-                        path="/api/v1/solve",
-                        json_data={
-                            "project_id": project_id,
-                            "action": action,
-                            "token_id": token_id,
-                        },
-                        timeout_override=solve_timeout,
-                        server_config=server,
-                    )
-                    debug_logger.log_info(
-                        "[reCAPTCHA RemoteBrowser] /api/v1/solve success payload: "
-                        f"server={server_label}, payload={json.dumps(payload, ensure_ascii=False)}"
-                    )
-                    token = payload.get("token")
-                    session_id = payload.get("session_id")
-                    fingerprint = self._normalize_remote_browser_payload(payload)
-                    self._set_request_fingerprint(fingerprint if token else None)
-                    if not token or not session_id:
-                        raise RuntimeError(f"remote_browser 返回缺少 token/session_id: {payload}")
-
-                    session_ref = self._compose_remote_browser_session_ref(server.get("id"), session_id)
-                    await self._record_remote_browser_server_result(server.get("id"), success=True)
-                    self._log_recaptcha_success(
-                        captcha_method=method,
-                        action=action,
-                        project_id=project_id,
-                        browser_ref=session_ref,
-                        fingerprint=fingerprint,
-                    )
-                    return token, session_ref, ""
-                except Exception as exc:
-                    error_msg = str(exc)
-                    last_errors.append(f"{server_label}: {error_msg}")
-                    await self._record_remote_browser_server_result(
-                        server.get("id"),
-                        success=False,
-                        error_message=error_msg,
-                    )
-                    debug_logger.log_warning(
-                        f"[reCAPTCHA RemoteBrowser] 节点失败，尝试切换下一个: server={server_label}, detail={error_msg}"
-                    )
-
-            error_msg = " | ".join(last_errors[:4]) if last_errors else "remote_browser 未返回 token"
-            debug_logger.log_error(f"[reCAPTCHA RemoteBrowser] 错误: {error_msg}")
-            self._set_request_fingerprint(None)
-            return None, None, error_msg
-
-        if method in ["yescaptcha", "capmonster", "ezcaptcha", "capsolver"]:
-            self._set_request_fingerprint(None)
-            try:
-                token = await self._get_api_captcha_token(method, project_id, action)
-            except Exception as e:
-                return None, None, str(e)
-            if token:
-                self._log_recaptcha_success(
-                    captcha_method=method,
-                    action=action,
-                    project_id=project_id,
-                    fingerprint=None,
-                )
-                return token, None, ""
-            return None, None, f"{method} 未返回 token"
-
-        self._set_request_fingerprint(None)
-        return None, None, f"未知的打码方式: {method}"
-
-    @staticmethod
-    def _is_running_in_docker() -> bool:
-        if os.name == "nt":
-            return False
-        if os.path.exists("/.dockerenv"):
-            return True
-        try:
-            with open("/proc/1/cgroup", "r", encoding="utf-8", errors="ignore") as handle:
-                content = handle.read()
-            if any(marker in content for marker in ("docker", "kubepods", "containerd")):
-                return True
-        except Exception:
-            pass
-        return bool(os.environ.get("DOCKER_CONTAINER") or os.environ.get("KUBERNETES_SERVICE_HOST"))
-
-    def _should_skip_local_browser_captcha_method(self, method: str) -> bool:
-        normalized = str(method or "").strip().lower()
-        if normalized not in {"browser", "personal"}:
-            return False
-        if not self._is_running_in_docker():
-            return False
-        allow_value = str(os.getenv("ALLOW_DOCKER_HEADED_CAPTCHA", "") or "").strip().lower()
-        return allow_value not in {"1", "true", "yes", "on"}
-
-    def _should_force_remote_browser_only(self) -> bool:
-        if os.name == "nt":
-            return False
-        return bool(config.should_auto_allow_docker_headed_captcha())
-
-    def _resolve_effective_captcha_method_order(self) -> List[str]:
-        configured_order = normalize_captcha_priority_order(config.captcha_priority_order)
-        if not self._should_force_remote_browser_only():
-            return configured_order
-
-        if configured_order != ["remote_browser"]:
-            debug_logger.log_info(
-                "[reCAPTCHA] 当前 Linux 服务器节点已强制仅使用 remote_browser 打码，"
-                f"忽略其余回退方式: {configured_order}"
-            )
-        return ["remote_browser"]
-
     async def _get_recaptcha_token(
         self,
         project_id: str,
@@ -2778,45 +2139,94 @@ class FlowClient:
         Returns:
             (token, browser_id) 元组。
             - browser 模式: browser_id 为本地浏览器 ID
-            - remote_browser 模式: browser_id 为远程节点句柄（server_id::session_id）
+            - remote_browser 模式: browser_id 为远程 session_id
             - 其他模式: browser_id 为 None
         """
-        self._set_request_captcha_state(None)
-        method_order = self._resolve_effective_captcha_method_order()
-        last_errors: List[str] = []
+        captcha_method = config.captcha_method
 
-        for index, captcha_method in enumerate(method_order, start=1):
-            debug_logger.log_info(
-                f"[reCAPTCHA] 尝试打码方式 {index}/{len(method_order)}: {captcha_method}"
-            )
-            token, browser_id, error_detail = await self._get_recaptcha_token_by_method(
-                captcha_method=captcha_method,
-                project_id=project_id,
-                action=action,
-                token_id=token_id,
-            )
-            if token:
-                self._set_request_captcha_state(captcha_method)
+        # 内置浏览器打码 (nodriver)
+        if captcha_method == "personal":
+            try:
+                from .browser_captcha_personal import BrowserCaptchaService
+                service = await BrowserCaptchaService.get_instance(self.db)
+                token = await service.get_token(project_id, action)
+                fingerprint = service.get_last_fingerprint() if token else None
+                self._set_request_fingerprint(fingerprint if token else None)
+                return token, None
+            except RuntimeError as e:
+                # 捕获 Docker 环境或依赖缺失的明确错误
+                error_msg = str(e)
+                debug_logger.log_error(f"[reCAPTCHA Personal] {error_msg}")
+                print(f"[reCAPTCHA] ❌ 内置浏览器打码失败: {error_msg}")
+                self._set_request_fingerprint(None)
+                return None, None
+            except ImportError as e:
+                debug_logger.log_error(f"[reCAPTCHA Personal] 导入失败: {str(e)}")
+                print(f"[reCAPTCHA] ❌ nodriver 未安装，请运行: pip install nodriver")
+                self._set_request_fingerprint(None)
+                return None, None
+            except Exception as e:
+                debug_logger.log_error(f"[reCAPTCHA Personal] 错误: {str(e)}")
+                self._set_request_fingerprint(None)
+                return None, None
+        # 有头浏览器打码 (playwright)
+        elif captcha_method == "browser":
+            try:
+                from .browser_captcha import BrowserCaptchaService
+                service = await BrowserCaptchaService.get_instance(self.db)
+                token, browser_id = await service.get_token(project_id, action, token_id=token_id)
+                fingerprint = await service.get_fingerprint(browser_id) if token else None
+                self._set_request_fingerprint(fingerprint if token else None)
                 return token, browser_id
-
-            detail_text = str(error_detail or "未返回 token").strip()
-            if detail_text.startswith("[skip]"):
-                debug_logger.log_info(
-                    f"[reCAPTCHA] 跳过当前打码方式: {captcha_method}, detail={detail_text[6:].strip()}"
+            except RuntimeError as e:
+                # 捕获 Docker 环境或依赖缺失的明确错误
+                error_msg = str(e)
+                debug_logger.log_error(f"[reCAPTCHA Browser] {error_msg}")
+                print(f"[reCAPTCHA] ❌ 有头浏览器打码失败: {error_msg}")
+                self._set_request_fingerprint(None)
+                return None, None
+            except ImportError as e:
+                debug_logger.log_error(f"[reCAPTCHA Browser] 导入失败: {str(e)}")
+                print(f"[reCAPTCHA] ❌ playwright 未安装，请运行: pip install playwright && python -m playwright install chromium")
+                self._set_request_fingerprint(None)
+                return None, None
+            except Exception as e:
+                debug_logger.log_error(f"[reCAPTCHA Browser] 错误: {str(e)}")
+                self._set_request_fingerprint(None)
+                return None, None
+        elif captcha_method == "remote_browser":
+            try:
+                solve_timeout = self._resolve_remote_browser_solve_timeout(action)
+                payload = await self._call_remote_browser_service(
+                    method="POST",
+                    path="/api/v1/solve",
+                    json_data={
+                        "project_id": project_id,
+                        "action": action,
+                        "token_id": token_id,
+                    },
+                    timeout_override=solve_timeout,
                 )
-                continue
-            last_errors.append(f"{captcha_method}: {detail_text}")
-            debug_logger.log_warning(
-                f"[reCAPTCHA] 打码方式失败，准备切换下一个: {captcha_method}, detail={detail_text}"
-            )
-
-        self._set_request_fingerprint(None)
-        self._set_request_captcha_state(None)
-        if last_errors:
-            debug_logger.log_error(
-                f"[reCAPTCHA] 所有打码方式均失败: {' | '.join(last_errors[:7])}"
-            )
-        return None, None
+                token = payload.get("token")
+                session_id = payload.get("session_id")
+                fingerprint = payload.get("fingerprint") if isinstance(payload.get("fingerprint"), dict) else None
+                self._set_request_fingerprint(fingerprint if token else None)
+                if not token or not session_id:
+                    raise RuntimeError(f"remote_browser 返回缺少 token/session_id: {payload}")
+                return token, str(session_id)
+            except Exception as e:
+                debug_logger.log_error(f"[reCAPTCHA RemoteBrowser] 错误: {str(e)}")
+                self._set_request_fingerprint(None)
+                return None, None
+        # API打码服务
+        elif captcha_method in ["yescaptcha", "capmonster", "ezcaptcha", "capsolver"]:
+            self._set_request_fingerprint(None)
+            token = await self._get_api_captcha_token(captcha_method, project_id, action)
+            return token, None
+        else:
+            debug_logger.log_info(f"[reCAPTCHA] 未知的打码方式: {captcha_method}")
+            self._set_request_fingerprint(None)
+            return None, None
 
     async def _get_api_captcha_token(self, method: str, project_id: str, action: str = "IMAGE_GENERATION") -> Optional[str]:
         """通用API打码服务
