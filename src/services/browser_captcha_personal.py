@@ -8,7 +8,11 @@ import time
 import os
 import sys
 import subprocess
+import shutil
+import tempfile
 import traceback
+import urllib.parse
+from contextlib import contextmanager
 from typing import Optional, Dict, Any
 
 from ..core.logger import debug_logger
@@ -38,8 +42,21 @@ def _is_running_in_docker() -> bool:
 IS_DOCKER = _is_running_in_docker()
 
 
-def _resolve_browser_executable_path() -> Optional[str]:
-    """Resolve browser executable path for nodriver on Windows/server hosts."""
+def _resolve_browser_executable_paths() -> list[str]:
+    """Resolve candidate browser executable paths for nodriver on Windows/server hosts."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _append_candidate(path: Optional[str]):
+        normalized = str(path or "").strip().strip('"')
+        if not normalized or not os.path.isfile(normalized):
+            return
+        normalized = os.path.normpath(normalized)
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
     # 1) Explicit env vars
     env_keys = [
         "BROWSER_EXECUTABLE_PATH",
@@ -48,21 +65,66 @@ def _resolve_browser_executable_path() -> Optional[str]:
         "EDGE_EXECUTABLE_PATH",
     ]
     for k in env_keys:
-        p = str(os.getenv(k, "") or "").strip().strip('"')
-        if p and os.path.isfile(p):
-            return p
+        _append_candidate(os.getenv(k))
 
     # 2) Common Windows install paths
-    candidates = [
+    common_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     ]
-    for p in candidates:
-        if os.path.isfile(p):
-            return p
-    return None
+    for p in common_paths:
+        _append_candidate(p)
+
+    return candidates
+
+
+def _merge_no_proxy_hosts(existing_value: Optional[str], hosts: list[str]) -> str:
+    """Merge loopback hosts into NO_PROXY/no_proxy without losing existing bypass rules."""
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for item in (existing_value or "").split(","):
+        host = item.strip()
+        if host and host not in seen:
+            seen.add(host)
+            merged.append(host)
+
+    for host in hosts:
+        if host and host not in seen:
+            seen.add(host)
+            merged.append(host)
+
+    return ",".join(merged)
+
+
+@contextmanager
+def _temporary_loopback_no_proxy():
+    """Temporarily force localhost CDP traffic to bypass system proxies."""
+    import urllib.request as _urllib_request
+
+    proxy_bypass_hosts = ["127.0.0.1", "localhost", "::1"]
+    saved_env = {name: os.environ.get(name) for name in ("NO_PROXY", "no_proxy")}
+    merged_no_proxy = _merge_no_proxy_hosts(
+        saved_env.get("NO_PROXY") or saved_env.get("no_proxy"),
+        proxy_bypass_hosts,
+    )
+    os.environ["NO_PROXY"] = merged_no_proxy
+    os.environ["no_proxy"] = merged_no_proxy
+
+    no_proxy_opener = _urllib_request.build_opener(_urllib_request.ProxyHandler({}))
+    saved_urllib_opener = _urllib_request._opener
+    _urllib_request._opener = no_proxy_opener
+    try:
+        yield
+    finally:
+        _urllib_request._opener = saved_urllib_opener
+        for env_name, env_value in saved_env.items():
+            if env_value is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = env_value
 
 
 def _is_truthy_env(name: str) -> bool:
@@ -143,6 +205,7 @@ def _ensure_nodriver_installed() -> bool:
 # 尝试导入 nodriver
 uc = None
 NODRIVER_AVAILABLE = False
+_NODRIVER_LOOPBACK_WS_PATCHED = False
 
 if DOCKER_HEADED_BLOCKED:
     debug_logger.log_warning(
@@ -164,6 +227,68 @@ else:
         except ImportError as e:
             debug_logger.log_error(f"[BrowserCaptcha] nodriver 导入失败: {e}")
             print(f"[BrowserCaptcha] ❌ nodriver 导入失败: {e}")
+
+
+def _patch_nodriver_loopback_websocket_proxy():
+    """Disable proxies for nodriver's local CDP websocket connections."""
+    global _NODRIVER_LOOPBACK_WS_PATCHED
+    if _NODRIVER_LOOPBACK_WS_PATCHED or not NODRIVER_AVAILABLE:
+        return
+
+    try:
+        from nodriver.core import connection as _nd_connection
+
+        original_connect = _nd_connection.websockets.connect
+
+        def _connect(uri, *args, **kwargs):
+            parsed = urllib.parse.urlparse(str(uri or ""))
+            host = (parsed.hostname or "").strip().lower()
+            if host in {"127.0.0.1", "localhost", "::1"} and "proxy" not in kwargs:
+                kwargs["proxy"] = None
+            return original_connect(uri, *args, **kwargs)
+
+        _nd_connection.websockets.connect = _connect
+        _NODRIVER_LOOPBACK_WS_PATCHED = True
+        debug_logger.log_info("[BrowserCaptcha] 已为 nodriver loopback websocket 关闭代理")
+    except Exception as e:
+        debug_logger.log_warning(f"[BrowserCaptcha] 配置 nodriver websocket 免代理失败: {e}")
+
+
+if NODRIVER_AVAILABLE:
+    _patch_nodriver_loopback_websocket_proxy()
+
+
+def _normalize_browser_proxy_url(proxy_url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """将浏览器代理标准化为 Chromium 可接受的格式。"""
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return None, None
+
+    if "://" not in raw:
+        raw = f"http://{raw}"
+
+    parsed = urllib.parse.urlparse(raw)
+    scheme = str(parsed.scheme or "").strip().lower()
+    host = str(parsed.hostname or "").strip()
+    port = parsed.port
+    username = parsed.username
+    password = parsed.password
+
+    if not scheme or not host or not port:
+        return raw, None
+
+    if scheme == "socks5" and username and password:
+        quoted_user = urllib.parse.quote(username, safe="")
+        quoted_password = urllib.parse.quote(password, safe="")
+        normalized = f"http://{quoted_user}:{quoted_password}@{host}:{port}"
+        warning = (
+            "检测到带认证的 SOCKS5 代理。"
+            "Chromium 命令行模式不支持 socks5 用户名密码认证，"
+            f"已自动改用 HTTP 代理启动浏览器: http://{host}:{port}"
+        )
+        return normalized, warning
+
+    return raw, None
 
 
 class ResidentTabInfo:
@@ -195,8 +320,9 @@ class BrowserCaptchaService:
         self._initialized = False
         self.website_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
         self.db = db
-        # 使用 None 让 nodriver 自动创建临时目录，避免目录锁定问题
+        # 使用服务自管的临时目录，隔离真实 Chrome profile，并在失败后可主动轮换清理。
         self.user_data_dir = None
+        self._owns_user_data_dir = False
 
         # 常驻模式相关属性 (支持多 project_id)
         self._resident_tabs: dict[str, 'ResidentTabInfo'] = {}  # project_id -> 常驻标签页信息
@@ -211,10 +337,34 @@ class BrowserCaptchaService:
         self._running = False                            # 向后兼容
         self._recaptcha_ready = False                    # 向后兼容
         self._last_fingerprint: Optional[Dict[str, Any]] = None
+        self._active_proxy_url: Optional[str] = None
         self._resident_error_streaks: dict[str, int] = {}
         # 自定义站点打码常驻页（用于 score-test）
         self._custom_tabs: dict[str, Dict[str, Any]] = {}
         self._custom_lock = asyncio.Lock()
+
+    async def _resolve_runtime_proxy_url(self) -> Optional[str]:
+        """读取 personal/browser 共用的浏览器代理配置。"""
+        if not self.db:
+            return None
+
+        try:
+            captcha_config = await self.db.get_captcha_config()
+        except Exception as e:
+            debug_logger.log_warning(f"[BrowserCaptcha] 读取浏览器代理配置失败: {e}")
+            return None
+
+        if not bool(getattr(captcha_config, "browser_proxy_enabled", False)):
+            return None
+
+        raw_proxy_url = str(getattr(captcha_config, "browser_proxy_url", "") or "").strip()
+        if not raw_proxy_url:
+            return None
+
+        normalized_proxy_url, proxy_warning = _normalize_browser_proxy_url(raw_proxy_url)
+        if proxy_warning:
+            debug_logger.log_warning(f"[BrowserCaptcha] {proxy_warning}")
+        return normalized_proxy_url
 
     def _cleanup_orphan_profile_browsers(self) -> int:
         """Best-effort cleanup for orphan browser processes using our dedicated profile dir."""
@@ -253,6 +403,32 @@ class BrowserCaptchaService:
         except Exception as e:
             debug_logger.log_warning(f"[BrowserCaptcha] 清理孤儿浏览器进程失败: {e}")
             return 0
+
+    def _ensure_managed_profile_dir(self, rotate: bool = False) -> Optional[str]:
+        """Ensure nodriver uses an isolated, writable profile dir."""
+        if rotate and self._owns_user_data_dir and self.user_data_dir:
+            self._remove_managed_profile_dir()
+
+        if not self.user_data_dir:
+            self.user_data_dir = tempfile.mkdtemp(prefix="flow2api_uc_")
+            self._owns_user_data_dir = True
+        elif self._owns_user_data_dir:
+            os.makedirs(self.user_data_dir, exist_ok=True)
+
+        return self.user_data_dir
+
+    def _remove_managed_profile_dir(self):
+        """Remove the managed temporary profile dir when it is no longer needed."""
+        profile_dir = str(self.user_data_dir or "").strip()
+        if not self._owns_user_data_dir or not profile_dir:
+            return
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception as e:
+            debug_logger.log_warning(f"[BrowserCaptcha] 清理临时 profile 目录失败: {e}")
+        finally:
+            self.user_data_dir = None
+            self._owns_user_data_dir = False
 
     @classmethod
     async def get_instance(cls, db=None) -> 'BrowserCaptchaService':
@@ -358,12 +534,20 @@ class BrowserCaptchaService:
         except Exception:
             raise
 
+        desired_proxy_url = await self._resolve_runtime_proxy_url()
+
         needs_restart = False
         if self._initialized and self.browser:
             # 检查浏览器是否仍然存活
             try:
                 if self.browser.stopped:
                     debug_logger.log_warning("[BrowserCaptcha] 浏览器已停止，重新初始化...")
+                    needs_restart = True
+                elif self._active_proxy_url != desired_proxy_url:
+                    debug_logger.log_info(
+                        "[BrowserCaptcha] 检测到 personal 浏览器代理配置变化，准备重启浏览器: "
+                        f"{self._active_proxy_url or 'direct'} -> {desired_proxy_url or 'direct'}"
+                    )
                     needs_restart = True
                 else:
                     return
@@ -383,44 +567,87 @@ class BrowserCaptchaService:
             self.resident_project_id = None
             self.resident_tab = None
             self._recaptcha_ready = False
+            self._active_proxy_url = None
             async with self._resident_lock:
                 self._resident_tabs.clear()
             debug_logger.log_info("[BrowserCaptcha] 已清理失效浏览器与常驻标签页状态")
             self._cleanup_orphan_profile_browsers()
 
         try:
+            self._ensure_managed_profile_dir()
             if self.user_data_dir:
                 debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (用户数据目录: {self.user_data_dir})...")
                 os.makedirs(self.user_data_dir, exist_ok=True)
                 self._cleanup_orphan_profile_browsers()
-            else:
-                debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (使用临时目录)...")
 
-            browser_executable_path = _resolve_browser_executable_path()
-            if browser_executable_path:
+            browser_executable_paths = _resolve_browser_executable_paths()
+            if browser_executable_paths:
                 debug_logger.log_info(
-                    f"[BrowserCaptcha] 使用指定浏览器可执行文件: {browser_executable_path}"
+                    "[BrowserCaptcha] 浏览器可执行文件候选: "
+                    + ", ".join(browser_executable_paths)
                 )
             else:
                 debug_logger.log_warning(
                     "[BrowserCaptcha] 未配置/未发现浏览器路径，将使用 nodriver 自动探测"
                 )
+                browser_executable_paths = [None]
 
             # 启动 nodriver 浏览器
-            config = uc.Config(
-                headless=self.headless,
-                user_data_dir=self.user_data_dir,
-                browser_executable_path=browser_executable_path,
-                sandbox=False,
-                browser_args=[
-                    '--disable-dev-shm-usage',
-                    '--disable-setuid-sandbox',
-                    '--disable-gpu',
-                    '--window-size=1280,720',
-                    '--profile-directory=Default',
-                ],
-            )
-            self.browser = await uc.start(config)
+            _browser_args = [
+                '--disable-dev-shm-usage',
+                '--disable-setuid-sandbox',
+                '--disable-gpu',
+                '--window-size=1280,720',
+            ]
+            if desired_proxy_url:
+                _browser_args.append(f'--proxy-server={desired_proxy_url}')
+                debug_logger.log_info(f"[BrowserCaptcha] personal 模式启用浏览器代理: {desired_proxy_url}")
+            else:
+                debug_logger.log_info("[BrowserCaptcha] personal 模式未启用浏览器代理，使用直连")
+            if os.name == "nt":
+                _browser_args.append('--do-not-de-elevate')
+            _start_last_error: Optional[Exception] = None
+            launch_plans: list[tuple[Optional[str], bool]] = []
+            for candidate_path in browser_executable_paths:
+                launch_plans.append((candidate_path, self.headless))
+                if not self.headless:
+                    launch_plans.append((candidate_path, True))
+
+            for _start_attempt, (browser_executable_path, _effective_headless) in enumerate(launch_plans):
+                try:
+                    if _start_attempt > 0:
+                        self._ensure_managed_profile_dir(rotate=True)
+                        debug_logger.log_warning(
+                            f"[BrowserCaptcha] 启动重试 {_start_attempt + 1}/{len(launch_plans)}，"
+                            f"模式={'headless' if _effective_headless else 'headed'}，"
+                            f"浏览器={browser_executable_path or 'auto-detect'}"
+                        )
+
+                    if self.user_data_dir:
+                        os.makedirs(self.user_data_dir, exist_ok=True)
+                        self._cleanup_orphan_profile_browsers()
+
+                    config = uc.Config(
+                        headless=_effective_headless,
+                        user_data_dir=self.user_data_dir,
+                        browser_executable_path=browser_executable_path,
+                        sandbox=False,
+                        browser_args=_browser_args,
+                    )
+                    with _temporary_loopback_no_proxy():
+                        self.browser = await uc.start(config)
+                    _start_last_error = None
+                    self._active_proxy_url = desired_proxy_url
+                    if _effective_headless and not self.headless:
+                        debug_logger.log_info("[BrowserCaptcha] ✅ headless 模式启动成功")
+                    break
+                except Exception as _start_err:
+                    _start_last_error = _start_err
+                    debug_logger.log_warning(
+                        f"[BrowserCaptcha] nodriver 启动失败 (attempt {_start_attempt + 1}): {_start_err}"
+                    )
+            if _start_last_error is not None:
+                raise _start_last_error
 
             self._initialized = True
             tab_count_text = "<unknown>"
@@ -1153,8 +1380,7 @@ class BrowserCaptchaService:
             if not isinstance(fingerprint, dict):
                 return None
 
-            # personal 模式当前未单独配置浏览器代理，显式使用直连，避免与全局代理混淆。
-            result: Dict[str, Any] = {"proxy_url": None}
+            result: Dict[str, Any] = {"proxy_url": self._active_proxy_url}
             for key in ("user_agent", "accept_language", "sec_ch_ua", "sec_ch_ua_mobile", "sec_ch_ua_platform"):
                 value = fingerprint.get(key)
                 if isinstance(value, str) and value:
@@ -1513,15 +1739,17 @@ class BrowserCaptchaService:
 
             if self.browser:
                 try:
-                    await self.browser.stop()
+                    self.browser.stop()
                 except Exception as e:
                     debug_logger.log_warning(f"[BrowserCaptcha] 关闭浏览器时出现异常: {str(e)}")
                 finally:
                     self.browser = None
 
             self._initialized = False
+            self._active_proxy_url = None
             self._resident_tabs.clear()  # 确保清空常驻字典
             self._cleanup_orphan_profile_browsers()
+            self._remove_managed_profile_dir()
             self._resident_error_streaks.clear()
             debug_logger.log_info("[BrowserCaptcha] 浏览器已关闭")
         except Exception as e:
@@ -1894,7 +2122,7 @@ class BrowserCaptchaService:
                                 extracted_fingerprint = {
                                     "user_agent": fallback_ua or "",
                                     "accept_language": fallback_lang or "",
-                                    "proxy_url": None,
+                                    "proxy_url": self._active_proxy_url,
                                 }
                             except Exception:
                                 extracted_fingerprint = None

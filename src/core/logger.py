@@ -194,10 +194,13 @@ class _AsyncFileSink:
     def _emit_console(self, entry: str, level: str) -> None:
         if not self._echo_to_console:
             return
-        if level in {"error", "critical"}:
-            print(entry, file=sys.stderr)
-        else:
-            print(entry)
+        stream = sys.stderr if level in {"error", "critical"} else sys.stdout
+        try:
+            print(entry, file=stream)
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            safe_entry = entry.encode(encoding, errors="replace").decode(encoding, errors="replace")
+            print(safe_entry, file=stream)
 
     def _start_writer_thread(self) -> None:
         with self._start_lock:

@@ -5,7 +5,7 @@
 $ErrorActionPreference = "Stop"
 
 # ===== 1. 按实际情况修改这里 =====
-$ProjectRoot = "C:\Flow2API"
+$ProjectRoot = "D:\katu\Flowapi2\master"
 $Python312InstallerUrl = "https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe"
 $Python312InstallerPath = Join-Path $env:TEMP "python-3.12.0-amd64.exe"
 $FirewallRuleName = "Flow2API-8000"
