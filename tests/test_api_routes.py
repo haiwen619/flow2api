@@ -173,7 +173,7 @@ def test_flexible_auth_accepts_x_goog_api_key(monkeypatch):
     ) == "secret"
 
 
-def test_admin_remote_browser_helper_uses_asyncsession(monkeypatch):
+def test_admin_remote_browser_helper_uses_httpx(monkeypatch):
     calls = []
 
     class FakeResponse:
@@ -183,7 +183,10 @@ def test_admin_remote_browser_helper_uses_asyncsession(monkeypatch):
         def json(self):
             return {"success": True, "token": "abc"}
 
-    class FakeSession:
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            calls.append({"client_kwargs": kwargs})
+
         async def __aenter__(self):
             return self
 
@@ -198,7 +201,7 @@ def test_admin_remote_browser_helper_uses_asyncsession(monkeypatch):
             })
             return FakeResponse()
 
-    monkeypatch.setattr(admin_module, "AsyncSession", FakeSession)
+    monkeypatch.setattr(admin_module.httpx, "AsyncClient", FakeAsyncClient)
 
     status_code, payload, response_text = asyncio.run(
         admin_module._sync_json_http_request(
@@ -215,6 +218,11 @@ def test_admin_remote_browser_helper_uses_asyncsession(monkeypatch):
     assert response_text == '{"success": true, "token": "abc"}'
     assert calls == [
         {
+            "client_kwargs": {
+                "follow_redirects": True,
+            },
+        },
+        {
             "method": "POST",
             "url": "https://example.com/api/v1/custom-score",
             "kwargs": {
@@ -224,7 +232,6 @@ def test_admin_remote_browser_helper_uses_asyncsession(monkeypatch):
                     "Content-Type": "application/json; charset=utf-8",
                 },
                 "timeout": 15,
-                "impersonate": "chrome120",
                 "json": {"website_url": "https://example.com"},
             },
         }
