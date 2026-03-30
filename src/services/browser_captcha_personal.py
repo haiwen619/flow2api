@@ -8,6 +8,10 @@ import inspect
 import time
 import os
 import sys
+import re
+import json
+import shutil
+import tempfile
 import subprocess
 import shutil
 import tempfile
@@ -353,6 +357,8 @@ class BrowserCaptchaService:
         self._last_fingerprint: Optional[Dict[str, Any]] = None
         self._active_proxy_url: Optional[str] = None
         self._resident_error_streaks: dict[str, int] = {}
+        self._proxy_url: Optional[str] = None
+        self._proxy_ext_dir: Optional[str] = None
         # 自定义站点打码常驻页（用于 score-test）
         self._custom_tabs: dict[str, Dict[str, Any]] = {}
         self._custom_lock = asyncio.Lock()
@@ -858,6 +864,8 @@ class BrowserCaptchaService:
         self.browser = None
         self._initialized = False
         self._last_fingerprint = None
+        self._cleanup_proxy_extension()
+        self._proxy_url = None
 
         async with self._resident_lock:
             resident_items = list(self._resident_tabs.values())
@@ -894,6 +902,40 @@ class BrowserCaptchaService:
                 debug_logger.log_warning(
                     f"[BrowserCaptcha] 停止浏览器实例失败 ({reason}): {e}"
                 )
+
+    async def _resolve_personal_proxy(self):
+        """Read proxy config for personal captcha browser.
+        Priority: captcha browser_proxy > request proxy."""
+        if not self.db:
+            return None, None, None, None, None
+        try:
+            captcha_cfg = await self.db.get_captcha_config()
+            if captcha_cfg.browser_proxy_enabled and captcha_cfg.browser_proxy_url:
+                url = captcha_cfg.browser_proxy_url.strip()
+                if url:
+                    debug_logger.log_info(f"[BrowserCaptcha] Personal 使用验证码代理: {url}")
+                    return _parse_proxy_url(url)
+        except Exception as e:
+            debug_logger.log_warning(f"[BrowserCaptcha] 读取验证码代理配置失败: {e}")
+        try:
+            proxy_cfg = await self.db.get_proxy_config()
+            if proxy_cfg and proxy_cfg.enabled and proxy_cfg.proxy_url:
+                url = proxy_cfg.proxy_url.strip()
+                if url:
+                    debug_logger.log_info(f"[BrowserCaptcha] Personal 回退使用请求代理: {url}")
+                    return _parse_proxy_url(url)
+        except Exception as e:
+            debug_logger.log_warning(f"[BrowserCaptcha] 读取请求代理配置失败: {e}")
+        return None, None, None, None, None
+
+    def _cleanup_proxy_extension(self):
+        """Remove temporary proxy auth extension directory."""
+        if self._proxy_ext_dir and os.path.isdir(self._proxy_ext_dir):
+            try:
+                shutil.rmtree(self._proxy_ext_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._proxy_ext_dir = None
 
     async def initialize(self):
         """初始化 nodriver 浏览器"""
@@ -933,27 +975,49 @@ class BrowserCaptchaService:
                         f"[BrowserCaptcha] 使用指定浏览器可执行文件: {browser_executable_path}"
                     )
 
+                # 解析代理配置
+                self._cleanup_proxy_extension()
+                self._proxy_url = None
+                protocol, host, port, username, password = await self._resolve_personal_proxy()
+                proxy_server_arg = None
+                if protocol and host and port:
+                    if username and password:
+                        self._proxy_ext_dir = _create_proxy_auth_extension(protocol, host, port, username, password)
+                        debug_logger.log_info(
+                            f"[BrowserCaptcha] Personal 代理需要认证，已创建扩展: {self._proxy_ext_dir}"
+                        )
+                    proxy_server_arg = f"--proxy-server={protocol}://{host}:{port}"
+                    self._proxy_url = f"{protocol}://{host}:{port}"
+                    debug_logger.log_info(f"[BrowserCaptcha] Personal 浏览器代理: {self._proxy_url}")
+
+                browser_args = [
+                    '--disable-dev-shm-usage',
+                    '--disable-setuid-sandbox',
+                    '--disable-gpu',
+                    '--window-size=1280,720',
+                    '--window-position=3000,3000',
+                    '--profile-directory=Default',
+                    '--disable-background-networking',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--disable-default-apps',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                ]
+                if proxy_server_arg:
+                    browser_args.append(proxy_server_arg)
+                if self._proxy_ext_dir:
+                    browser_args.append(f'--load-extension={self._proxy_ext_dir}')
+                else:
+                    browser_args.append('--disable-extensions')
+
                 # 启动 nodriver 浏览器（后台启动，不占用前台）
                 config = uc.Config(
                     headless=self.headless,
                     user_data_dir=self.user_data_dir,
                     browser_executable_path=browser_executable_path,
                     sandbox=False,
-                    browser_args=[
-                        '--disable-dev-shm-usage',
-                        '--disable-setuid-sandbox',
-                        '--disable-gpu',
-                        '--window-size=1280,720',
-                        '--window-position=3000,3000',  # 窗口位置移到屏幕外
-                        '--profile-directory=Default',
-                        '--disable-extensions',
-                        '--disable-background-networking',
-                        '--disable-sync',
-                        '--disable-translate',
-                        '--disable-default-apps',
-                        '--no-first-run',
-                        '--no-default-browser-check',
-                    ]
+                    browser_args=browser_args,
                 )
                 self.browser = await self._run_with_timeout(
                     uc.start(config),
