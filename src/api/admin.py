@@ -3,10 +3,6 @@ import asyncio
 import io
 import json
 import re
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 import secrets
 import sys
 import time
@@ -16,18 +12,13 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Security
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-import re
-import urllib.error
-import urllib.request
 from urllib.parse import urlparse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from curl_cffi.requests import AsyncSession
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Security
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 
 from ..core.auth import AuthManager
 from ..core.config import config
@@ -541,7 +532,6 @@ async def _sync_json_http_request(
         "headers": req_headers,
         "timeout": _build_remote_browser_http_timeout(timeout),
     }
-    request_kwargs: Dict[str, Any] = {"headers": req_headers}
 
     if payload is not None:
         req_headers["Content-Type"] = "application/json; charset=utf-8"
@@ -562,17 +552,14 @@ async def _sync_json_http_request(
         # Windows + impersonate 场景下 POST body 丢失导致 FastAPI 直接判定 body 缺失。
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as session:
             response = await session.request(
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-            response = await client.request(
                 method=request_method,
                 url=url,
                 **request_kwargs,
             )
     except Exception as e:
-        detail = str(e).strip() or e.__class__.__name__
-        raise RuntimeError(f"远程打码服务请求失败: {detail}") from e
+        raise RuntimeError(f"远程打码服务请求失败: {e}") from e
 
-    status_code = int(response.status_code or 0)
+    status_code = int(getattr(response, "status_code", 0) or 0)
     text = response.text or ""
     parsed = _parse_json_response_text(text)
 

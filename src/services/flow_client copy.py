@@ -15,6 +15,11 @@ from curl_cffi.requests import AsyncSession
 from ..core.logger import debug_logger
 from ..core.config import config
 
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
 
 class FlowClient:
     """VideoFX API客户端"""
@@ -32,6 +37,7 @@ class FlowClient:
             "flow_request_fingerprint",
             default=None
         )
+        self._remote_browser_prefill_last_sent: Dict[str, float] = {}
 
         # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
         # These will be applied as defaults (won't override caller-provided headers).
@@ -1979,6 +1985,7 @@ class FlowClient:
                     method="POST",
                     path=f"/api/v1/sessions/{session_id}/error",
                     json_data={"error_reason": error_reason or error_message or "upstream_error"},
+                    timeout_override=2,
                 )
             except Exception as e:
                 debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 上报 error 失败: {e}")
@@ -1999,6 +2006,7 @@ class FlowClient:
                     method="POST",
                     path=f"/api/v1/sessions/{session_id}/finish",
                     json_data={"status": "success"},
+                    timeout_override=2,
                 )
             except Exception as e:
                 debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] 上报 finish 失败: {e}")
@@ -2027,6 +2035,72 @@ class FlowClient:
         return base_url, api_key, timeout
 
     @staticmethod
+    def _build_remote_browser_http_timeout(read_timeout: float) -> Any:
+        read_value = max(3.0, float(read_timeout))
+        write_value = min(10.0, max(3.0, read_value))
+        if httpx is None:
+            return read_value
+        return httpx.Timeout(
+            connect=2.5,
+            read=read_value,
+            write=write_value,
+            pool=2.5,
+        )
+
+    @staticmethod
+    def _parse_json_response_text(text: str) -> Optional[Any]:
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _stdlib_json_http_request(
+        method: str,
+        url: str,
+        headers: Dict[str, str],
+        payload: Optional[Dict[str, Any]],
+        timeout: int,
+    ) -> tuple[int, Optional[Any], str]:
+        req_headers = dict(headers or {})
+        req_headers.setdefault("Accept", "application/json")
+        request_method = (method or "GET").upper()
+        request_data: Optional[bytes] = None
+
+        if payload is not None:
+            req_headers["Content-Type"] = "application/json; charset=utf-8"
+            if request_method != "GET":
+                request_data = json.dumps(payload).encode("utf-8")
+
+        def do_request() -> tuple[int, str]:
+            request = urllib.request.Request(
+                url=url,
+                data=request_data,
+                headers=req_headers,
+                method=request_method,
+            )
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            try:
+                with opener.open(request, timeout=max(1.0, float(timeout))) as response:
+                    status_code = int(getattr(response, "status", 0) or response.getcode() or 0)
+                    body = response.read()
+                    charset = response.headers.get_content_charset() or "utf-8"
+                    return status_code, body.decode(charset, errors="replace")
+            except urllib.error.HTTPError as exc:
+                body = exc.read()
+                charset = exc.headers.get_content_charset() if exc.headers else None
+                return int(getattr(exc, "code", 0) or 0), body.decode(charset or "utf-8", errors="replace")
+
+        try:
+            status_code, text = await asyncio.to_thread(do_request)
+        except Exception as e:
+            raise RuntimeError(f"remote_browser 请求失败: {e}") from e
+
+        return status_code, FlowClient._parse_json_response_text(text), text
+
+    @staticmethod
     async def _sync_json_http_request(
         method: str,
         url: str,
@@ -2039,8 +2113,7 @@ class FlowClient:
         request_method = (method or "GET").upper()
         request_kwargs: Dict[str, Any] = {
             "headers": req_headers,
-            "timeout": timeout,
-            "impersonate": "chrome120",
+            "timeout": FlowClient._build_remote_browser_http_timeout(timeout),
         }
 
         if payload is not None:
@@ -2048,8 +2121,19 @@ class FlowClient:
             if request_method != "GET":
                 request_kwargs["json"] = payload
 
+        if httpx is None:
+            return await FlowClient._stdlib_json_http_request(
+                method=method,
+                url=url,
+                headers=req_headers,
+                payload=payload,
+                timeout=timeout,
+            )
+
         try:
-            async with AsyncSession() as session:
+            # remote_browser 控制面只需要稳定传输 JSON，不需要浏览器指纹伪装。
+            # 使用 httpx 可以避免 curl_cffi 在当前环境下 POST body 被吞掉。
+            async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as session:
                 response = await session.request(
                     method=request_method,
                     url=url,
@@ -2060,12 +2144,7 @@ class FlowClient:
 
         status_code = int(getattr(response, "status_code", 0) or 0)
         text = response.text or ""
-        parsed: Optional[Any] = None
-        if text:
-            try:
-                parsed = response.json()
-            except Exception:
-                parsed = None
+        parsed = FlowClient._parse_json_response_text(text)
 
         return status_code, parsed, text
 
@@ -2101,25 +2180,72 @@ class FlowClient:
 
         return payload
 
+    async def prefill_remote_browser_pool(
+        self,
+        project_id: str,
+        action: str = "IMAGE_GENERATION",
+        token_id: Optional[int] = None,
+        *,
+        cooldown_seconds: float = 8.0,
+    ) -> bool:
+        """让本地 remote_browser 服务提前开始补池，尽量把取 token 等待搬到前面。"""
+        if config.captcha_method != "remote_browser":
+            return False
+
+        normalized_project = str(project_id or "").strip()
+        normalized_action = str(action or "IMAGE_GENERATION").strip() or "IMAGE_GENERATION"
+        if not normalized_project:
+            return False
+
+        cache_key = f"{normalized_project}|{normalized_action}|{int(token_id or 0)}"
+        now_value = time.monotonic()
+        last_sent = float(self._remote_browser_prefill_last_sent.get(cache_key, 0.0) or 0.0)
+        if (now_value - last_sent) < max(0.5, float(cooldown_seconds)):
+            return False
+
+        try:
+            await self._call_remote_browser_service(
+                method="POST",
+                path="/api/v1/prefill",
+                json_data={
+                    "project_id": normalized_project,
+                    "action": normalized_action,
+                    "token_id": token_id,
+                },
+                timeout_override=3,
+            )
+            self._remote_browser_prefill_last_sent[cache_key] = now_value
+            return True
+        except Exception as e:
+            debug_logger.log_warning(f"[reCAPTCHA RemoteBrowser] prefill 失败: {e}")
+            return False
+
+    async def prefill_remote_browser_for_tokens(self, tokens: List[Any], action: str = "IMAGE_GENERATION") -> int:
+        if config.captcha_method != "remote_browser":
+            return 0
+
+        unique_projects: List[str] = []
+        seen_projects = set()
+        for token in tokens or []:
+            project_id = str(getattr(token, "current_project_id", "") or "").strip()
+            if not project_id or project_id in seen_projects:
+                continue
+            seen_projects.add(project_id)
+            unique_projects.append(project_id)
+
+        warmed = 0
+        for project_id in unique_projects:
+            if await self.prefill_remote_browser_pool(project_id, action=action):
+                warmed += 1
+        return warmed
+
     def _resolve_remote_browser_solve_timeout(self, action: str) -> int:
         base_timeout = max(5, int(config.remote_browser_timeout or 60))
         action_name = str(action or "").strip().upper()
 
-        if action_name == "VIDEO_GENERATION":
-            expected = max(
-                int(getattr(config, "video_timeout", 1500) or 1500) + 180,
-                int(getattr(config, "flow_timeout", 120) or 120) + 240,
-                900,
-            )
-        else:
-            expected = max(
-                int(getattr(config, "image_timeout", 300) or 300) + 180,
-                int(getattr(config, "upsample_timeout", 300) or 300) + 120,
-                int(getattr(config, "flow_timeout", 120) or 120) + 180,
-                300,
-            )
-
-        return max(base_timeout, min(expected, 3600))
+        # 这里只是拿 reCAPTCHA token，不应该跟整条生成链路共用数百秒级超时。
+        target_timeout = 45 if action_name == "VIDEO_GENERATION" else 35
+        return max(12, min(base_timeout, target_timeout))
 
     async def _get_recaptcha_token(
         self,

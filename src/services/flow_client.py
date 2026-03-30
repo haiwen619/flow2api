@@ -55,6 +55,8 @@ class FlowClient:
             "flow_request_captcha",
             default=None
         )
+        # remote_browser 预热请求的发送时间记录（用于冷却去重）
+        self._remote_browser_prefill_last_sent: Dict[str, float] = {}
 
         # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
         # These will be applied as defaults (won't override caller-provided headers).
@@ -2273,6 +2275,7 @@ class FlowClient:
                     path=f"/api/v1/sessions/{session_id}/error",
                     json_data={"error_reason": error_reason or error_message or "upstream_error"},
                     timeout_override=2,
+                )
                 await self._notify_remote_browser_session_event(
                     browser_id,
                     path_suffix="error",
@@ -2299,6 +2302,7 @@ class FlowClient:
                     path=f"/api/v1/sessions/{session_id}/finish",
                     json_data={"status": "success"},
                     timeout_override=2,
+                )
                 await self._notify_remote_browser_session_event(
                     browser_id,
                     path_suffix="finish",

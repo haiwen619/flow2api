@@ -81,18 +81,18 @@ DOCKER_HEADED_BLOCKED = IS_DOCKER and not ALLOW_DOCKER_HEADED
 # ==================== nodriver 自动安装 ====================
 def _run_pip_install(package: str, use_mirror: bool = False) -> bool:
     """运行 pip install 命令
-    
+
     Args:
         package: 包名
         use_mirror: 是否使用国内镜像
-    
+
     Returns:
         是否安装成功
     """
     cmd = [sys.executable, '-m', 'pip', 'install', package]
     if use_mirror:
         cmd.extend(['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'])
-    
+
     try:
         debug_logger.log_info(f"[BrowserCaptcha] 正在安装 {package}...")
         print(f"[BrowserCaptcha] 正在安装 {package}...")
@@ -111,7 +111,7 @@ def _run_pip_install(package: str, use_mirror: bool = False) -> bool:
 
 def _ensure_nodriver_installed() -> bool:
     """确保 nodriver 已安装
-    
+
     Returns:
         是否安装成功/已安装
     """
@@ -121,20 +121,20 @@ def _ensure_nodriver_installed() -> bool:
         return True
     except ImportError:
         pass
-    
+
     debug_logger.log_info("[BrowserCaptcha] nodriver 未安装，开始自动安装...")
     print("[BrowserCaptcha] nodriver 未安装，开始自动安装...")
-    
+
     # 先尝试官方源
     if _run_pip_install('nodriver', use_mirror=False):
         return True
-    
+
     # 官方源失败，尝试国内镜像
     debug_logger.log_info("[BrowserCaptcha] 官方源安装失败，尝试国内镜像...")
     print("[BrowserCaptcha] 官方源安装失败，尝试国内镜像...")
     if _run_pip_install('nodriver', use_mirror=True):
         return True
-    
+
     debug_logger.log_error("[BrowserCaptcha] ❌ nodriver 自动安装失败，请手动安装: pip install nodriver")
     print("[BrowserCaptcha] ❌ nodriver 自动安装失败，请手动安装: pip install nodriver")
     return False
@@ -179,7 +179,7 @@ class ResidentTabInfo:
 
 class BrowserCaptchaService:
     """浏览器自动化获取 reCAPTCHA token（nodriver 有头模式）
-    
+
     支持两种模式：
     1. 常驻模式 (Resident Mode): 为每个 project_id 保持常驻标签页，即时生成 token
     2. 传统模式 (Legacy Mode): 每次请求创建新标签页 (fallback)
@@ -266,7 +266,7 @@ class BrowserCaptchaService:
                         cls._instance._idle_tab_reaper_loop()
                     )
         return cls._instance
-    
+
     def _check_available(self):
         """检查服务是否可用"""
         if DOCKER_HEADED_BLOCKED:
@@ -338,9 +338,6 @@ class BrowserCaptchaService:
 
     async def initialize(self):
         """初始化 nodriver 浏览器"""
-        # 检查服务是否可用
-        self._check_available()
-
         try:
             stopped_text = "<unknown>"
             if self.browser is not None:
@@ -356,16 +353,15 @@ class BrowserCaptchaService:
         except Exception:
             pass
 
-        needs_restart = False
         try:
             self._check_available()
-        except Exception as e:
+        except Exception:
             raise
 
+        needs_restart = False
         if self._initialized and self.browser:
             # 检查浏览器是否仍然存活
             try:
-                # 尝试获取浏览器信息验证存活
                 if self.browser.stopped:
                     debug_logger.log_warning("[BrowserCaptcha] 浏览器已停止，重新初始化...")
                     needs_restart = True
@@ -393,24 +389,21 @@ class BrowserCaptchaService:
             self._cleanup_orphan_profile_browsers()
 
         try:
-            debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (用户数据目录: {self.user_data_dir})...")
-
-            # 确保 user_data_dir 存在
-            os.makedirs(self.user_data_dir, exist_ok=True)
-            self._cleanup_orphan_profile_browsers()
             if self.user_data_dir:
                 debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (用户数据目录: {self.user_data_dir})...")
-                # 确保 user_data_dir 存在
                 os.makedirs(self.user_data_dir, exist_ok=True)
+                self._cleanup_orphan_profile_browsers()
             else:
                 debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (使用临时目录)...")
 
             browser_executable_path = _resolve_browser_executable_path()
-            start_kwargs = dict(
-            browser_executable_path = os.environ.get("BROWSER_EXECUTABLE_PATH", "").strip() or None
             if browser_executable_path:
                 debug_logger.log_info(
                     f"[BrowserCaptcha] 使用指定浏览器可执行文件: {browser_executable_path}"
+                )
+            else:
+                debug_logger.log_warning(
+                    "[BrowserCaptcha] 未配置/未发现浏览器路径，将使用 nodriver 自动探测"
                 )
 
             # 启动 nodriver 浏览器
@@ -424,22 +417,10 @@ class BrowserCaptchaService:
                     '--disable-setuid-sandbox',
                     '--disable-gpu',
                     '--window-size=1280,720',
-                    '--profile-directory=Default',  # 跳过 Profile 选择器页面
-                ],
                     '--profile-directory=Default',
-                ]
+                ],
             )
-            if browser_executable_path:
-                start_kwargs["browser_executable_path"] = browser_executable_path
-                debug_logger.log_info(f"[BrowserCaptcha] 使用浏览器路径: {browser_executable_path}")
-            else:
-                debug_logger.log_warning(
-                    "[BrowserCaptcha] 未配置/未发现浏览器路径，将使用 nodriver 自动探测"
-                )
             self.browser = await uc.start(config)
-
-            # 启动 nodriver 浏览器
-            self.browser = await uc.start(**start_kwargs)
 
             self._initialized = True
             tab_count_text = "<unknown>"
@@ -461,12 +442,11 @@ class BrowserCaptchaService:
 
     async def start_resident_mode(self, project_id: str):
         """启动常驻模式
-        
+
         Args:
             project_id: 用于常驻的项目 ID
         """
-        await self.initialize()
-
+        # 如果该 project_id 已有常驻标签页，直接同步旧属性返回
         existing_info = self._resident_tabs.get(project_id)
         if existing_info and existing_info.tab:
             debug_logger.log_info(f"[BrowserCaptcha] project_id={project_id} 常驻标签页已存在，跳过重复创建")
@@ -475,7 +455,7 @@ class BrowserCaptchaService:
             self.resident_tab = existing_info.tab
             self._recaptcha_ready = bool(existing_info.recaptcha_ready)
             return
-        
+
         await self.initialize()
 
         self.resident_project_id = project_id
@@ -492,9 +472,9 @@ class BrowserCaptchaService:
         else:
             debug_logger.log_info(f"[BrowserCaptcha] 创建新标签页")
             self.resident_tab = await self.browser.get(website_url, new_tab=True)
-        
+
         debug_logger.log_info("[BrowserCaptcha] 标签页已创建，等待页面加载...")
-        
+
         # 等待页面加载完成（带重试机制）
         page_loaded = False
         for retry in range(60):
@@ -517,18 +497,18 @@ class BrowserCaptchaService:
             except Exception as e:
                 debug_logger.log_warning(f"[BrowserCaptcha] 等待页面异常: {e}，重试 {retry + 1}/15...")
                 await asyncio.sleep(2)
-        
+
         if not page_loaded:
             debug_logger.log_error("[BrowserCaptcha] 页面加载超时，常驻模式启动失败")
             return
-        
+
         # 等待 reCAPTCHA 加载
         self._recaptcha_ready = await self._wait_for_recaptcha(self.resident_tab)
-        
+
         if not self._recaptcha_ready:
             debug_logger.log_error("[BrowserCaptcha] reCAPTCHA 加载失败，常驻模式启动失败")
             return
-        
+
         # 同步到多 project_id 常驻字典，避免与新版常驻逻辑状态不一致。
         resident_info = ResidentTabInfo(self.resident_tab, project_id)
         resident_info.recaptcha_ready = bool(self._recaptcha_ready)
@@ -539,7 +519,7 @@ class BrowserCaptchaService:
 
     async def stop_resident_mode(self, project_id: Optional[str] = None):
         """停止常驻模式
-        
+
         Args:
             project_id: 指定要关闭的 project_id，如果为 None 则关闭所有常驻标签页
         """
@@ -561,11 +541,11 @@ class BrowserCaptchaService:
                             pass
                 self._resident_error_streaks.clear()
                 debug_logger.log_info(f"[BrowserCaptcha] 已关闭所有常驻标签页 (共 {len(project_ids)} 个)")
-        
+
         # 向后兼容：清理旧属性
         if not self._running:
             return
-        
+
         self._running = False
         if self.resident_tab:
             try:
@@ -573,7 +553,7 @@ class BrowserCaptchaService:
             except Exception:
                 pass
             self.resident_tab = None
-        
+
         self.resident_project_id = None
         self._recaptcha_ready = False
 
@@ -1296,14 +1276,11 @@ class BrowserCaptchaService:
             website_url = "https://labs.google/fx/api/auth/providers"
             debug_logger.log_info(f"[BrowserCaptcha] 为 project_id={project_id} 创建常驻标签页")
 
-            # 检查是否已有该 project_id 的常驻标签页
+            # 查找未被占用的标签页复用
             existing_tabs = [info.tab for info in self._resident_tabs.values() if info.tab]
-
-            # 获取或创建标签页
             tabs = self.browser.tabs
             available_tab = None
 
-            # 查找未被占用的标签页
             for tab in tabs:
                 if tab not in existing_tabs:
                     available_tab = tab
@@ -1318,17 +1295,6 @@ class BrowserCaptchaService:
                 tab = await self.browser.get(website_url, new_tab=True)
 
             # 等待页面加载完成（减少等待时间）
-            website_url = f"https://labs.google/fx/tools/flow/project/{project_id}"
-            debug_logger.log_info(f"[BrowserCaptcha] 为 project_id={project_id} 创建常驻标签页，访问: {website_url}")
-            debug_logger.log_info(
-                f"[BrowserCaptcha] 创建常驻前状态: initialized={self._initialized} "
-                f"browser_exists={self.browser is not None} resident_count={len(self._resident_tabs)}"
-            )
-            
-            # 创建新标签页
-            tab = await self.browser.get(website_url, new_tab=True)
-            
-            # 等待页面加载完成
             page_loaded = False
             for retry in range(10):  # 减少到10次，最多5秒
                 try:
@@ -1572,17 +1538,17 @@ class BrowserCaptchaService:
 
     async def refresh_session_token(self, project_id: str) -> Optional[str]:
         """从常驻标签页获取最新的 Session Token
-        
+
         复用 reCAPTCHA 常驻标签页，通过刷新页面并从 cookies 中提取
         __Secure-next-auth.session-token
-        
+
         Args:
             project_id: 项目ID，用于定位常驻标签页
-            
+
         Returns:
             新的 Session Token，如果获取失败返回 None
         """
-        # 确保浏览器已初始化，并记录本次是否为“临时拉起浏览器”。
+        # 确保浏览器已初始化，并记录本次是否为"临时拉起浏览器"。
         try:
             pre_stopped_text = "<unknown>"
             if self.browser is not None:
@@ -1638,11 +1604,11 @@ class BrowserCaptchaService:
             )
         except Exception:
             pass
-        
+
         start_time = time.time()
         debug_logger.log_info(f"[BrowserCaptcha] 开始刷新 Session Token (project: {project_id})...")
         auto_created_resident = False
-        
+
         try:
             # 尝试获取或创建常驻标签页
             async with self._resident_lock:
@@ -1651,7 +1617,7 @@ class BrowserCaptchaService:
                     f"[BrowserCaptcha] 常驻查找结果: project={project_id} found={resident_info is not None} "
                     f"resident_count={len(self._resident_tabs)}"
                 )
-                
+
                 # 如果该 project_id 没有常驻标签页，则创建
                 if resident_info is None:
                     debug_logger.log_info(f"[BrowserCaptcha] project_id={project_id} 没有常驻标签页，正在创建...")
@@ -1664,17 +1630,17 @@ class BrowserCaptchaService:
                     debug_logger.log_info(
                         f"[BrowserCaptcha] 已自动创建常驻: project={project_id} resident_count={len(self._resident_tabs)}"
                     )
-            
+
             if not resident_info or not resident_info.tab:
                 debug_logger.log_error(f"[BrowserCaptcha] 无法获取常驻标签页")
                 return None
-            
+
             tab = resident_info.tab
-            
+
             # 刷新页面以获取最新的 cookies
             debug_logger.log_info(f"[BrowserCaptcha] 刷新常驻标签页以获取最新 cookies...")
             await tab.reload()
-            
+
             # 等待页面加载完成
             for i in range(30):
                 await asyncio.sleep(1)
@@ -1684,27 +1650,27 @@ class BrowserCaptchaService:
                         break
                 except Exception:
                     pass
-            
+
             # 额外等待确保 cookies 已设置
             await asyncio.sleep(2)
-            
+
             # 从 cookies 中提取 __Secure-next-auth.session-token
             # nodriver 可以通过 browser 获取 cookies
             session_token = None
-            
+
             try:
                 # 使用 nodriver 的 cookies API 获取所有 cookies
                 cookies = await self.browser.cookies.get_all()
                 debug_logger.log_info(f"[BrowserCaptcha] cookies.get_all() 数量: {len(cookies) if cookies is not None else 0}")
-                
+
                 for cookie in cookies:
                     if cookie.name == "__Secure-next-auth.session-token":
                         session_token = cookie.value
                         break
-                        
+
             except Exception as e:
                 debug_logger.log_warning(f"[BrowserCaptcha] 通过 cookies API 获取失败: {e}，尝试从 document.cookie 获取...")
-                
+
                 # 备选方案：通过 JavaScript 获取 (注意：HttpOnly cookies 可能无法通过此方式获取)
                 try:
                     all_cookies = await tab.evaluate("document.cookie")
@@ -1716,20 +1682,20 @@ class BrowserCaptchaService:
                                 break
                 except Exception as e2:
                     debug_logger.log_error(f"[BrowserCaptcha] document.cookie 获取失败: {e2}")
-            
+
             duration_ms = (time.time() - start_time) * 1000
-            
+
             if session_token:
                 debug_logger.log_info(f"[BrowserCaptcha] ✅ Session Token 获取成功（耗时 {duration_ms:.0f}ms）")
                 return session_token
             else:
                 debug_logger.log_error(f"[BrowserCaptcha] ❌ 未找到 __Secure-next-auth.session-token cookie")
                 return None
-                
+
         except Exception as e:
             debug_logger.log_error(f"[BrowserCaptcha] 刷新 Session Token 异常: {str(e)}")
             debug_logger.log_error(f"[BrowserCaptcha] 刷新 Session Token 异常堆栈: {traceback.format_exc()}")
-            
+
             # 常驻标签页可能已失效，尝试重建
             async with self._resident_lock:
                 await self._close_resident_tab(project_id)
@@ -1745,7 +1711,7 @@ class BrowserCaptchaService:
                                 return cookie.value
                     except Exception:
                         pass
-            
+
             return None
         finally:
             # 若本次仅为刷新 ST 而临时创建了常驻标签页，完成后自动清理。
