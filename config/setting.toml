@@ -68,9 +68,21 @@ timeout = 7200  # 缓存超时时间(秒), 默认2小时
 base_url = ""   # 缓存文件访问的基础URL, 留空则使用服务器地址
 
 [captcha]
-captcha_method = "remote_browser"  # 打码方式: yescaptcha/browser/personal/remote_browser
+captcha_method = "personal"  # 打码方式: yescaptcha/browser/personal/remote_browser
 browser_recaptcha_settle_seconds = 1.0  # 打码完成额外稳态等待，速度优先可设 1.0
 browser_launch_background = true  # browser 打码默认后台启动(最小化/避免抢占前台)
+
+# 内置浏览器打码 (personal) 配置
+# 每个项目(project_id)对应一个常驻标签页，标签页会被复用以提高性能
+# 推荐配置（每个标签约占用200-300MB内存）：
+# - 2GB内存: 3个标签
+# - 4GB内存: 5个标签
+# - 8GB内存: 10个标签
+# - 16GB内存: 20个标签
+# 注意：标签数量取决于不同项目的数量，单个项目的并发请求会复用同一个标签页
+personal_max_resident_tabs = 5  # 最大常驻标签页数量
+personal_idle_tab_ttl_seconds = 600  # 标签页空闲超时(秒)，超时后自动回收
+
 yescaptcha_api_key = ""  # YesCaptcha API密钥
 yescaptcha_base_url = "https://api.yescaptcha.com"
 remote_browser_base_url = ""  # 远程有头打码服务地址

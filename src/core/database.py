@@ -784,6 +784,22 @@ class Database:
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
+            # Check and add missing columns to captcha_config table
+            if await self._table_exists(db, "captcha_config"):
+                captcha_columns_to_add = [
+                    ("personal_project_pool_size", "INTEGER DEFAULT 4"),
+                    ("personal_max_resident_tabs", "INTEGER DEFAULT 5"),
+                    ("personal_idle_tab_ttl_seconds", "INTEGER DEFAULT 600"),
+                ]
+
+                for col_name, col_type in captcha_columns_to_add:
+                    if not await self._column_exists(db, "captcha_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE captcha_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to captcha_config table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
             # ========== Step 3: Ensure all config tables have default rows ==========
             # Note: This will NOT overwrite existing config rows
             # It only ensures missing rows are created with default values from setting.toml
@@ -1032,6 +1048,9 @@ class Database:
                     browser_proxy_enabled BOOLEAN DEFAULT 0,
                     browser_proxy_url TEXT,
                     browser_count INTEGER DEFAULT 1,
+                    personal_project_pool_size INTEGER DEFAULT 4,
+                    personal_max_resident_tabs INTEGER DEFAULT 5,
+                    personal_idle_tab_ttl_seconds INTEGER DEFAULT 600,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -3091,7 +3110,10 @@ class Database:
         remote_browser_proxy_enabled: bool = None,
         browser_proxy_enabled: bool = None,
         browser_proxy_url: str = None,
-        browser_count: int = None
+        browser_count: int = None,
+        personal_project_pool_size: int = None,
+        personal_max_resident_tabs: int = None,
+        personal_idle_tab_ttl_seconds: int = None
     ):
         """Update captcha configuration"""
         def _normalize_enabled_order(raw_order: Any, method_hint: Optional[str] = None) -> List[str]:
@@ -3170,6 +3192,9 @@ class Database:
                 new_browser_count = browser_count if browser_count is not None else current.get("browser_count", 1)
                 new_remote_timeout = max(5, int(new_remote_timeout)) if new_remote_timeout is not None else DEFAULT_REMOTE_BROWSER_TIMEOUT
                 new_priority_order = json.dumps(new_order, ensure_ascii=False)
+                new_personal_project_pool_size = max(1, min(50, int(new_personal_project_pool_size)))
+                new_personal_max_tabs = max(1, min(50, int(new_personal_max_tabs)))  # 限制1-50
+                new_personal_idle_ttl = max(60, int(new_personal_idle_ttl))  # 最少60秒
 
                 await db.execute("""
                     UPDATE captcha_config
@@ -3225,6 +3250,9 @@ class Database:
                 new_proxy_enabled = browser_proxy_enabled if browser_proxy_enabled is not None else False
                 new_proxy_url = browser_proxy_url
                 new_browser_count = browser_count if browser_count is not None else 1
+                new_personal_project_pool_size = personal_project_pool_size if personal_project_pool_size is not None else 4
+                new_personal_max_tabs = personal_max_resident_tabs if personal_max_resident_tabs is not None else 5
+                new_personal_idle_ttl = personal_idle_tab_ttl_seconds if personal_idle_tab_ttl_seconds is not None else 600
                 new_remote_timeout = max(5, int(new_remote_timeout))
                 new_priority_order = json.dumps(new_order, ensure_ascii=False)
 

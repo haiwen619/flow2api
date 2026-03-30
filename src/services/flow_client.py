@@ -2701,19 +2701,37 @@ class FlowClient:
         self,
         captcha_method: str,
         project_id: str,
-        action: str,
-        token_id: Optional[int],
-    ) -> tuple[Optional[str], Optional[Union[int, str]], str]:
-        method = str(captcha_method or "").strip().lower()
+        action: str = "IMAGE_GENERATION",
+        token_id: Optional[int] = None
+    ) -> tuple[Optional[str], Optional[Union[int, str]]]:
+        """获取reCAPTCHA token - 支持多种打码方式
+        
+        Args:
+            project_id: 项目ID
+            action: reCAPTCHA action类型
+                - IMAGE_GENERATION: 图片生成和2K/4K图片放大 (默认)
+                - VIDEO_GENERATION: 视频生成和视频放大
+            token_id: 当前业务 token id（browser 模式下用于读取 token 级打码代理）
+        
+        Returns:
+            (token, browser_id) 元组。
+            - browser 模式: browser_id 为本地浏览器 ID
+            - remote_browser 模式: browser_id 为远程 session_id
+            - 其他模式: browser_id 为 None
+        """
+        captcha_method = config.captcha_method
+        debug_logger.log_info(f"[reCAPTCHA] 开始获取 token: method={captcha_method}, project_id={project_id}, action={action}")
 
-        if self._should_skip_local_browser_captcha_method(method):
-            return None, None, "[skip] Docker 环境未启用本地有头浏览器打码"
-
-        if method == "personal":
+        # 内置浏览器打码 (nodriver)
+        if captcha_method == "personal":
+            debug_logger.log_info(f"[reCAPTCHA] 使用 personal 模式")
             try:
                 from .browser_captcha_personal import BrowserCaptchaService
+                debug_logger.log_info(f"[reCAPTCHA] 导入 BrowserCaptchaService 成功")
                 service = await BrowserCaptchaService.get_instance(self.db)
+                debug_logger.log_info(f"[reCAPTCHA] 获取服务实例成功，准备调用 get_token")
                 token = await service.get_token(project_id, action)
+                debug_logger.log_info(f"[reCAPTCHA] get_token 返回: {token[:50] if token else None}...")
                 fingerprint = service.get_last_fingerprint() if token else None
                 self._set_request_fingerprint(fingerprint if token else None)
                 if token:

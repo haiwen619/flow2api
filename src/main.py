@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
             await browser_service.start_resident_mode(resident_project_id)
             print(f"[启动] 浏览器打码常驻模式已启动（项目: {resident_project_id[:8]}...）")
         else:
-            # 没有可用的project_id时，打开登录窗口供用户手动操作
+            # 没有任何可用 token 时，打开登录窗口供用户手动操作
             await browser_service.open_login_window()
             print("[启动] 未找到带 project_id 的活跃 Token，已打开登录窗口供手动配置")
     elif captcha_config.captcha_method == "browser":
@@ -241,8 +241,6 @@ async def lifespan(app: FastAPI):
         print("[启动] 浏览器打码服务已初始化（有头模式）")
 
     # Initialize concurrency manager
-    tokens = await token_manager.get_all_tokens()
-
     await concurrency_manager.initialize(tokens)
 
     if config.captcha_method == "remote_browser":
