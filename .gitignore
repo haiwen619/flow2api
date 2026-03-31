@@ -68,3 +68,4 @@ tmp/browser_pids/
 /tmp
 /log.txt
 /clean_vs_build_folders.bat
+docs/katuReadme.md
