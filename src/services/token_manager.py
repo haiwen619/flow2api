@@ -67,6 +67,47 @@ class TokenManager:
         normalized_base = self._normalize_project_name_base(base_name)
         return f"{normalized_base} P{pool_index}"
 
+    async def get_personal_warmup_project_ids(
+        self,
+        tokens: Optional[List[Token]] = None,
+        limit: Optional[int] = None,
+    ) -> List[str]:
+        """返回 personal 模式启动时建议预热的项目 ID 列表。"""
+        token_list = tokens if tokens is not None else await self.get_all_tokens()
+        pool_size = self._get_project_pool_size()
+        warmup_ids: List[str] = []
+        seen_projects: set[str] = set()
+
+        try:
+            warmup_limit = None if limit is None else max(1, int(limit))
+        except Exception:
+            warmup_limit = None
+
+        for token in token_list:
+            if not token or not token.is_active:
+                continue
+
+            candidate_ids: List[str] = []
+            current_project_id = str(token.current_project_id or "").strip()
+            if current_project_id:
+                candidate_ids.append(current_project_id)
+
+            projects = [project for project in await self.db.get_projects_by_token(token.id) if project.is_active]
+            for project in self._sort_projects(projects):
+                project_id = str(project.project_id or "").strip()
+                if project_id and project_id not in candidate_ids:
+                    candidate_ids.append(project_id)
+
+            for project_id in candidate_ids[:pool_size]:
+                if project_id in seen_projects:
+                    continue
+                seen_projects.add(project_id)
+                warmup_ids.append(project_id)
+                if warmup_limit is not None and len(warmup_ids) >= warmup_limit:
+                    return warmup_ids
+
+        return warmup_ids
+
     async def _ensure_primary_project_binding(
         self,
         *,
@@ -887,7 +928,7 @@ class TokenManager:
             project_name=pooled_projects[0].project_name,
         ) or pooled_projects[0]
 
-        while len(pooled_projects) < self._project_pool_size:
+        while len(pooled_projects) < project_pool_size:
             try:
                 new_project = await self._create_project_for_token(token, len(pooled_projects) + 1, base_project_name)
                 pooled_projects.append(new_project)
@@ -1113,7 +1154,12 @@ class TokenManager:
         refresh_source: str = "MANUAL_AT",
     ) -> bool:
         """执行一次真实的 AT 刷新流程。"""
-        async with self._lock:
+        refresh_lock = await self._get_token_lock(
+            self._refresh_locks,
+            self._refresh_lock_guard,
+            token_id,
+        )
+        async with refresh_lock:
             token = await self.db.get_token(token_id)
             if not token:
                 return False
@@ -1237,7 +1283,12 @@ class TokenManager:
         - 直接走 HTTP reAuth
         - 跳过 `_refresh_at` 中第一次 `_do_refresh_at` 尝试
         """
-        async with self._lock:
+        refresh_lock = await self._get_token_lock(
+            self._refresh_locks,
+            self._refresh_lock_guard,
+            token_id,
+        )
+        async with refresh_lock:
             token = await self.db.get_token(token_id)
             if not token:
                 return False

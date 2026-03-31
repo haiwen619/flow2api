@@ -2157,18 +2157,22 @@ class BrowserCaptchaService:
             
     async def open_login_browser(self): return {"success": False, "error": "Not implemented"}
     async def create_browser_for_token(self, t, s=None): pass
-    def get_stats(self): 
+    def get_stats(self):
         browser_items = []
         busy_browser_count = 0
+        shared_browser_count = 0
         for browser_id, browser in sorted(self._browsers.items()):
             is_busy = bool(getattr(browser, "is_busy", lambda: False)())
+            has_browser = bool(getattr(browser, "has_shared_browser", lambda: False)())
             if is_busy:
                 busy_browser_count += 1
+            if has_browser:
+                shared_browser_count += 1
             fingerprint = browser.get_last_fingerprint() or {}
             browser_items.append({
                 "browser_id": browser_id,
                 "busy": is_busy,
-                "has_browser": bool(getattr(browser, "has_shared_browser", lambda: False)()),
+                "has_browser": has_browser,
                 "idle_seconds": round(float(getattr(browser, "idle_seconds", lambda: 0.0)()), 1),
                 "solve_count": int(getattr(browser, "_solve_count", 0) or 0),
                 "error_count": int(getattr(browser, "_error_count", 0) or 0),
@@ -2185,7 +2189,8 @@ class BrowserCaptchaService:
             "configured_browser_count": self._browser_count,
             "busy_browser_count": busy_browser_count,
             "idle_browser_count": max(self._browser_count - busy_browser_count, 0),
-            "project_affinity_count": len(self._project_slot_affinity),
+            "shared_browser_count": shared_browser_count,
+            "project_affinity_count": 0,
             "browsers": browser_items,
         }
         return base_stats

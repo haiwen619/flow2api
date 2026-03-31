@@ -12,7 +12,6 @@ from typing import Dict, Any, Optional, List, Union, Callable, Awaitable
 from urllib.parse import quote
 import urllib.error
 import urllib.request
-import httpx
 from curl_cffi.requests import AsyncSession
 from ..core.logger import debug_logger
 from ..core.config import config
@@ -2269,13 +2268,6 @@ class FlowClient:
                 pass
         elif captcha_method == "remote_browser" and browser_id:
             try:
-                session_id = quote(str(browser_id), safe="")
-                await self._call_remote_browser_service(
-                    method="POST",
-                    path=f"/api/v1/sessions/{session_id}/error",
-                    json_data={"error_reason": error_reason or error_message or "upstream_error"},
-                    timeout_override=2,
-                )
                 await self._notify_remote_browser_session_event(
                     browser_id,
                     path_suffix="error",
@@ -2296,13 +2288,6 @@ class FlowClient:
                 pass
         elif captcha_method == "remote_browser" and browser_id:
             try:
-                session_id = quote(str(browser_id), safe="")
-                await self._call_remote_browser_service(
-                    method="POST",
-                    path=f"/api/v1/sessions/{session_id}/finish",
-                    json_data={"status": "success"},
-                    timeout_override=2,
-                )
                 await self._notify_remote_browser_session_event(
                     browser_id,
                     path_suffix="finish",
@@ -2703,7 +2688,7 @@ class FlowClient:
         project_id: str,
         action: str = "IMAGE_GENERATION",
         token_id: Optional[int] = None
-    ) -> tuple[Optional[str], Optional[Union[int, str]]]:
+    ) -> tuple[Optional[str], Optional[Union[int, str]], str]:
         """获取reCAPTCHA token - 支持多种打码方式
         
         Args:
@@ -2719,11 +2704,15 @@ class FlowClient:
             - remote_browser 模式: browser_id 为远程 session_id
             - 其他模式: browser_id 为 None
         """
-        captcha_method = config.captcha_method
-        debug_logger.log_info(f"[reCAPTCHA] 开始获取 token: method={captcha_method}, project_id={project_id}, action={action}")
+        method = str(captcha_method or "").strip().lower()
+        debug_logger.log_info(f"[reCAPTCHA] 开始获取 token: method={method}, project_id={project_id}, action={action}")
+
+        if self._should_skip_local_browser_captcha_method(method):
+            self._set_request_fingerprint(None)
+            return None, None, "[skip] Docker 环境默认跳过本地浏览器打码"
 
         # 内置浏览器打码 (nodriver)
-        if captcha_method == "personal":
+        if method == "personal":
             debug_logger.log_info(f"[reCAPTCHA] 使用 personal 模式")
             try:
                 from .browser_captcha_personal import BrowserCaptchaService

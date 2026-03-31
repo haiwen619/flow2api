@@ -13,12 +13,9 @@ import json
 import shutil
 import tempfile
 import subprocess
-import shutil
-import tempfile
 import traceback
 import urllib.parse
 from contextlib import contextmanager
-from typing import Optional, Dict, Any
 from typing import Optional, Dict, Any, Iterable
 
 from ..core.logger import debug_logger
@@ -295,6 +292,77 @@ def _normalize_browser_proxy_url(proxy_url: Optional[str]) -> tuple[Optional[str
         return normalized, warning
 
     return raw, None
+
+
+def _parse_proxy_url(proxy_url: str):
+    """Parse a proxy URL into (protocol, host, port, username, password)."""
+    normalized_url, proxy_warning = _normalize_browser_proxy_url(proxy_url)
+    if proxy_warning:
+        debug_logger.log_warning(f"[BrowserCaptcha] {proxy_warning}")
+
+    url = str(normalized_url or "").strip()
+    if not url:
+        return None, None, None, None, None
+    if not re.match(r"^(http|https|socks5h?|socks5)://", url):
+        url = f"http://{url}"
+    m = re.match(r"^(socks5h?|socks5|http|https)://(?:([^:]+):([^@]+)@)?([^:]+):(\d+)$", url)
+    if not m:
+        return None, None, None, None, None
+    protocol, username, password, host, port = m.groups()
+    if protocol == "socks5h":
+        protocol = "socks5"
+    return protocol, host, port, username, password
+
+
+def _create_proxy_auth_extension(protocol: str, host: str, port: str, username: str, password: str) -> str:
+    """Create a temporary Chrome extension directory for proxy authentication."""
+    ext_dir = tempfile.mkdtemp(prefix="nodriver_proxy_auth_")
+
+    scheme_map = {"http": "http", "https": "https", "socks5": "socks5"}
+    scheme = scheme_map.get(protocol, "http")
+
+    manifest = {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Proxy Auth Helper",
+        "permissions": [
+            "proxy", "tabs", "unlimitedStorage", "storage",
+            "<all_urls>", "webRequest", "webRequestBlocking"
+        ],
+        "background": {"scripts": ["background.js"]},
+        "minimum_chrome_version": "76.0.0"
+    }
+    background_js = (
+        "var config = {\n"
+        '    mode: "fixed_servers",\n'
+        "    rules: {\n"
+        "        singleProxy: {\n"
+        f'            scheme: "{scheme}",\n'
+        f'            host: "{host}",\n'
+        f"            port: parseInt({port})\n"
+        "        },\n"
+        '        bypassList: ["localhost"]\n'
+        "    }\n"
+        "};\n"
+        'chrome.proxy.settings.set({value: config, scope: "regular"}, function(){});\n'
+        "chrome.webRequest.onAuthRequired.addListener(\n"
+        "    function(details) {\n"
+        "        return {\n"
+        "            authCredentials: {\n"
+        f'                username: "{username}",\n'
+        f'                password: "{password}"\n'
+        "            }\n"
+        "        };\n"
+        "    },\n"
+        '    {urls: ["<all_urls>"]},\n'
+        "    ['blocking']\n"
+        ");\n"
+    )
+    with open(os.path.join(ext_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    with open(os.path.join(ext_dir, "background.js"), "w", encoding="utf-8") as f:
+        f.write(background_js)
+    return ext_dir
 
 
 class ResidentTabInfo:
@@ -864,6 +932,7 @@ class BrowserCaptchaService:
         self.browser = None
         self._initialized = False
         self._last_fingerprint = None
+        self._active_proxy_url = None
         self._cleanup_proxy_extension()
         self._proxy_url = None
 
@@ -903,27 +972,30 @@ class BrowserCaptchaService:
                     f"[BrowserCaptcha] 停止浏览器实例失败 ({reason}): {e}"
                 )
 
+        self._cleanup_orphan_profile_browsers()
+        self._remove_managed_profile_dir()
+
     async def _resolve_personal_proxy(self):
         """Read proxy config for personal captcha browser.
         Priority: captcha browser_proxy > request proxy."""
+        runtime_proxy_url = await self._resolve_runtime_proxy_url()
+        if runtime_proxy_url:
+            debug_logger.log_info(f"[BrowserCaptcha] Personal 使用验证码代理: {runtime_proxy_url}")
+            return _parse_proxy_url(runtime_proxy_url)
+
         if not self.db:
             return None, None, None, None, None
-        try:
-            captcha_cfg = await self.db.get_captcha_config()
-            if captcha_cfg.browser_proxy_enabled and captcha_cfg.browser_proxy_url:
-                url = captcha_cfg.browser_proxy_url.strip()
-                if url:
-                    debug_logger.log_info(f"[BrowserCaptcha] Personal 使用验证码代理: {url}")
-                    return _parse_proxy_url(url)
-        except Exception as e:
-            debug_logger.log_warning(f"[BrowserCaptcha] 读取验证码代理配置失败: {e}")
+
         try:
             proxy_cfg = await self.db.get_proxy_config()
             if proxy_cfg and proxy_cfg.enabled and proxy_cfg.proxy_url:
-                url = proxy_cfg.proxy_url.strip()
-                if url:
-                    debug_logger.log_info(f"[BrowserCaptcha] Personal 回退使用请求代理: {url}")
-                    return _parse_proxy_url(url)
+                raw_proxy_url = proxy_cfg.proxy_url.strip()
+                normalized_proxy_url, proxy_warning = _normalize_browser_proxy_url(raw_proxy_url)
+                if proxy_warning:
+                    debug_logger.log_warning(f"[BrowserCaptcha] {proxy_warning}")
+                if normalized_proxy_url:
+                    debug_logger.log_info(f"[BrowserCaptcha] Personal 回退使用请求代理: {normalized_proxy_url}")
+                    return _parse_proxy_url(normalized_proxy_url)
         except Exception as e:
             debug_logger.log_warning(f"[BrowserCaptcha] 读取请求代理配置失败: {e}")
         return None, None, None, None, None
@@ -963,13 +1035,17 @@ class BrowserCaptchaService:
                 await self._shutdown_browser_runtime_locked(reason="initialize_recovery")
 
             try:
-                if self.user_data_dir:
+                managed_profile_dir = self._ensure_managed_profile_dir()
+                if managed_profile_dir:
                     debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (用户数据目录: {self.user_data_dir})...")
-                    os.makedirs(self.user_data_dir, exist_ok=True)
                 else:
                     debug_logger.log_info(f"[BrowserCaptcha] 正在启动 nodriver 浏览器 (使用临时目录)...")
 
                 browser_executable_path = os.environ.get("BROWSER_EXECUTABLE_PATH", "").strip() or None
+                if not browser_executable_path:
+                    browser_candidates = _resolve_browser_executable_paths()
+                    if browser_candidates:
+                        browser_executable_path = browser_candidates[0]
                 if browser_executable_path:
                     debug_logger.log_info(
                         f"[BrowserCaptcha] 使用指定浏览器可执行文件: {browser_executable_path}"
@@ -978,6 +1054,7 @@ class BrowserCaptchaService:
                 # 解析代理配置
                 self._cleanup_proxy_extension()
                 self._proxy_url = None
+                self._active_proxy_url = None
                 protocol, host, port, username, password = await self._resolve_personal_proxy()
                 proxy_server_arg = None
                 if protocol and host and port:
@@ -988,6 +1065,7 @@ class BrowserCaptchaService:
                         )
                     proxy_server_arg = f"--proxy-server={protocol}://{host}:{port}"
                     self._proxy_url = f"{protocol}://{host}:{port}"
+                    self._active_proxy_url = self._proxy_url
                     debug_logger.log_info(f"[BrowserCaptcha] Personal 浏览器代理: {self._proxy_url}")
 
                 browser_args = [
@@ -1019,11 +1097,12 @@ class BrowserCaptchaService:
                     sandbox=False,
                     browser_args=browser_args,
                 )
-                self.browser = await self._run_with_timeout(
-                    uc.start(config),
-                    timeout_seconds=30.0,
-                    label="nodriver.start",
-                )
+                with _temporary_loopback_no_proxy():
+                    self.browser = await self._run_with_timeout(
+                        uc.start(config),
+                        timeout_seconds=30.0,
+                        label="nodriver.start",
+                    )
 
                 self._initialized = True
                 if self._idle_reaper_task is None or self._idle_reaper_task.done():
@@ -1033,6 +1112,9 @@ class BrowserCaptchaService:
             except Exception as e:
                 self.browser = None
                 self._initialized = False
+                self._active_proxy_url = None
+                self._cleanup_orphan_profile_browsers()
+                self._remove_managed_profile_dir()
                 debug_logger.log_error(f"[BrowserCaptcha] ❌ 浏览器启动失败: {str(e)}")
                 raise
 
@@ -2272,12 +2354,15 @@ class BrowserCaptchaService:
         start_time = time.time()
         debug_logger.log_info(f"[BrowserCaptcha] 开始刷新 Session Token (project: {project_id})...")
 
+        auto_created_resident = False
         async with self._resident_lock:
             slot_id = self._resolve_affinity_slot_locked(project_id)
             resident_info = self._resident_tabs.get(slot_id) if slot_id else None
+            existing_slot_ids = set(self._resident_tabs.keys())
 
         if resident_info is None or not slot_id:
             slot_id, resident_info = await self._ensure_resident_tab(project_id, return_slot_key=True)
+            auto_created_resident = bool(slot_id and slot_id not in existing_slot_ids)
 
         if resident_info is None or not slot_id:
             debug_logger.log_warning(f"[BrowserCaptcha] 无法为 project_id={project_id} 获取共享常驻标签页")
@@ -2398,11 +2483,10 @@ class BrowserCaptchaService:
             return None
         finally:
             # 若本次仅为刷新 ST 而临时创建了常驻标签页，完成后自动清理。
-            if auto_created_resident:
-                async with self._resident_lock:
-                    await self._close_resident_tab(project_id)
+            if auto_created_resident and slot_id:
+                await self._close_resident_tab(slot_id)
                 debug_logger.log_info(
-                    f"[BrowserCaptcha] project_id={project_id} 的临时常驻标签页已自动关闭"
+                    f"[BrowserCaptcha] project_id={project_id} 的临时常驻标签页已自动关闭 (slot={slot_id})"
                 )
 
             # 若浏览器也是本次临时拉起，且没有任何常驻标签页，自动关闭浏览器避免残留窗口。
@@ -2412,13 +2496,13 @@ class BrowserCaptchaService:
                     no_resident_tabs = len(self._resident_tabs) == 0
                 if no_resident_tabs and self.browser:
                     try:
-                        self.browser.stop()
+                        await self._shutdown_browser_runtime(
+                            cancel_idle_reaper=False,
+                            reason="refresh_session_auto_close",
+                        )
                         debug_logger.log_info("[BrowserCaptcha] 临时浏览器已自动关闭")
                     except Exception as close_err:
                         debug_logger.log_warning(f"[BrowserCaptcha] 自动关闭临时浏览器失败: {close_err}")
-                    finally:
-                        self.browser = None
-                        self._initialized = False
 
     # ========== 状态查询 ==========
 

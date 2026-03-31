@@ -170,6 +170,9 @@ async def lifespan(app: FastAPI):
         await db.check_and_migrate_db(config_dict)
         print("[启动] 数据库迁移检查完成。")
 
+    # 启动时统一把数据库配置同步到内存，避免运行时配置遗漏。
+    await db.reload_config_to_memory()
+
     # Load admin config from database
     admin_config = await db.get_admin_config()
     if admin_config:
@@ -211,29 +214,37 @@ async def lifespan(app: FastAPI):
     config.set_remote_browser_api_key(captcha_config.remote_browser_api_key)
     config.set_remote_browser_timeout(captcha_config.remote_browser_timeout)
 
+    # Tokens are needed by multiple startup steps regardless of captcha mode.
+    tokens = await token_manager.get_all_tokens()
+
     # Initialize browser captcha service if needed
     browser_service = None
     if captcha_config.captcha_method == "personal":
         from .services.browser_captcha_personal import BrowserCaptchaService
         browser_service = await BrowserCaptchaService.get_instance(db)
         print("[启动] 浏览器打码服务已初始化（nodriver 模式）")
-        
-        # 启动常驻模式：从第一个可用token获取project_id
-        tokens = await token_manager.get_all_tokens()
-        resident_project_id = None
-        for t in tokens:
-            if t.current_project_id and t.is_active:
-                resident_project_id = t.current_project_id
-                break
-        
-        if resident_project_id:
-            # 直接启动常驻模式（会自动导航到项目页面，cookie已持久化）
-            await browser_service.start_resident_mode(resident_project_id)
-            print(f"[启动] 浏览器打码常驻模式已启动（项目: {resident_project_id[:8]}...）")
+
+        warmup_limit = max(1, int(config.personal_max_resident_tabs or 1))
+        warmup_project_ids = await token_manager.get_personal_warmup_project_ids(
+            tokens=tokens,
+            limit=warmup_limit,
+        )
+
+        warmed_slots = await browser_service.warmup_resident_tabs(
+            warmup_project_ids,
+            limit=warmup_limit,
+        )
+        if warmed_slots:
+            print(
+                f"[启动] 浏览器打码共享常驻标签页已预热 "
+                f"（{len(warmed_slots)} 个标签页，上限={warmup_limit}）"
+            )
+        elif tokens:
+            print("[启动] 浏览器打码常驻预热已跳过：无标签页成功预热")
         else:
             # 没有任何可用 token 时，打开登录窗口供用户手动操作
             await browser_service.open_login_window()
-            print("[启动] 未找到带 project_id 的活跃 Token，已打开登录窗口供手动配置")
+            print("[启动] 未找到活跃 Token，已打开登录窗口供手动配置")
     elif captcha_config.captcha_method == "browser":
         from .services.browser_captcha import BrowserCaptchaService
         browser_service = await BrowserCaptchaService.get_instance(db)

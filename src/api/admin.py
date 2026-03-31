@@ -1674,6 +1674,7 @@ async def change_password(
     if request.username:
         update_params["username"] = request.username.strip()
     await db.update_admin_config(**update_params)
+    await db.reload_config_to_memory()
     active_admin_tokens.clear()
     return {"success": True, "message": "密码修改成功，请重新登录"}
 
@@ -4132,6 +4133,8 @@ async def update_captcha_config(
         personal_max_resident_tabs=personal_max_resident_tabs,
         personal_idle_tab_ttl_seconds=personal_idle_tab_ttl_seconds
     )
+
+    await db.reload_config_to_memory()
 
     # 本地有头浏览器打码启用时刷新实例数量；禁用时仅回收已存在的实例，避免保存远程配置时触发本地浏览器模块初始化
     try:
